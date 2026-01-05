@@ -307,7 +307,7 @@ impl ResponseView {
     }
 
     fn render_body_tab(&self, theme: &Theme) -> impl IntoElement {
-        // Clean minimal container - no padding before line numbers
+        // Clean minimal container
         div()
             .id("body-scroll-container")
             .flex()
