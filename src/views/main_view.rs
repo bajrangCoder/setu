@@ -1,7 +1,7 @@
 use gpui::prelude::*;
 use gpui::{div, px, App, Entity, FocusHandle, Focusable, IntoElement, Render, Styled, Window};
 use gpui_component::input::InputState;
-use gpui_component::resizable::{h_resizable, resizable_panel, v_resizable};
+use gpui_component::resizable::{resizable_panel, v_resizable};
 
 use crate::components::{
     MethodDropdownOverlay, MethodDropdownState, ProtocolSelector, ProtocolType, Sidebar, TabBar,
@@ -308,38 +308,43 @@ impl Render for MainView {
                     .child(self.render_header(&theme))
                     // Tab bar - pass this entity directly
                     .child(TabBar::new(tab_infos, this.clone()))
-                    // Content - vertical split
+                    // Content - vertical resizable split between request and response panels
                     .child(
-                        div()
-                            .flex_1()
-                            .flex()
-                            .flex_col()
-                            .overflow_hidden()
-                            // Request panel with URL bar
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .flex()
-                                    .flex_col()
-                                    .border_b_1()
-                                    .border_color(theme.colors.border_primary)
-                                    .min_h(px(200.0))
-                                    .child(self.render_request_panel(
-                                        url_input,
-                                        method_dropdown,
-                                        is_loading,
-                                        this_for_send,
-                                    )),
-                            )
-                            // Response panel
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .flex()
-                                    .flex_col()
-                                    .min_h(px(200.0))
-                                    .child(self.response_view.clone()),
-                            ),
+                        div().flex_1().flex().flex_col().overflow_hidden().child(
+                            v_resizable("request-response-split")
+                                // Request panel with URL bar
+                                .child(
+                                    resizable_panel()
+                                        .size(px(300.0))
+                                        .size_range(px(150.0)..px(600.0))
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .size_full()
+                                                .overflow_hidden()
+                                                .child(self.render_request_panel(
+                                                    url_input,
+                                                    method_dropdown,
+                                                    is_loading,
+                                                    this_for_send,
+                                                )),
+                                        ),
+                                )
+                                // Response panel
+                                .child(
+                                    resizable_panel()
+                                        .size_range(px(150.0)..gpui::Pixels::MAX)
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .size_full()
+                                                .overflow_hidden()
+                                                .child(self.response_view.clone()),
+                                        ),
+                                ),
+                        ),
                     )
                     // Bottom shortcuts bar
                     .child(self.render_shortcuts(&theme)),
