@@ -68,9 +68,9 @@ impl ResponseView {
             let content = current_content.clone();
             let body_display = cx.new(|cx| {
                 InputState::new(window, cx)
-                    //.multi_line(true)
                     .code_editor("json")
                     .line_number(true)
+                    .searchable(true)
                     .default_value(&content)
             });
             self.body_display = Some(body_display);

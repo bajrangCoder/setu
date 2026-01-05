@@ -52,7 +52,7 @@ impl RequestView {
     /// Initialize the body editor with Window access
     fn ensure_body_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.body_editor.is_none() {
-            // Create code editor with JSON syntax highlighting using gpui-component
+            // Create code editor with JSON syntax highlighting
             let initial_content = r#"{
   "name": "example",
   "value": 123
@@ -62,6 +62,7 @@ impl RequestView {
                 InputState::new(window, cx)
                     .code_editor("json")
                     .line_number(true)
+                    .searchable(true)
                     .default_value(initial_content)
             });
 
@@ -98,7 +99,7 @@ impl Render for RequestView {
             .overflow_hidden()
             // Tab bar with click handlers
             .child(self.render_tabs(&theme, this))
-            // Tab content - fills available space
+            // Tab content
             .child(
                 div()
                     .id("request-content")
@@ -174,7 +175,7 @@ impl RequestView {
     fn render_body_tab(&self, _theme: &Theme) -> impl IntoElement {
         let theme = Theme::dark();
 
-        // Clean minimal container - no padding before line numbers
+        // Clean minimal container
         div()
             .id("request-body-editor")
             .flex()
@@ -285,7 +286,7 @@ impl RequestView {
                                     .bg(bg_color)
                                     .border_b_1()
                                     .border_color(border_color)
-                                    // Key column - fixed width with accent color
+                                    // Key column
                                     .child(
                                         div()
                                             .w(px(180.0))
@@ -298,7 +299,7 @@ impl RequestView {
                                             .text_ellipsis()
                                             .child(key.clone()),
                                     )
-                                    // Value column - fills remaining
+                                    // Value column
                                     .child(
                                         div()
                                             .flex_1()
