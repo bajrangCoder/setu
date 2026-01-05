@@ -1,5 +1,5 @@
 use gpui::prelude::*;
-use gpui::{div, px, App, Entity, IntoElement, SharedString, Styled, Window};
+use gpui::{div, px, App, Entity, IntoElement, ScrollHandle, SharedString, Styled, Window};
 use gpui_component::IconName;
 
 use crate::entities::HttpMethod;
@@ -37,11 +37,20 @@ impl TabInfo {
 pub struct TabBar {
     tabs: Vec<TabInfo>,
     main_view: Entity<crate::views::MainView>,
+    scroll_handle: ScrollHandle,
 }
 
 impl TabBar {
-    pub fn new(tabs: Vec<TabInfo>, main_view: Entity<crate::views::MainView>) -> Self {
-        Self { tabs, main_view }
+    pub fn new(
+        tabs: Vec<TabInfo>,
+        main_view: Entity<crate::views::MainView>,
+        scroll_handle: ScrollHandle,
+    ) -> Self {
+        Self {
+            tabs,
+            main_view,
+            scroll_handle,
+        }
     }
 }
 
@@ -67,32 +76,27 @@ impl RenderOnce for TabBar {
                     .flex()
                     .flex_row()
                     .items_center()
+                    .gap(px(2.0))
                     .flex_1()
-                    .overflow_scroll()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(2.0))
-                            .children(self.tabs.into_iter().map(|tab| {
-                                let index = tab.index;
-                                let main_view_for_click = main_view.clone();
-                                let main_view_for_close = main_view.clone();
+                    .overflow_x_scroll()
+                    .track_scroll(&self.scroll_handle)
+                    .children(self.tabs.into_iter().map(|tab| {
+                        let index = tab.index;
+                        let main_view_for_click = main_view.clone();
+                        let main_view_for_close = main_view.clone();
 
-                                Tab::new(tab)
-                                    .on_click(move |_event, _window, cx| {
-                                        main_view_for_click.update(cx, |view, cx| {
-                                            view.switch_tab(index, cx);
-                                        });
-                                    })
-                                    .on_close(move |_event, _window, cx| {
-                                        main_view_for_close.update(cx, |view, cx| {
-                                            view.close_tab(index, cx);
-                                        });
-                                    })
-                            })),
-                    ),
+                        Tab::new(tab)
+                            .on_click(move |_event, _window, cx| {
+                                main_view_for_click.update(cx, |view, cx| {
+                                    view.switch_tab(index, cx);
+                                });
+                            })
+                            .on_close(move |_event, _window, cx| {
+                                main_view_for_close.update(cx, |view, cx| {
+                                    view.close_tab(index, cx);
+                                });
+                            })
+                    })),
             )
             // New tab button
             .child(

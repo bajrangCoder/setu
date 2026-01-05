@@ -1,5 +1,7 @@
 use gpui::prelude::*;
-use gpui::{div, px, App, Entity, FocusHandle, Focusable, IntoElement, Render, Styled, Window};
+use gpui::{
+    div, px, App, Entity, FocusHandle, Focusable, IntoElement, Render, ScrollHandle, Styled, Window,
+};
 use gpui_component::input::InputState;
 use gpui_component::resizable::{resizable_panel, v_resizable};
 
@@ -30,6 +32,7 @@ pub struct MainView {
     tabs: Vec<RequestTab>,
     active_tab_index: usize,
     next_tab_id: usize,
+    tab_scroll_handle: ScrollHandle,
 
     // Child views (for active tab)
     request_view: Entity<RequestView>,
@@ -72,6 +75,7 @@ impl MainView {
             tabs: vec![initial_tab],
             active_tab_index: 0,
             next_tab_id: 1,
+            tab_scroll_handle: ScrollHandle::new(),
             request_view,
             response_view,
             command_palette,
@@ -121,6 +125,9 @@ impl MainView {
         self.request_view = cx.new(|cx| RequestView::new(request.clone(), cx));
         self.response_view = cx.new(|cx| ResponseView::new(response.clone(), cx));
 
+        // Scroll to the newly added tab
+        self.tab_scroll_handle.scroll_to_item(self.active_tab_index);
+
         cx.notify();
     }
 
@@ -134,6 +141,9 @@ impl MainView {
                 self.request_view = cx.new(|cx| RequestView::new(tab.request.clone(), cx));
                 self.response_view = cx.new(|cx| ResponseView::new(tab.response.clone(), cx));
             }
+
+            // Scroll to the selected tab to ensure it's visible
+            self.tab_scroll_handle.scroll_to_item(index);
 
             cx.notify();
         }
@@ -306,8 +316,12 @@ impl Render for MainView {
                     .overflow_hidden()
                     // Header with protocol selector
                     .child(self.render_header(&theme))
-                    // Tab bar - pass this entity directly
-                    .child(TabBar::new(tab_infos, this.clone()))
+                    // Tab bar - pass this entity directly with scroll handle
+                    .child(TabBar::new(
+                        tab_infos,
+                        this.clone(),
+                        self.tab_scroll_handle.clone(),
+                    ))
                     // Content - vertical resizable split between request and response panels
                     .child(
                         div().flex_1().flex().flex_col().overflow_hidden().child(
