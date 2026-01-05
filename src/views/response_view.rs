@@ -1,11 +1,16 @@
+use std::rc::Rc;
+
 use gpui::prelude::*;
 use gpui::{
-    div, px, AnyElement, App, Context, Entity, FocusHandle, Focusable, IntoElement, Render, Styled,
-    Window,
+    div, px, size, AnyElement, App, Context, ElementId, Entity, FocusHandle, Focusable,
+    IntoElement, Pixels, Render, SharedString, Size, Styled, Window,
 };
 use gpui_component::input::{Input, InputState};
+use gpui_component::scroll::Scrollbar;
 use gpui_component::spinner::Spinner;
+use gpui_component::v_virtual_list;
 use gpui_component::Sizable;
+use gpui_component::VirtualListScrollHandle;
 
 use crate::components::StatusBadge;
 use crate::entities::{ResponseData, ResponseEntity, ResponseEvent, ResponseState};
@@ -27,6 +32,8 @@ pub struct ResponseView {
     /// Tracks the last displayed body content to know when to update
     last_body_content: String,
     focus_handle: FocusHandle,
+    /// Virtual list scroll handle for headers tab
+    headers_scroll_handle: VirtualListScrollHandle,
 }
 
 impl ResponseView {
@@ -43,6 +50,7 @@ impl ResponseView {
             body_display: None,
             last_body_content: String::new(),
             focus_handle: cx.focus_handle(),
+            headers_scroll_handle: VirtualListScrollHandle::new(),
         }
     }
 
@@ -252,7 +260,7 @@ impl ResponseView {
                     .flex()
                     .flex_col()
                     .overflow_hidden()
-                    .child(self.render_tab_content(theme, data)),
+                    .child(self.render_tab_content(theme, data, cx)),
             )
     }
 
@@ -286,10 +294,15 @@ impl ResponseView {
             )
     }
 
-    fn render_tab_content(&self, theme: &Theme, data: &ResponseData) -> AnyElement {
+    fn render_tab_content(
+        &self,
+        theme: &Theme,
+        data: &ResponseData,
+        cx: &Context<Self>,
+    ) -> AnyElement {
         match self.active_tab {
             ResponseTab::Body => self.render_body_tab(theme).into_any_element(),
-            ResponseTab::Headers => self.render_headers_tab(theme, data).into_any_element(),
+            ResponseTab::Headers => self.render_headers_tab(theme, data, cx).into_any_element(),
         }
     }
 
@@ -310,54 +323,127 @@ impl ResponseView {
             })
     }
 
-    fn render_headers_tab(&self, theme: &Theme, data: &ResponseData) -> impl IntoElement {
+    fn render_headers_tab(
+        &self,
+        theme: &Theme,
+        data: &ResponseData,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        // Convert HashMap to Vec for indexing
+        let headers: Vec<(String, String)> = data
+            .headers
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let header_count = headers.len();
+
+        if header_count == 0 {
+            return div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .flex_1()
+                .w_full()
+                .text_color(theme.colors.text_muted)
+                .text_size(px(12.0))
+                .child("No headers")
+                .into_any_element();
+        }
+
+        // Fixed row height for consistent virtual list
+        let row_height = px(40.0);
+        let item_sizes: Rc<Vec<Size<Pixels>>> = Rc::new(
+            (0..header_count)
+                .map(|_| size(px(600.0), row_height))
+                .collect(),
+        );
+
+        let bg_primary = theme.colors.bg_secondary;
+        let bg_alternate = theme.colors.bg_tertiary;
+        let border_color = theme.colors.border_primary.opacity(0.3);
+        let key_color = theme.colors.text_secondary;
+        let value_color = theme.colors.text_primary;
+
         div()
-            .id("headers-scroll")
+            .id("headers-virtual-container")
+            .relative()
             .flex()
             .flex_col()
             .flex_1()
             .w_full()
-            .h_full()
-            .overflow_y_scroll()
-            .overflow_x_hidden()
+            .overflow_hidden()
             .bg(theme.colors.bg_tertiary)
-            .rounded(px(6.0))
-            .children(data.headers.iter().enumerate().map(|(idx, (key, value))| {
-                // Alternate row backgrounds for readability
-                let bg_color = if idx % 2 == 0 {
-                    theme.colors.bg_secondary
-                } else {
-                    theme.colors.bg_tertiary
-                };
+            .child(
+                v_virtual_list(
+                    cx.entity().clone(),
+                    "response-headers-list",
+                    item_sizes.clone(),
+                    move |_view, visible_range, _window, _cx| {
+                        let headers = headers.clone();
+                        visible_range
+                            .map(|idx| {
+                                let (key, value) = &headers[idx];
+                                let bg_color = if idx % 2 == 0 {
+                                    bg_primary
+                                } else {
+                                    bg_alternate
+                                };
 
+                                div()
+                                    .id(ElementId::from(SharedString::from(format!(
+                                        "header-row-{}",
+                                        idx
+                                    ))))
+                                    .w_full()
+                                    .h(row_height)
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .px(px(16.0))
+                                    .bg(bg_color)
+                                    .border_b_1()
+                                    .border_color(border_color)
+                                    // Key column
+                                    .child(
+                                        div()
+                                            .w(px(180.0))
+                                            .min_w(px(180.0))
+                                            .pr(px(12.0))
+                                            .text_color(key_color)
+                                            .text_size(px(12.0))
+                                            .font_weight(gpui::FontWeight::MEDIUM)
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .child(key.clone()),
+                                    )
+                                    // Value column
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .text_color(value_color)
+                                            .text_size(px(12.0))
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .child(value.clone()),
+                                    )
+                            })
+                            .collect()
+                    },
+                )
+                .flex_1()
+                .track_scroll(&self.headers_scroll_handle),
+            )
+            // Scrollbar overlay
+            .child(
                 div()
-                    .flex()
-                    .flex_row()
-                    .items_start()
-                    .py(px(10.0))
-                    .px(px(16.0))
-                    .bg(bg_color)
-                    .border_b_1()
-                    .border_color(theme.colors.border_primary.opacity(0.3))
-                    // Header key column
-                    .child(
-                        div()
-                            .w(px(220.0))
-                            .min_w(px(220.0))
-                            .pr(px(16.0))
-                            .text_color(theme.colors.text_secondary)
-                            .text_size(px(12.0))
-                            .child(key.clone()),
-                    )
-                    // Header value column
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_color(theme.colors.text_primary)
-                            .text_size(px(12.0))
-                            .text_ellipsis()
-                            .child(value.clone()),
-                    )
-            }))
+                    .absolute()
+                    .top_0()
+                    .right_0()
+                    .bottom_0()
+                    .w(px(8.0))
+                    .child(Scrollbar::vertical(&self.headers_scroll_handle)),
+            )
+            .into_any_element()
     }
 }

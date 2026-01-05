@@ -1,8 +1,14 @@
+use std::rc::Rc;
+
 use gpui::prelude::*;
 use gpui::{
-    div, px, AnyElement, App, Entity, FocusHandle, Focusable, IntoElement, Render, Styled, Window,
+    div, px, size, AnyElement, App, Context, ElementId, Entity, FocusHandle, Focusable,
+    IntoElement, Pixels, Render, SharedString, Size, Styled, Window,
 };
 use gpui_component::input::{Input, InputState};
+use gpui_component::scroll::Scrollbar;
+use gpui_component::v_virtual_list;
+use gpui_component::VirtualListScrollHandle;
 
 use crate::entities::{RequestEntity, RequestEvent};
 use crate::theme::Theme;
@@ -23,6 +29,8 @@ pub struct RequestView {
     active_tab: RequestTab,
     body_editor: Option<Entity<InputState>>,
     focus_handle: FocusHandle,
+    /// Virtual list scroll handle for headers tab
+    headers_scroll_handle: VirtualListScrollHandle,
 }
 
 impl RequestView {
@@ -37,6 +45,7 @@ impl RequestView {
             active_tab: RequestTab::Body,
             body_editor: None,
             focus_handle: cx.focus_handle(),
+            headers_scroll_handle: VirtualListScrollHandle::new(),
         }
     }
 
@@ -155,7 +164,9 @@ impl RequestView {
         match self.active_tab {
             RequestTab::Body => self.render_body_tab(theme).into_any_element(),
             RequestTab::Params => self.render_params_tab(theme).into_any_element(),
-            RequestTab::Headers => self.render_headers_tab(theme, request).into_any_element(),
+            RequestTab::Headers => self
+                .render_headers_tab(theme, request, cx)
+                .into_any_element(),
             RequestTab::Auth => self.render_auth_tab(theme).into_any_element(),
         }
     }
@@ -193,54 +204,128 @@ impl RequestView {
             .child("No query parameters")
     }
 
-    fn render_headers_tab(&self, theme: &Theme, request: &RequestEntity) -> impl IntoElement {
-        let headers = request.headers();
+    fn render_headers_tab(
+        &self,
+        theme: &Theme,
+        request: &RequestEntity,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        // Get headers and convert to Vec for indexing
+        let headers: Vec<(String, String)> = request
+            .headers()
+            .iter()
+            .map(|h| (h.key.clone(), h.value.clone()))
+            .collect();
+        let header_count = headers.len();
+
+        if header_count == 0 {
+            return div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .flex_1()
+                .w_full()
+                .text_color(theme.colors.text_muted)
+                .text_size(px(12.0))
+                .child("No headers")
+                .into_any_element();
+        }
+
+        // Fixed row height for consistent virtual list
+        let row_height = px(40.0);
+        let item_sizes: Rc<Vec<Size<Pixels>>> = Rc::new(
+            (0..header_count)
+                .map(|_| size(px(600.0), row_height))
+                .collect(),
+        );
+
+        let bg_primary = theme.colors.bg_secondary;
+        let bg_alternate = theme.colors.bg_tertiary;
+        let border_color = theme.colors.border_primary.opacity(0.3);
+        let key_color = theme.colors.accent;
+        let value_color = theme.colors.text_primary;
 
         div()
+            .id("request-headers-virtual-container")
+            .relative()
             .flex()
             .flex_col()
             .flex_1()
             .w_full()
-            .gap(px(4.0))
-            .when(headers.is_empty(), |el| {
-                el.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .flex_1()
-                        .min_h(px(100.0))
-                        .text_color(theme.colors.text_muted)
-                        .text_size(px(12.0))
-                        .child("No headers"),
+            .overflow_hidden()
+            .bg(theme.colors.bg_tertiary)
+            .child(
+                v_virtual_list(
+                    cx.entity().clone(),
+                    "request-headers-list",
+                    item_sizes.clone(),
+                    move |_view, visible_range, _window, _cx| {
+                        let headers = headers.clone();
+                        visible_range
+                            .map(|idx| {
+                                let (key, value) = &headers[idx];
+                                let bg_color = if idx % 2 == 0 {
+                                    bg_primary
+                                } else {
+                                    bg_alternate
+                                };
+
+                                div()
+                                    .id(ElementId::from(SharedString::from(format!(
+                                        "req-header-row-{}",
+                                        idx
+                                    ))))
+                                    .w_full()
+                                    .h(row_height)
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .px(px(16.0))
+                                    .bg(bg_color)
+                                    .border_b_1()
+                                    .border_color(border_color)
+                                    // Key column - fixed width with accent color
+                                    .child(
+                                        div()
+                                            .w(px(180.0))
+                                            .min_w(px(180.0))
+                                            .pr(px(12.0))
+                                            .text_color(key_color)
+                                            .text_size(px(12.0))
+                                            .font_weight(gpui::FontWeight::MEDIUM)
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .child(key.clone()),
+                                    )
+                                    // Value column - fills remaining
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .text_color(value_color)
+                                            .text_size(px(12.0))
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .child(value.clone()),
+                                    )
+                            })
+                            .collect()
+                    },
                 )
-            })
-            .children(headers.iter().map(|header| {
+                .flex_1()
+                .track_scroll(&self.headers_scroll_handle),
+            )
+            // Scrollbar overlay
+            .child(
                 div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(8.0))
-                    .py(px(8.0))
-                    .px(px(12.0))
-                    .bg(theme.colors.bg_tertiary)
-                    .rounded(px(4.0))
-                    .child(
-                        div()
-                            .w(px(140.0))
-                            .text_color(theme.colors.accent)
-                            .text_size(px(12.0))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .child(header.key.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_color(theme.colors.text_primary)
-                            .text_size(px(12.0))
-                            .child(header.value.clone()),
-                    )
-            }))
+                    .absolute()
+                    .top_0()
+                    .right_0()
+                    .bottom_0()
+                    .w(px(8.0))
+                    .child(Scrollbar::vertical(&self.headers_scroll_handle)),
+            )
+            .into_any_element()
     }
 
     fn render_auth_tab(&self, theme: &Theme) -> impl IntoElement {
