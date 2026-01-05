@@ -1,5 +1,5 @@
 use gpui::App;
-use gpui_component::Theme as GpuiTheme;
+use gpui_component::{highlighter::HighlightTheme, Theme as GpuiTheme};
 
 use super::Colors;
 
@@ -107,6 +107,14 @@ pub fn apply_setu_theme(cx: &mut App) {
 
     // Caret (cursor in inputs)
     theme.caret = colors.accent;
+
+    theme.highlight_theme = HighlightTheme::default_dark();
+    let highlight_theme = std::sync::Arc::make_mut(&mut theme.highlight_theme);
+    highlight_theme.style.editor_background = Some(colors.bg_tertiary);
+    highlight_theme.style.editor_foreground = Some(colors.text_primary);
+    highlight_theme.style.editor_active_line = Some(colors.bg_elevated);
+    highlight_theme.style.editor_line_number = Some(colors.text_muted);
+    highlight_theme.style.editor_active_line_number = Some(colors.accent);
 }
 
 /// Light theme variant (for future use)
