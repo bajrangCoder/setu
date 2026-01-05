@@ -1,16 +1,12 @@
-use std::rc::Rc;
-
 use gpui::prelude::*;
 use gpui::{
-    div, px, size, AnyElement, App, Context, ElementId, Entity, FocusHandle, Focusable,
-    IntoElement, Pixels, Render, SharedString, Size, Styled, Window,
+    div, px, AnyElement, App, Context, Entity, FocusHandle, Focusable, IntoElement, Render, Styled,
+    Window,
 };
 use gpui_component::input::{Input, InputState};
-use gpui_component::scroll::Scrollbar;
-use gpui_component::v_virtual_list;
-use gpui_component::VirtualListScrollHandle;
 
-use crate::entities::{RequestEntity, RequestEvent};
+use crate::components::{AuthEditor, BodyType, BodyTypeSelector, HeaderEditor, ParamsEditor};
+use crate::entities::{Header, RequestBody, RequestEntity, RequestEvent};
 use crate::theme::Theme;
 
 /// Active tab in the request panel
@@ -28,9 +24,14 @@ pub struct RequestView {
     pub request: Entity<RequestEntity>,
     active_tab: RequestTab,
     body_editor: Option<Entity<InputState>>,
+    body_type: BodyType,
+    /// Last body type applied to the editor (for syntax highlighting)
+    last_applied_body_type: BodyType,
+    body_type_selector: Option<Entity<BodyTypeSelector>>,
+    header_editor: Option<Entity<HeaderEditor>>,
+    params_editor: Option<Entity<ParamsEditor>>,
+    auth_editor: Option<Entity<AuthEditor>>,
     focus_handle: FocusHandle,
-    /// Virtual list scroll handle for headers tab
-    headers_scroll_handle: VirtualListScrollHandle,
 }
 
 impl RequestView {
@@ -44,15 +45,22 @@ impl RequestView {
             request,
             active_tab: RequestTab::Body,
             body_editor: None,
+            body_type: BodyType::Json,
+            last_applied_body_type: BodyType::Json,
+            body_type_selector: None,
+            header_editor: None,
+            params_editor: None,
+            auth_editor: None,
             focus_handle: cx.focus_handle(),
-            headers_scroll_handle: VirtualListScrollHandle::new(),
         }
     }
 
     /// Initialize the body editor with Window access
     fn ensure_body_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let syntax_lang = self.body_type.syntax_language();
+
         if self.body_editor.is_none() {
-            // Create code editor with JSON syntax highlighting
+            // Create code editor with current body type syntax highlighting
             let initial_content = r#"{
   "name": "example",
   "value": 123
@@ -60,19 +68,165 @@ impl RequestView {
 
             let body_editor = cx.new(|cx| {
                 InputState::new(window, cx)
-                    .code_editor("json")
+                    .code_editor(syntax_lang)
                     .line_number(true)
                     .searchable(true)
                     .default_value(initial_content)
             });
 
             self.body_editor = Some(body_editor);
+            self.last_applied_body_type = self.body_type;
+        } else if self.body_type != self.last_applied_body_type {
+            // Body type changed, update syntax highlighting
+            if let Some(ref body_editor) = self.body_editor {
+                // Get current text, change highlighter, then re-set the text to force refresh
+                let current_text = body_editor.read(cx).text().to_string();
+                body_editor.update(cx, |state, cx| {
+                    state.set_highlighter(syntax_lang, cx);
+                    // Force refresh by re-setting the value - this triggers _pending_update
+                    state.set_value(current_text, window, cx);
+                });
+                self.last_applied_body_type = self.body_type;
+            }
+        }
+    }
+
+    /// Ensure editors are initialized
+    fn ensure_editors(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // First, ensure header editor is created
+        if self.header_editor.is_none() {
+            let request = self.request.clone();
+            self.header_editor = Some(cx.new(|cx| HeaderEditor::new(request, cx)));
+        }
+
+        // Check if body type changed BEFORE updating syntax (which updates last_applied_body_type)
+        let body_type_changed = self.body_type != self.last_applied_body_type;
+
+        // Update Content-Type header when body type changes
+        if body_type_changed {
+            if let Some(content_type) = self.body_type.content_type() {
+                if let Some(ref header_editor) = self.header_editor {
+                    header_editor.update(cx, |editor, cx| {
+                        editor.set_or_update_header("Content-Type", content_type, window, cx);
+                    });
+                }
+            }
+        }
+
+        // Now update body editor (which will update last_applied_body_type)
+        self.ensure_body_editor(window, cx);
+
+        if self.body_type_selector.is_none() {
+            let selector = cx.new(|cx| BodyTypeSelector::new(cx));
+
+            // Subscribe to body type changes
+            cx.subscribe(
+                &selector,
+                |this, _selector, event: &crate::components::BodyTypeChanged, cx| {
+                    this.body_type = event.0;
+                    // Notify to update headers (Content-Type will be added automatically)
+                    cx.notify();
+                },
+            )
+            .detach();
+
+            self.body_type_selector = Some(selector);
+        }
+
+        if self.params_editor.is_none() {
+            self.params_editor = Some(cx.new(|cx| ParamsEditor::new(cx)));
+        }
+
+        if self.auth_editor.is_none() {
+            self.auth_editor = Some(cx.new(|cx| AuthEditor::new(cx)));
         }
     }
 
     pub fn set_tab(&mut self, tab: RequestTab, cx: &mut Context<Self>) {
         self.active_tab = tab;
         cx.notify();
+    }
+
+    /// Get body content from editor
+    pub fn get_body_content(&self, cx: &App) -> Option<String> {
+        self.body_editor
+            .as_ref()
+            .map(|editor| editor.read(cx).text().to_string())
+    }
+
+    /// Get the request body with proper type
+    pub fn get_request_body(&self, cx: &App) -> RequestBody {
+        let content = self.get_body_content(cx).unwrap_or_default();
+
+        match self.body_type {
+            BodyType::None => RequestBody::None,
+            BodyType::Json => RequestBody::Json(content),
+            BodyType::Text | BodyType::Html | BodyType::Xml => RequestBody::Text(content),
+            BodyType::FormUrlEncoded | BodyType::FormData => {
+                // Parse form data from content
+                let mut form_data = std::collections::HashMap::new();
+                for line in content.lines() {
+                    if let Some((key, value)) = line.split_once('=') {
+                        form_data.insert(key.trim().to_string(), value.trim().to_string());
+                    }
+                }
+                RequestBody::FormData(form_data)
+            }
+        }
+    }
+
+    /// Get all headers including auth headers
+    pub fn get_all_headers(&self, cx: &App) -> Vec<Header> {
+        let mut headers = Vec::new();
+
+        // Get headers from header editor
+        if let Some(ref editor) = self.header_editor {
+            headers.extend(editor.read(cx).get_headers(cx));
+        }
+
+        // Add Content-Type header based on body type
+        if let Some(content_type) = self.body_type.content_type() {
+            // Check if Content-Type is already present
+            if !headers
+                .iter()
+                .any(|h| h.key.to_lowercase() == "content-type")
+            {
+                headers.push(Header::new("Content-Type", content_type));
+            }
+        }
+
+        // Add auth header if applicable
+        if let Some(ref auth_editor) = self.auth_editor {
+            let config = auth_editor.read(cx).get_config(cx);
+            if let Some((key, value)) = config.to_header() {
+                headers.push(Header::new(key, value));
+            }
+        }
+
+        headers
+    }
+
+    /// Sync body to request entity
+    pub fn sync_body_to_request(&self, cx: &mut Context<Self>) {
+        let body = self.get_request_body(cx);
+        self.request.update(cx, |req, cx| {
+            req.set_body(body, cx);
+        });
+    }
+
+    /// Sync headers to request entity
+    pub fn sync_headers_to_request(&self, cx: &mut Context<Self>) {
+        let headers = self.get_all_headers(cx);
+        self.request.update(cx, |req, cx| {
+            // Clear existing headers
+            while !req.headers().is_empty() {
+                req.remove_header(0, cx);
+            }
+            // Add new headers
+            for header in headers {
+                req.add_header(header, cx);
+            }
+        });
     }
 }
 
@@ -84,8 +238,8 @@ impl Focusable for RequestView {
 
 impl Render for RequestView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Ensure body editor is initialized
-        self.ensure_body_editor(window, cx);
+        // Ensure all editors are initialized
+        self.ensure_editors(window, cx);
 
         let theme = Theme::dark();
         let this = cx.entity().clone();
@@ -175,7 +329,7 @@ impl RequestView {
     fn render_body_tab(&self, _theme: &Theme) -> impl IntoElement {
         let theme = Theme::dark();
 
-        // Clean minimal container
+        // Container with body type selector and editor
         div()
             .id("request-body-editor")
             .flex()
@@ -183,163 +337,62 @@ impl RequestView {
             .flex_1()
             .w_full()
             .h_full()
-            .overflow_y_scroll()
-            .overflow_x_hidden()
-            .bg(theme.colors.bg_tertiary)
-            .when_some(self.body_editor.as_ref(), |el, editor| {
-                el.child(Input::new(editor).appearance(false).size_full())
+            .overflow_hidden()
+            // Body type selector
+            .when_some(self.body_type_selector.as_ref(), |el, selector| {
+                el.child(selector.clone())
             })
+            // Body editor
+            .child(
+                div()
+                    .id("request-body-editor-scroll")
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .bg(theme.colors.bg_tertiary)
+                    .when_some(self.body_editor.as_ref(), |el, editor| {
+                        el.child(Input::new(editor).appearance(false).size_full())
+                    }),
+            )
     }
 
-    fn render_params_tab(&self, theme: &Theme) -> impl IntoElement {
+    fn render_params_tab(&self, _theme: &Theme) -> impl IntoElement {
         div()
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .flex_1()
-            .w_full()
-            .min_h(px(100.0))
-            .text_color(theme.colors.text_muted)
-            .text_size(px(12.0))
-            .child("No query parameters")
-    }
-
-    fn render_headers_tab(
-        &self,
-        theme: &Theme,
-        request: &RequestEntity,
-        cx: &Context<Self>,
-    ) -> impl IntoElement {
-        // Get headers and convert to Vec for indexing
-        let headers: Vec<(String, String)> = request
-            .headers()
-            .iter()
-            .map(|h| (h.key.clone(), h.value.clone()))
-            .collect();
-        let header_count = headers.len();
-
-        if header_count == 0 {
-            return div()
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .flex_1()
-                .w_full()
-                .text_color(theme.colors.text_muted)
-                .text_size(px(12.0))
-                .child("No headers")
-                .into_any_element();
-        }
-
-        // Fixed row height for consistent virtual list
-        let row_height = px(40.0);
-        let item_sizes: Rc<Vec<Size<Pixels>>> = Rc::new(
-            (0..header_count)
-                .map(|_| size(px(600.0), row_height))
-                .collect(),
-        );
-
-        let bg_primary = theme.colors.bg_secondary;
-        let bg_alternate = theme.colors.bg_tertiary;
-        let border_color = theme.colors.border_primary.opacity(0.3);
-        let key_color = theme.colors.accent;
-        let value_color = theme.colors.text_primary;
-
-        div()
-            .id("request-headers-virtual-container")
-            .relative()
             .flex()
             .flex_col()
             .flex_1()
             .w_full()
             .overflow_hidden()
-            .bg(theme.colors.bg_tertiary)
-            .child(
-                v_virtual_list(
-                    cx.entity().clone(),
-                    "request-headers-list",
-                    item_sizes.clone(),
-                    move |_view, visible_range, _window, _cx| {
-                        let headers = headers.clone();
-                        visible_range
-                            .map(|idx| {
-                                let (key, value) = &headers[idx];
-                                let bg_color = if idx % 2 == 0 {
-                                    bg_primary
-                                } else {
-                                    bg_alternate
-                                };
-
-                                div()
-                                    .id(ElementId::from(SharedString::from(format!(
-                                        "req-header-row-{}",
-                                        idx
-                                    ))))
-                                    .w_full()
-                                    .h(row_height)
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .px(px(16.0))
-                                    .bg(bg_color)
-                                    .border_b_1()
-                                    .border_color(border_color)
-                                    // Key column
-                                    .child(
-                                        div()
-                                            .w(px(180.0))
-                                            .min_w(px(180.0))
-                                            .pr(px(12.0))
-                                            .text_color(key_color)
-                                            .text_size(px(12.0))
-                                            .font_weight(gpui::FontWeight::MEDIUM)
-                                            .overflow_hidden()
-                                            .text_ellipsis()
-                                            .child(key.clone()),
-                                    )
-                                    // Value column
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .text_color(value_color)
-                                            .text_size(px(12.0))
-                                            .overflow_hidden()
-                                            .text_ellipsis()
-                                            .child(value.clone()),
-                                    )
-                            })
-                            .collect()
-                    },
-                )
-                .flex_1()
-                .track_scroll(&self.headers_scroll_handle),
-            )
-            // Scrollbar overlay
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .right_0()
-                    .bottom_0()
-                    .w(px(8.0))
-                    .child(Scrollbar::vertical(&self.headers_scroll_handle)),
-            )
-            .into_any_element()
+            .when_some(self.params_editor.as_ref(), |el, editor| {
+                el.child(editor.clone())
+            })
     }
 
-    fn render_auth_tab(&self, theme: &Theme) -> impl IntoElement {
+    fn render_headers_tab(
+        &self,
+        _theme: &Theme,
+        _request: &RequestEntity,
+        _cx: &Context<Self>,
+    ) -> impl IntoElement {
         div()
             .flex()
             .flex_col()
-            .items_center()
-            .justify_center()
             .flex_1()
             .w_full()
-            .min_h(px(100.0))
-            .text_color(theme.colors.text_muted)
-            .text_size(px(12.0))
-            .child("No authentication")
+            .overflow_hidden()
+            .when_some(self.header_editor.as_ref(), |el, header_editor| {
+                el.child(header_editor.clone())
+            })
+    }
+
+    fn render_auth_tab(&self, _theme: &Theme) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .w_full()
+            .overflow_hidden()
+            .when_some(self.auth_editor.as_ref(), |el, editor| {
+                el.child(editor.clone())
+            })
     }
 }

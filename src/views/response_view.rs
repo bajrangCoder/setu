@@ -76,11 +76,12 @@ impl ResponseView {
             self.body_display = Some(body_display);
             self.last_body_content = current_content;
         } else if current_content != self.last_body_content {
-            // Content has changed, update the display
+            // Content has changed, use set_value to completely replace and reset
             if let Some(ref body_display) = self.body_display {
                 let content = current_content.clone();
                 body_display.update(cx, |state, cx| {
-                    state.replace(&content, window, cx);
+                    // Use set_value instead of replace - it properly clears and resets scroll
+                    state.set_value(content, window, cx);
                 });
                 self.last_body_content = current_content;
             }

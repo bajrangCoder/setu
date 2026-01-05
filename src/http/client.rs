@@ -80,9 +80,18 @@ impl HttpClient {
         request = match body {
             RequestBody::None => request,
             RequestBody::Text(text) => request.body(text.clone()),
-            RequestBody::Json(json) => request
-                .header("Content-Type", "application/json")
-                .body(json.clone()),
+            RequestBody::Json(json) => {
+                let normalized_json = match serde_json::from_str::<serde_json::Value>(json) {
+                    Ok(value) => serde_json::to_string(&value).unwrap_or_else(|_| json.clone()),
+                    Err(e) => {
+                        log::warn!("Invalid JSON, sending as-is: {}", e);
+                        json.clone()
+                    }
+                };
+                request
+                    .header("Content-Type", "application/json")
+                    .body(normalized_json)
+            }
             // For form data, serialize as JSON for now
             RequestBody::FormData(data) => request
                 .header("Content-Type", "application/json")

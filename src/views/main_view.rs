@@ -192,6 +192,12 @@ impl MainView {
             return;
         }
 
+        // Sync body and headers from RequestView to RequestEntity
+        self.request_view.update(cx, |view, cx| {
+            view.sync_body_to_request(cx);
+            view.sync_headers_to_request(cx);
+        });
+
         // Mark as sending
         request_entity.update(cx, |req, cx| {
             req.set_sending(true, cx);
@@ -208,6 +214,14 @@ impl MainView {
         let body: RequestBody = request.body().clone();
 
         log::info!("Sending {} request to: {}", method.as_str(), url);
+        log::info!(
+            "Headers: {:?}",
+            headers
+                .iter()
+                .map(|h| format!("{}: {}", h.key, h.value))
+                .collect::<Vec<_>>()
+        );
+        log::info!("Body: {:?}", body);
 
         // Execute HTTP request synchronously
         let result = self.http_client.execute_sync(method, &url, &headers, &body);
