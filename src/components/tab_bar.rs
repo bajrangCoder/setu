@@ -200,7 +200,7 @@ impl IntoElement for Tab {
                     callback(event, window, cx);
                 })
             })
-            // Method badge - colored
+            // Method badge
             .child(
                 div()
                     .text_color(method_color)
@@ -219,8 +219,9 @@ impl IntoElement for Tab {
                     .text_size(px(11.0))
                     .child(self.info.name),
             )
-            // Close button on active tab
-            .when_some(self.on_close.filter(|_| is_active), |el, on_close| {
+            // Close button
+            .group("tab")
+            .when_some(self.on_close, |el, on_close| {
                 el.child(
                     div()
                         .id(("tab-close", tab_id))
@@ -234,6 +235,10 @@ impl IntoElement for Tab {
                         .text_color(theme.colors.text_muted)
                         .text_size(px(10.0))
                         .cursor_pointer()
+                        // Hide by default for inactive tabs, show on group hover
+                        .when(!is_active, |s| {
+                            s.invisible().group_hover("tab", |s| s.visible())
+                        })
                         .hover(|s| {
                             s.bg(theme.colors.bg_secondary)
                                 .text_color(theme.colors.text_secondary)
