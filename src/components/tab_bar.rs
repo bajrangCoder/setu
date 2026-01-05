@@ -32,7 +32,7 @@ impl TabInfo {
     }
 }
 
-/// Tab bar component
+/// Tab bar component - original custom implementation with colored method badges
 #[derive(IntoElement)]
 pub struct TabBar {
     tabs: Vec<TabInfo>,
@@ -115,7 +115,7 @@ impl RenderOnce for TabBar {
     }
 }
 
-/// Single tab component with click handler
+/// Single tab component with click handler - custom styled with colored method badge
 pub struct Tab {
     info: TabInfo,
     on_click: Option<Box<dyn Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static>>,
@@ -179,7 +179,7 @@ impl IntoElement for Tab {
                     callback(event, window, cx);
                 })
             })
-            // Method badge
+            // Method badge - colored
             .child(
                 div()
                     .text_color(method_color)

@@ -89,14 +89,14 @@ impl Render for RequestView {
             .overflow_hidden()
             // Tab bar with click handlers
             .child(self.render_tabs(&theme, this))
-            // Tab content - scrollable
+            // Tab content - fills available space
             .child(
                 div()
                     .id("request-content")
                     .flex_1()
-                    .px(px(16.0))
-                    .py(px(12.0))
-                    .overflow_scroll()
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
                     .child(self.render_tab_content(&theme, cx)),
             )
     }
@@ -163,14 +163,19 @@ impl RequestView {
     fn render_body_tab(&self, _theme: &Theme) -> impl IntoElement {
         let theme = Theme::dark();
 
+        // Clean minimal container - no padding before line numbers
         div()
+            .id("request-body-editor")
+            .flex()
+            .flex_col()
+            .flex_1()
             .w_full()
-            .h(px(250.0))
+            .h_full()
+            .overflow_y_scroll()
+            .overflow_x_hidden()
             .bg(theme.colors.bg_tertiary)
-            .rounded(px(4.0))
-            .overflow_hidden()
             .when_some(self.body_editor.as_ref(), |el, editor| {
-                el.child(Input::new(editor).appearance(false).h_full())
+                el.child(Input::new(editor).appearance(false).size_full())
             })
     }
 

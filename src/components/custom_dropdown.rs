@@ -1,3 +1,7 @@
+// Setu Method Dropdown
+// Provides HTTP method selection with consistent theming
+// Uses gpui-component DropdownButton but keeps custom implementation for method selection
+
 use gpui::prelude::*;
 use gpui::{div, px, App, Entity, IntoElement, SharedString, Styled, Window};
 use gpui_component::IconName;
@@ -60,6 +64,19 @@ impl MethodDropdownState {
     }
 }
 
+/// Helper function to get method color
+fn method_color(method: HttpMethod, theme: &Theme) -> gpui::Hsla {
+    match method {
+        HttpMethod::Get => theme.colors.method_get,
+        HttpMethod::Post => theme.colors.method_post,
+        HttpMethod::Put => theme.colors.method_put,
+        HttpMethod::Delete => theme.colors.method_delete,
+        HttpMethod::Patch => theme.colors.method_patch,
+        HttpMethod::Head => theme.colors.method_head,
+        HttpMethod::Options => theme.colors.method_options,
+    }
+}
+
 /// Just the trigger button for the dropdown (renders in UrlBar)
 #[derive(IntoElement)]
 pub struct MethodDropdownTrigger {
@@ -70,18 +87,6 @@ impl MethodDropdownTrigger {
     pub fn new(state: Entity<MethodDropdownState>) -> Self {
         Self { state }
     }
-
-    fn method_color(method: HttpMethod, theme: &Theme) -> gpui::Hsla {
-        match method {
-            HttpMethod::Get => theme.colors.method_get,
-            HttpMethod::Post => theme.colors.method_post,
-            HttpMethod::Put => theme.colors.method_put,
-            HttpMethod::Delete => theme.colors.method_delete,
-            HttpMethod::Patch => theme.colors.method_patch,
-            HttpMethod::Head => theme.colors.method_head,
-            HttpMethod::Options => theme.colors.method_options,
-        }
-    }
 }
 
 impl RenderOnce for MethodDropdownTrigger {
@@ -90,7 +95,7 @@ impl RenderOnce for MethodDropdownTrigger {
         let state = self.state.read(cx);
         let selected = state.selected;
         let is_open = state.is_open;
-        let method_color = Self::method_color(selected, &theme);
+        let color = method_color(selected, &theme);
 
         let state_entity = self.state.clone();
 
@@ -109,7 +114,7 @@ impl RenderOnce for MethodDropdownTrigger {
             })
             .child(
                 div()
-                    .text_color(method_color)
+                    .text_color(color)
                     .font_weight(gpui::FontWeight::BOLD)
                     .text_size(px(11.0))
                     .child(selected.as_str()),
@@ -127,6 +132,7 @@ impl RenderOnce for MethodDropdownTrigger {
     }
 }
 
+/// Overlay dropdown menu for method selection
 #[derive(IntoElement)]
 pub struct MethodDropdownOverlay {
     state: Entity<MethodDropdownState>,
@@ -139,18 +145,6 @@ impl MethodDropdownOverlay {
         request: Entity<crate::entities::RequestEntity>,
     ) -> Self {
         Self { state, request }
-    }
-
-    fn method_color(method: HttpMethod, theme: &Theme) -> gpui::Hsla {
-        match method {
-            HttpMethod::Get => theme.colors.method_get,
-            HttpMethod::Post => theme.colors.method_post,
-            HttpMethod::Put => theme.colors.method_put,
-            HttpMethod::Delete => theme.colors.method_delete,
-            HttpMethod::Patch => theme.colors.method_patch,
-            HttpMethod::Head => theme.colors.method_head,
-            HttpMethod::Options => theme.colors.method_options,
-        }
     }
 }
 
@@ -197,7 +191,7 @@ impl RenderOnce for MethodDropdownOverlay {
                 ]
                 .into_iter()
                 .map(|method| {
-                    let method_color = Self::method_color(method, &theme);
+                    let color = method_color(method, &theme);
                     let is_selected = method == selected;
                     let state = state_entity.clone();
                     let request = request_entity.clone();
@@ -209,7 +203,7 @@ impl RenderOnce for MethodDropdownOverlay {
                         .px(px(14.0))
                         .py(px(10.0))
                         .cursor_pointer()
-                        .text_color(method_color)
+                        .text_color(color)
                         .font_weight(gpui::FontWeight::BOLD)
                         .text_size(px(12.0))
                         .when(is_selected, |s| s.bg(theme.colors.bg_tertiary))

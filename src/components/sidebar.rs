@@ -1,10 +1,17 @@
+// Setu Sidebar - using gpui-component's Sidebar components
+// Provides a collapsible history sidebar with consistent theming
+
 use gpui::prelude::*;
 use gpui::{div, px, App, IntoElement, Styled, Window};
+use gpui_component::sidebar::{
+    Sidebar as GpuiSidebar, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem,
+};
+use gpui_component::Side;
 
 use crate::entities::{HistoryEntry, HttpMethod};
 use crate::theme::Theme;
 
-/// Sidebar component
+/// Sidebar component using gpui-component's Sidebar
 #[derive(IntoElement)]
 pub struct Sidebar {
     history: Vec<HistoryEntry>,
@@ -23,67 +30,66 @@ impl Sidebar {
         self.is_visible = visible;
         self
     }
+
+    fn method_color(method: &HttpMethod, theme: &Theme) -> gpui::Hsla {
+        match method {
+            HttpMethod::Get => theme.colors.method_get,
+            HttpMethod::Post => theme.colors.method_post,
+            HttpMethod::Put => theme.colors.method_put,
+            HttpMethod::Delete => theme.colors.method_delete,
+            HttpMethod::Patch => theme.colors.method_patch,
+            HttpMethod::Head => theme.colors.method_head,
+            HttpMethod::Options => theme.colors.method_options,
+        }
+    }
 }
 
 impl RenderOnce for Sidebar {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let theme = Theme::dark();
 
-        div()
-            .when(!self.is_visible, |s| s.hidden())
-            .flex()
-            .flex_col()
-            .w(px(240.0))
-            .h_full()
-            .bg(theme.colors.bg_secondary)
-            .border_r_1()
-            .border_color(theme.colors.border_primary)
-            // Header - minimal
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .h(px(44.0))
-                    .px(px(12.0))
-                    .child(
-                        div()
-                            .text_color(theme.colors.text_muted)
-                            .text_size(px(11.0))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .child("HISTORY"),
-                    ),
+        if !self.is_visible {
+            return div().into_any_element();
+        }
+
+        // Build sidebar menu items from history
+        let menu_items: Vec<SidebarMenuItem> = self
+            .history
+            .iter()
+            .map(|entry| {
+                let display_name = entry.display_name();
+                let method_str = entry.request.method.as_str();
+                // Combine method and path for display
+                let label = format!("{} {}", method_str, display_name);
+
+                SidebarMenuItem::new(label)
+            })
+            .collect();
+
+        GpuiSidebar::new(Side::Left)
+            .header(
+                SidebarHeader::new().child(
+                    div()
+                        .text_color(theme.colors.text_muted)
+                        .text_size(px(11.0))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .child("HISTORY"),
+                ),
             )
-            // History list
-            .child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .flex_col()
-                    .overflow_hidden()
-                    .when(self.history.is_empty(), |el| {
-                        el.child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .items_center()
-                                .justify_center()
-                                .flex_1()
-                                .text_color(theme.colors.text_placeholder)
-                                .text_size(px(11.0))
-                                .child("No history yet"),
-                        )
-                    })
-                    .children(
-                        self.history
-                            .into_iter()
-                            .map(|entry| HistoryItem::new(entry)),
-                    ),
-            )
+            .child(if menu_items.is_empty() {
+                // Show empty state
+                SidebarGroup::new("Requests").child(
+                    SidebarMenu::new().child(SidebarMenuItem::new("No history yet").disable(true)),
+                )
+            } else {
+                // Show history items
+                SidebarGroup::new("Requests").child(SidebarMenu::new().children(menu_items))
+            })
+            .into_any_element()
     }
 }
 
-/// Single history item - compact
+/// Single history item - kept for reference/alternate usage
 #[derive(IntoElement)]
 pub struct HistoryItem {
     entry: HistoryEntry,

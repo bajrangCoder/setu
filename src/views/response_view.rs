@@ -244,14 +244,14 @@ impl ResponseView {
                     )
                     .child(self.render_tabs(theme, this)),
             )
-            // Content - scrollable
+            // Content - fills remaining space
             .child(
                 div()
-                    .id("response-content")
+                    .id("response-content-wrapper")
                     .flex_1()
-                    .overflow_scroll()
-                    .px(px(16.0))
-                    .py(px(12.0))
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
                     .child(self.render_tab_content(theme, data)),
             )
     }
@@ -294,14 +294,17 @@ impl ResponseView {
     }
 
     fn render_body_tab(&self, theme: &Theme) -> impl IntoElement {
+        // Clean minimal container - no padding before line numbers
         div()
+            .id("body-scroll-container")
             .flex()
+            .flex_col()
             .flex_1()
             .w_full()
+            .h_full()
+            .overflow_y_scroll()
+            .overflow_x_hidden()
             .bg(theme.colors.bg_tertiary)
-            .rounded(px(6.0))
-            .p(px(12.0))
-            .min_h(px(150.0))
             .when_some(self.body_display.as_ref(), |el, editor| {
                 el.child(Input::new(editor).appearance(false).size_full())
             })
@@ -314,7 +317,9 @@ impl ResponseView {
             .flex_col()
             .flex_1()
             .w_full()
-            .overflow_scroll()
+            .h_full()
+            .overflow_y_scroll()
+            .overflow_x_hidden()
             .bg(theme.colors.bg_tertiary)
             .rounded(px(6.0))
             .children(data.headers.iter().enumerate().map(|(idx, (key, value))| {
