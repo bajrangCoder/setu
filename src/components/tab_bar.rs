@@ -78,12 +78,19 @@ impl RenderOnce for TabBar {
                             .children(self.tabs.into_iter().map(|tab| {
                                 let index = tab.index;
                                 let main_view_for_click = main_view.clone();
+                                let main_view_for_close = main_view.clone();
 
-                                Tab::new(tab).on_click(move |_event, _window, cx| {
-                                    main_view_for_click.update(cx, |view, cx| {
-                                        view.switch_tab(index, cx);
-                                    });
-                                })
+                                Tab::new(tab)
+                                    .on_click(move |_event, _window, cx| {
+                                        main_view_for_click.update(cx, |view, cx| {
+                                            view.switch_tab(index, cx);
+                                        });
+                                    })
+                                    .on_close(move |_event, _window, cx| {
+                                        main_view_for_close.update(cx, |view, cx| {
+                                            view.close_tab(index, cx);
+                                        });
+                                    })
                             })),
                     ),
             )
@@ -119,6 +126,7 @@ impl RenderOnce for TabBar {
 pub struct Tab {
     info: TabInfo,
     on_click: Option<Box<dyn Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static>>,
+    on_close: Option<Box<dyn Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static>>,
 }
 
 impl Tab {
@@ -126,6 +134,7 @@ impl Tab {
         Self {
             info,
             on_click: None,
+            on_close: None,
         }
     }
 
@@ -134,6 +143,14 @@ impl Tab {
         callback: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_click = Some(Box::new(callback));
+        self
+    }
+
+    pub fn on_close(
+        mut self,
+        callback: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_close = Some(Box::new(callback));
         self
     }
 
@@ -199,9 +216,10 @@ impl IntoElement for Tab {
                     .child(self.info.name),
             )
             // Close button on active tab
-            .when(is_active, |s| {
-                s.child(
+            .when_some(self.on_close.filter(|_| is_active), |el, on_close| {
+                el.child(
                     div()
+                        .id(("tab-close", tab_id))
                         .ml(px(4.0))
                         .w(px(14.0))
                         .h(px(14.0))
@@ -211,9 +229,15 @@ impl IntoElement for Tab {
                         .rounded(px(2.0))
                         .text_color(theme.colors.text_muted)
                         .text_size(px(10.0))
+                        .cursor_pointer()
                         .hover(|s| {
                             s.bg(theme.colors.bg_secondary)
                                 .text_color(theme.colors.text_secondary)
+                        })
+                        .on_click(move |event, window, cx| {
+                            // Stop propagation to prevent tab switch
+                            cx.stop_propagation();
+                            on_close(event, window, cx);
                         })
                         .child(IconName::Close),
                 )
