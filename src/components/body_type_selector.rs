@@ -81,6 +81,7 @@ pub struct BodyTypeSelector {
     focus_handle: FocusHandle,
 }
 
+#[allow(dead_code)]
 impl BodyTypeSelector {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {

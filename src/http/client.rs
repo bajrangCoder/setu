@@ -135,15 +135,19 @@ async fn execute_request(
         }
     }
 
-    // Get body
-    let body = response.text().await.unwrap_or_default();
-    let body_size_bytes = body.len();
+    // Get body as bytes first
+    let body_bytes = response.bytes().await?.to_vec();
+    let body_size_bytes = body_bytes.len();
+
+    // Always convert to string (lossy for binary)
+    let body = String::from_utf8_lossy(&body_bytes).to_string();
 
     Ok(ResponseData {
         status_code,
         status_text,
         headers: response_headers,
         body,
+        body_bytes,
         body_size_bytes,
         duration_ms: duration.as_millis() as u64,
         content_type,

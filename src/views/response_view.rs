@@ -1,9 +1,10 @@
 use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, size, AnyElement, App, Context, ElementId, Entity, FocusHandle, Focusable,
-    IntoElement, Pixels, Render, SharedString, Size, Styled, Window,
+    div, img, px, size, AnyElement, App, Context, ElementId, Entity, FocusHandle, Focusable, Image,
+    ImageFormat, IntoElement, Pixels, Render, SharedString, Size, Styled, Window,
 };
 use gpui_component::input::{Input, InputState};
 use gpui_component::scroll::Scrollbar;
@@ -13,14 +14,20 @@ use gpui_component::Sizable;
 use gpui_component::VirtualListScrollHandle;
 
 use crate::components::StatusBadge;
-use crate::entities::{ResponseData, ResponseEntity, ResponseEvent, ResponseState};
+use crate::entities::{
+    ContentCategory, ResponseData, ResponseEntity, ResponseEvent, ResponseState,
+};
 use crate::theme::Theme;
 
 /// Active tab in the response panel
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ResponseTab {
+    /// Formatted body based on content-type (JSON formatted, HTML, images, etc.)
     #[default]
     Body,
+    /// Raw response body as-is
+    Raw,
+    /// Response headers
     Headers,
 }
 
@@ -28,9 +35,14 @@ pub enum ResponseTab {
 pub struct ResponseView {
     pub response: Entity<ResponseEntity>,
     active_tab: ResponseTab,
+    /// Body display
     body_display: Option<Entity<InputState>>,
+    /// Raw body display (plain text)
+    raw_display: Option<Entity<InputState>>,
     /// Tracks the last displayed body content to know when to update
     last_body_content: String,
+    /// Last content category for pretty display
+    last_content_category: ContentCategory,
     focus_handle: FocusHandle,
     /// Virtual list scroll handle for headers tab
     headers_scroll_handle: VirtualListScrollHandle,
@@ -48,7 +60,9 @@ impl ResponseView {
             response,
             active_tab: ResponseTab::Body,
             body_display: None,
+            raw_display: None,
             last_body_content: String::new(),
+            last_content_category: ContentCategory::Text,
             focus_handle: cx.focus_handle(),
             headers_scroll_handle: VirtualListScrollHandle::new(),
         }
@@ -56,34 +70,75 @@ impl ResponseView {
 
     /// Initialize or update the body display with Window access (called from render)
     fn ensure_body_display(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // Get current response body
-        let current_content = if let Some(ref data) = self.response.read(cx).data {
-            data.formatted_body()
+        let resp = self.response.read(cx);
+        let data = resp.data.as_ref();
+
+        let (current_content, content_category) = if let Some(data) = data {
+            (data.formatted_body(), data.content_category())
         } else {
-            String::new()
+            (String::new(), ContentCategory::Text)
         };
 
+        let needs_update = current_content != self.last_body_content
+            || content_category != self.last_content_category;
+
         if self.body_display.is_none() {
-            // Create the body display for the first time
+            // Create the pretty display for the first time
             let content = current_content.clone();
+            let lang = content_category.language();
             let body_display = cx.new(|cx| {
                 InputState::new(window, cx)
-                    .code_editor("json")
+                    .code_editor(lang)
                     .line_number(true)
                     .searchable(true)
                     .default_value(&content)
             });
             self.body_display = Some(body_display);
             self.last_body_content = current_content;
+            self.last_content_category = content_category;
+        } else if needs_update {
+            // Content has changed, recreate with new language
+            let content = current_content.clone();
+            let lang = content_category.language();
+            let body_display = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .code_editor(lang)
+                    .line_number(true)
+                    .searchable(true)
+                    .default_value(&content)
+            });
+            self.body_display = Some(body_display);
+            self.last_body_content = current_content;
+            self.last_content_category = content_category;
+        }
+    }
+
+    /// Initialize or update the raw display with Window access
+    fn ensure_raw_display(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let resp = self.response.read(cx);
+        let current_content = resp
+            .data
+            .as_ref()
+            .map(|d| d.body.clone())
+            .unwrap_or_default();
+
+        if self.raw_display.is_none() {
+            let content = current_content.clone();
+            let raw_display = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .code_editor("text")
+                    .line_number(true)
+                    .searchable(true)
+                    .default_value(&content)
+            });
+            self.raw_display = Some(raw_display);
         } else if current_content != self.last_body_content {
-            // Content has changed, use set_value to completely replace and reset
-            if let Some(ref body_display) = self.body_display {
+            // Update raw display content
+            if let Some(ref raw_display) = self.raw_display {
                 let content = current_content.clone();
-                body_display.update(cx, |state, cx| {
-                    // Use set_value instead of replace - it properly clears and resets scroll
+                raw_display.update(cx, |state, cx| {
                     state.set_value(content, window, cx);
                 });
-                self.last_body_content = current_content;
             }
         }
     }
@@ -102,8 +157,11 @@ impl Focusable for ResponseView {
 
 impl Render for ResponseView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Ensure body display is initialized and up-to-date
-        self.ensure_body_display(window, cx);
+        match self.active_tab {
+            ResponseTab::Body => self.ensure_body_display(window, cx),
+            ResponseTab::Raw => self.ensure_raw_display(window, cx),
+            ResponseTab::Headers => {}
+        }
 
         let theme = Theme::dark();
 
@@ -284,6 +342,16 @@ impl ResponseView {
                     }),
             )
             .child(
+                PanelTab::new("Raw")
+                    .active(self.active_tab == ResponseTab::Raw)
+                    .on_click({
+                        let this = this.clone();
+                        move |_event, _window, cx| {
+                            this.update(cx, |view, cx| view.set_tab(ResponseTab::Raw, cx));
+                        }
+                    }),
+            )
+            .child(
                 PanelTab::new("Headers")
                     .active(self.active_tab == ResponseTab::Headers)
                     .on_click({
@@ -302,13 +370,87 @@ impl ResponseView {
         cx: &Context<Self>,
     ) -> AnyElement {
         match self.active_tab {
-            ResponseTab::Body => self.render_body_tab(theme).into_any_element(),
+            ResponseTab::Body => self.render_body_tab(theme, data).into_any_element(),
+            ResponseTab::Raw => self.render_raw_tab(theme).into_any_element(),
             ResponseTab::Headers => self.render_headers_tab(theme, data, cx).into_any_element(),
         }
     }
 
-    fn render_body_tab(&self, theme: &Theme) -> impl IntoElement {
-        // Clean minimal container
+    fn render_body_tab(&self, theme: &Theme, data: &ResponseData) -> impl IntoElement {
+        let content_type = data.content_category();
+
+        if content_type == ContentCategory::Image {
+            // Detect image format from content-type
+            let format = match data.content_type.as_deref() {
+                Some(ct) if ct.contains("png") => ImageFormat::Png,
+                Some(ct) if ct.contains("jpeg") || ct.contains("jpg") => ImageFormat::Jpeg,
+                Some(ct) if ct.contains("gif") => ImageFormat::Gif,
+                Some(ct) if ct.contains("webp") => ImageFormat::Webp,
+                Some(ct) if ct.contains("bmp") => ImageFormat::Bmp,
+                Some(ct) if ct.contains("svg") => ImageFormat::Svg,
+                _ => ImageFormat::Png, // Default to PNG
+            };
+
+            // Only render image if we have bytes
+            if !data.body_bytes.is_empty() {
+                let image = Arc::new(Image::from_bytes(format, data.body_bytes.clone()));
+
+                return div()
+                    .id("body-image-container")
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .w_full()
+                    .h_full()
+                    .items_center()
+                    .justify_center()
+                    .bg(theme.colors.bg_tertiary)
+                    .p(px(16.0))
+                    .child(
+                        img(image)
+                            .max_w_full()
+                            .max_h_full()
+                            .object_fit(gpui::ObjectFit::Contain),
+                    )
+                    .child(
+                        div()
+                            .pt(px(8.0))
+                            .text_color(theme.colors.text_muted)
+                            .text_size(px(11.0))
+                            .child(format!(
+                                "{} • {} bytes",
+                                data.content_type.as_deref().unwrap_or("image"),
+                                data.body_size_bytes
+                            )),
+                    )
+                    .into_any_element();
+            } else {
+                // No bytes available, show placeholder
+                return div()
+                    .id("body-image-placeholder")
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .w_full()
+                    .h_full()
+                    .items_center()
+                    .justify_center()
+                    .bg(theme.colors.bg_tertiary)
+                    .child(
+                        div()
+                            .text_color(theme.colors.text_muted)
+                            .text_size(px(12.0))
+                            .child(format!(
+                                "Image ({}) - {} bytes",
+                                data.content_type.as_deref().unwrap_or("unknown"),
+                                data.body_size_bytes
+                            )),
+                    )
+                    .into_any_element();
+            }
+        }
+
+        // For text/JSON/HTML/XML, show the pretty-formatted editor
         div()
             .id("body-scroll-container")
             .flex()
@@ -320,6 +462,24 @@ impl ResponseView {
             .overflow_x_hidden()
             .bg(theme.colors.bg_tertiary)
             .when_some(self.body_display.as_ref(), |el, editor| {
+                el.child(Input::new(editor).appearance(false).size_full())
+            })
+            .into_any_element()
+    }
+
+    fn render_raw_tab(&self, theme: &Theme) -> impl IntoElement {
+        // Raw response
+        div()
+            .id("raw-scroll-container")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .w_full()
+            .h_full()
+            .overflow_y_scroll()
+            .overflow_x_hidden()
+            .bg(theme.colors.bg_tertiary)
+            .when_some(self.raw_display.as_ref(), |el, editor| {
                 el.child(Input::new(editor).appearance(false).size_full())
             })
     }

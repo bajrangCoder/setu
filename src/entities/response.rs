@@ -12,6 +12,44 @@ pub enum ResponseState {
     Error(String),
 }
 
+/// Content category for response body rendering
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ContentCategory {
+    Json,
+    Html,
+    Xml,
+    Image,
+    #[default]
+    Text,
+    Binary,
+}
+
+impl ContentCategory {
+    /// Get the language name for syntax highlighting
+    pub fn language(&self) -> &'static str {
+        match self {
+            ContentCategory::Json => "json",
+            ContentCategory::Html => "html",
+            ContentCategory::Xml => "xml",
+            ContentCategory::Image => "text",
+            ContentCategory::Text => "text",
+            ContentCategory::Binary => "text",
+        }
+    }
+
+    /// Get display name for the category
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            ContentCategory::Json => "JSON",
+            ContentCategory::Html => "HTML",
+            ContentCategory::Xml => "XML",
+            ContentCategory::Image => "Image",
+            ContentCategory::Text => "Text",
+            ContentCategory::Binary => "Binary",
+        }
+    }
+}
+
 /// Events emitted by ResponseEntity
 #[derive(Debug, Clone)]
 pub enum ResponseEvent {
@@ -27,7 +65,11 @@ pub struct ResponseData {
     pub status_code: u16,
     pub status_text: String,
     pub headers: HashMap<String, String>,
+    /// Text body (for text-based responses)
     pub body: String,
+    /// Raw bytes body (for binary responses like images)
+    #[serde(skip)]
+    pub body_bytes: Vec<u8>,
     pub body_size_bytes: usize,
     pub duration_ms: u64,
     pub content_type: Option<String>,
@@ -40,6 +82,7 @@ impl Default for ResponseData {
             status_text: String::new(),
             headers: HashMap::new(),
             body: String::new(),
+            body_bytes: Vec::new(),
             body_size_bytes: 0,
             duration_ms: 0,
             content_type: None,
@@ -48,12 +91,46 @@ impl Default for ResponseData {
 }
 
 impl ResponseData {
+    /// Detect content category from content-type header
+    pub fn content_category(&self) -> ContentCategory {
+        let ct = self.content_type.as_deref().unwrap_or("").to_lowercase();
+
+        if ct.contains("application/json") || ct.contains("text/json") {
+            ContentCategory::Json
+        } else if ct.contains("text/html") {
+            ContentCategory::Html
+        } else if ct.contains("application/xml") || ct.contains("text/xml") {
+            ContentCategory::Xml
+        } else if ct.starts_with("image/") {
+            ContentCategory::Image
+        } else if ct.starts_with("text/")
+            || ct.contains("javascript")
+            || ct.contains("css")
+            || ct.is_empty()
+        {
+            ContentCategory::Text
+        } else {
+            ContentCategory::Binary
+        }
+    }
+
     /// Check if response is JSON based on content-type
     pub fn is_json(&self) -> bool {
-        self.content_type
-            .as_ref()
-            .map(|ct| ct.contains("application/json"))
-            .unwrap_or(false)
+        self.content_category() == ContentCategory::Json
+    }
+
+    /// Check if response is an image
+    pub fn is_image(&self) -> bool {
+        self.content_category() == ContentCategory::Image
+    }
+
+    /// Get image MIME type if this is an image
+    pub fn image_mime_type(&self) -> Option<&str> {
+        if self.is_image() {
+            self.content_type.as_deref()
+        } else {
+            None
+        }
     }
 
     /// Get formatted body if JSON, otherwise raw
