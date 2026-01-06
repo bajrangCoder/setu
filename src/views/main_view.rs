@@ -207,7 +207,7 @@ impl MainView {
             resp.set_loading(cx);
         });
 
-        // Get request params
+        // Get request params (clone what we need before async)
         let request = request_entity.read(cx);
         let method = request.method();
         let headers: Vec<Header> = request.headers().to_vec();
@@ -223,36 +223,51 @@ impl MainView {
         );
         log::info!("Body: {:?}", body);
 
-        // Execute HTTP request synchronously
-        let result = self.http_client.execute_sync(method, &url, &headers, &body);
+        // Spawn HTTP request on Tokio runtime
+        let result_rx = self.http_client.spawn_request(method, url, headers, body);
 
-        // Update UI with result
-        request_entity.update(cx, |req, cx| {
-            req.set_sending(false, cx);
-        });
+        // Spawn foreground task to await result and update UI
+        cx.spawn(async move |_view, cx| {
+            // Await the result from Tokio runtime
+            let result = result_rx.await;
 
-        match result {
-            Ok(data) => {
-                log::info!(
-                    "Request completed: {} {} - {} bytes in {}ms",
-                    data.status_code,
-                    data.status_text,
-                    data.body_size_bytes,
-                    data.duration_ms
-                );
-                response_entity.update(cx, |resp, cx| {
-                    resp.set_success(data, cx);
+            // Update entities with result in a single sync context
+            cx.update(|app| {
+                // Mark request as done sending
+                request_entity.update(app, |req, cx| {
+                    req.set_sending(false, cx);
                 });
-            }
-            Err(e) => {
-                log::error!("Request failed: {}", e);
-                response_entity.update(cx, |resp, cx| {
-                    resp.set_error(e.to_string(), cx);
-                });
-            }
-        }
 
-        cx.notify();
+                // Handle the result
+                match result {
+                    Ok(Ok(data)) => {
+                        log::info!(
+                            "Request completed: {} {} - {} bytes in {}ms",
+                            data.status_code,
+                            data.status_text,
+                            data.body_size_bytes,
+                            data.duration_ms
+                        );
+                        response_entity.update(app, |resp, cx| {
+                            resp.set_success(data, cx);
+                        });
+                    }
+                    Ok(Err(e)) => {
+                        log::error!("Request failed: {}", e);
+                        response_entity.update(app, |resp, cx| {
+                            resp.set_error(e.to_string(), cx);
+                        });
+                    }
+                    Err(_) => {
+                        log::error!("Request channel closed unexpectedly");
+                        response_entity.update(app, |resp, cx| {
+                            resp.set_error("Request was cancelled".to_string(), cx);
+                        });
+                    }
+                }
+            })
+        })
+        .detach_and_log_err(cx);
     }
 
     pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
