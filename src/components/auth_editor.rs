@@ -2,12 +2,11 @@ use std::io::Write;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, App, Context, FocusHandle, Focusable, IntoElement, Render, SharedString, Styled,
-    Window,
+    div, px, App, Context, Entity, FocusHandle, Focusable, IntoElement, Render, SharedString,
+    Styled, Window,
 };
-use gpui_component::button::{Button, ButtonVariants, DropdownButton};
 use gpui_component::input::{Input, InputState};
-use gpui_component::menu::PopupMenuItem;
+use gpui_component::select::{Select, SelectEvent, SelectItem, SelectState};
 use gpui_component::Sizable;
 
 use crate::theme::Theme;
@@ -39,6 +38,53 @@ impl AuthType {
             AuthType::Bearer,
             AuthType::ApiKey,
         ]
+    }
+}
+
+/// Implement SelectItem for AuthType
+impl SelectItem for AuthType {
+    type Value = AuthType;
+
+    fn title(&self) -> SharedString {
+        self.as_str().into()
+    }
+
+    fn value(&self) -> &Self::Value {
+        self
+    }
+}
+
+/// API Key location enum
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ApiKeyLocation {
+    #[default]
+    Header,
+    QueryParam,
+}
+
+impl ApiKeyLocation {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ApiKeyLocation::Header => "Header",
+            ApiKeyLocation::QueryParam => "Query Param",
+        }
+    }
+
+    pub fn all() -> &'static [ApiKeyLocation] {
+        &[ApiKeyLocation::Header, ApiKeyLocation::QueryParam]
+    }
+}
+
+/// Implement SelectItem for ApiKeyLocation
+impl SelectItem for ApiKeyLocation {
+    type Value = ApiKeyLocation;
+
+    fn title(&self) -> SharedString {
+        self.as_str().into()
+    }
+
+    fn value(&self) -> &Self::Value {
+        self
     }
 }
 
@@ -165,6 +211,7 @@ impl<'a> Drop for Base64Encoder<'a> {
 /// Authentication editor component
 pub struct AuthEditor {
     auth_type: AuthType,
+    auth_type_select: Entity<SelectState<Vec<AuthType>>>,
     // Basic auth
     username_input: Option<gpui::Entity<InputState>>,
     password_input: Option<gpui::Entity<InputState>>,
@@ -173,21 +220,70 @@ pub struct AuthEditor {
     // API Key
     api_key_name_input: Option<gpui::Entity<InputState>>,
     api_key_value_input: Option<gpui::Entity<InputState>>,
-    api_key_in_header: bool,
+    api_key_location: ApiKeyLocation,
+    api_key_location_select: Entity<SelectState<Vec<ApiKeyLocation>>>,
 
     focus_handle: FocusHandle,
 }
 
 impl AuthEditor {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        // Create auth type select state
+        let auth_type_items: Vec<AuthType> = AuthType::all().to_vec();
+        let auth_type_select = cx.new(|cx| {
+            SelectState::new(
+                auth_type_items,
+                Some(gpui_component::IndexPath::new(0)),
+                window,
+                cx,
+            )
+        });
+
+        // Subscribe to auth type selection changes
+        cx.subscribe(
+            &auth_type_select,
+            |this, _, event: &SelectEvent<Vec<AuthType>>, cx| {
+                if let SelectEvent::Confirm(Some(value)) = event {
+                    this.auth_type = *value;
+                    cx.notify();
+                }
+            },
+        )
+        .detach();
+
+        // Create API key location select state
+        let api_key_location_items: Vec<ApiKeyLocation> = ApiKeyLocation::all().to_vec();
+        let api_key_location_select = cx.new(|cx| {
+            SelectState::new(
+                api_key_location_items,
+                Some(gpui_component::IndexPath::new(0)),
+                window,
+                cx,
+            )
+        });
+
+        // Subscribe to API key location selection changes
+        cx.subscribe(
+            &api_key_location_select,
+            |this, _, event: &SelectEvent<Vec<ApiKeyLocation>>, cx| {
+                if let SelectEvent::Confirm(Some(value)) = event {
+                    this.api_key_location = *value;
+                    cx.notify();
+                }
+            },
+        )
+        .detach();
+
         Self {
             auth_type: AuthType::None,
+            auth_type_select,
             username_input: None,
             password_input: None,
             token_input: None,
             api_key_name_input: None,
             api_key_value_input: None,
-            api_key_in_header: true,
+            api_key_location: ApiKeyLocation::Header,
+            api_key_location_select,
             focus_handle: cx.focus_handle(),
         }
     }
@@ -209,8 +305,16 @@ impl AuthEditor {
     }
 
     /// Set auth type
-    pub fn set_auth_type(&mut self, auth_type: AuthType, cx: &mut Context<Self>) {
+    pub fn set_auth_type(
+        &mut self,
+        auth_type: AuthType,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.auth_type = auth_type;
+        self.auth_type_select.update(cx, |state, cx| {
+            state.set_selected_value(&auth_type, window, cx);
+        });
         cx.notify();
     }
 
@@ -243,7 +347,7 @@ impl AuthEditor {
                 .as_ref()
                 .map(|i| i.read(cx).text().to_string())
                 .unwrap_or_default(),
-            api_key_in_header: self.api_key_in_header,
+            api_key_in_header: self.api_key_location == ApiKeyLocation::Header,
         }
     }
 }
@@ -259,8 +363,6 @@ impl Render for AuthEditor {
         self.ensure_inputs(window, cx);
 
         let theme = Theme::dark();
-        let this = cx.entity().clone();
-        let selected_label: SharedString = self.auth_type.as_str().into();
 
         div()
             .id("auth-editor-container")
@@ -271,7 +373,6 @@ impl Render for AuthEditor {
             .flex_1()
             .overflow_hidden()
             .bg(theme.colors.bg_tertiary)
-            // Header with title and type selector
             .child(
                 div()
                     .flex()
@@ -283,7 +384,6 @@ impl Render for AuthEditor {
                     .bg(theme.colors.bg_secondary)
                     .border_b_1()
                     .border_color(theme.colors.border_primary)
-                    // Left: Title
                     .child(
                         div()
                             .text_color(theme.colors.text_muted)
@@ -291,33 +391,12 @@ impl Render for AuthEditor {
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .child("Authorization"),
                     )
-                    // Right: Auth Type Dropdown
                     .child(
-                        DropdownButton::new("auth-type-dropdown")
-                            .button(
-                                Button::new("auth-type-btn")
-                                    .label(selected_label)
-                                    .small()
-                                    .ghost(),
-                            )
-                            .small()
-                            .dropdown_menu({
-                                let this = this.clone();
-                                move |menu, _window, _cx| {
-                                    let this = this.clone();
-                                    AuthType::all().iter().fold(menu, |menu, auth_type| {
-                                        let auth_type = *auth_type;
-                                        let this = this.clone();
-                                        menu.item(PopupMenuItem::new(auth_type.as_str()).on_click(
-                                            move |_, _, cx| {
-                                                this.update(cx, |editor, cx| {
-                                                    editor.set_auth_type(auth_type, cx);
-                                                });
-                                            },
-                                        ))
-                                    })
-                                }
-                            }),
+                        div().flex_shrink_0().child(
+                            Select::new(&self.auth_type_select)
+                                .small()
+                                .menu_width(px(140.0)),
+                        ),
                     ),
             )
             // Content area
@@ -337,7 +416,7 @@ impl Render for AuthEditor {
                         el.child(self.render_bearer_auth(&theme))
                     })
                     .when(self.auth_type == AuthType::ApiKey, |el| {
-                        el.child(self.render_api_key_auth(&theme, this.clone()))
+                        el.child(self.render_api_key_auth(&theme))
                     })
                     .when(self.auth_type == AuthType::None, |el| {
                         el.child(
@@ -436,17 +515,7 @@ impl AuthEditor {
             })
     }
 
-    fn render_api_key_auth(
-        &self,
-        theme: &Theme,
-        this: gpui::Entity<AuthEditor>,
-    ) -> impl IntoElement {
-        let api_key_location: SharedString = if self.api_key_in_header {
-            "Header".into()
-        } else {
-            "Query Param".into()
-        };
-
+    fn render_api_key_auth(&self, theme: &Theme) -> impl IntoElement {
         div()
             .flex()
             .flex_col()
@@ -465,39 +534,9 @@ impl AuthEditor {
                             .child("Add to"),
                     )
                     .child(
-                        DropdownButton::new("api-key-location-dropdown")
-                            .button(
-                                Button::new("api-key-location-btn")
-                                    .label(api_key_location)
-                                    .small()
-                                    .ghost(),
-                            )
+                        Select::new(&self.api_key_location_select)
                             .small()
-                            .dropdown_menu({
-                                let this = this.clone();
-                                move |menu, _window, _cx| {
-                                    let this_header = this.clone();
-                                    let this_query = this.clone();
-                                    menu.item(PopupMenuItem::new("Header").on_click(
-                                        move |_, _, cx| {
-                                            this_header.update(cx, |editor, cx| {
-                                                editor.api_key_in_header = true;
-                                                cx.notify();
-                                            });
-                                        },
-                                    ))
-                                    .item(
-                                        PopupMenuItem::new("Query Param").on_click(
-                                            move |_, _, cx| {
-                                                this_query.update(cx, |editor, cx| {
-                                                    editor.api_key_in_header = false;
-                                                    cx.notify();
-                                                });
-                                            },
-                                        ),
-                                    )
-                                }
-                            }),
+                            .menu_width(px(120.0)),
                     ),
             )
             // Key name

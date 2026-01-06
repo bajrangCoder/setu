@@ -117,7 +117,7 @@ impl RequestView {
         self.ensure_body_editor(window, cx);
 
         if self.body_type_selector.is_none() {
-            let selector = cx.new(|cx| BodyTypeSelector::new(cx));
+            let selector = cx.new(|cx| BodyTypeSelector::new(window, cx));
 
             // Subscribe to body type changes
             cx.subscribe(
@@ -138,7 +138,7 @@ impl RequestView {
         }
 
         if self.auth_editor.is_none() {
-            self.auth_editor = Some(cx.new(|cx| AuthEditor::new(cx)));
+            self.auth_editor = Some(cx.new(|cx| AuthEditor::new(window, cx)));
         }
     }
 

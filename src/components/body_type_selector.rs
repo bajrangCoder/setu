@@ -1,10 +1,9 @@
 use gpui::prelude::*;
 use gpui::{
-    div, px, App, Context, EventEmitter, FocusHandle, Focusable, IntoElement, Render, SharedString,
-    Styled,
+    div, px, App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, Render,
+    SharedString, Styled, Window,
 };
-use gpui_component::button::{Button, ButtonVariants, DropdownButton};
-use gpui_component::menu::PopupMenuItem;
+use gpui_component::select::{Select, SelectEvent, SelectItem, SelectState};
 use gpui_component::Sizable;
 
 use crate::theme::Theme;
@@ -12,8 +11,8 @@ use crate::theme::Theme;
 /// Body content type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BodyType {
-    None,
     #[default]
+    None,
     Json,
     Text,
     FormUrlEncoded,
@@ -69,6 +68,19 @@ impl BodyType {
     }
 }
 
+/// Implement SelectItem for BodyType
+impl SelectItem for BodyType {
+    type Value = BodyType;
+
+    fn title(&self) -> SharedString {
+        self.as_str().into()
+    }
+
+    fn value(&self) -> &Self::Value {
+        self
+    }
+}
+
 /// Event emitted when body type changes
 #[derive(Clone, Debug)]
 pub struct BodyTypeChanged(pub BodyType);
@@ -78,22 +90,44 @@ impl EventEmitter<BodyTypeChanged> for BodyTypeSelector {}
 /// Body type selector
 pub struct BodyTypeSelector {
     selected: BodyType,
+    select_state: Entity<SelectState<Vec<BodyType>>>,
     focus_handle: FocusHandle,
 }
 
 #[allow(dead_code)]
 impl BodyTypeSelector {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let items: Vec<BodyType> = BodyType::all().to_vec();
+        let select_state = cx
+            .new(|cx| SelectState::new(items, Some(gpui_component::IndexPath::new(0)), window, cx));
+
+        // Subscribe to selection changes
+        cx.subscribe(
+            &select_state,
+            |this, _, event: &SelectEvent<Vec<BodyType>>, cx| {
+                if let SelectEvent::Confirm(Some(value)) = event {
+                    this.selected = *value;
+                    cx.emit(BodyTypeChanged(*value));
+                    cx.notify();
+                }
+            },
+        )
+        .detach();
+
         Self {
-            selected: BodyType::Json,
+            selected: BodyType::None,
+            select_state,
             focus_handle: cx.focus_handle(),
         }
     }
 
     /// Set selected type
-    pub fn set_type(&mut self, body_type: BodyType, cx: &mut Context<Self>) {
+    pub fn set_type(&mut self, body_type: BodyType, window: &mut Window, cx: &mut Context<Self>) {
         if self.selected != body_type {
             self.selected = body_type;
+            self.select_state.update(cx, |state, cx| {
+                state.set_selected_value(&body_type, window, cx);
+            });
             cx.emit(BodyTypeChanged(body_type));
             cx.notify();
         }
@@ -112,10 +146,8 @@ impl Focusable for BodyTypeSelector {
 }
 
 impl Render for BodyTypeSelector {
-    fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut gpui::Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::dark();
-        let this = cx.entity().clone();
-        let selected_label: SharedString = self.selected.as_str().into();
 
         div()
             .track_focus(&self.focus_handle)
@@ -142,28 +174,9 @@ impl Render for BodyTypeSelector {
                             .child("Content Type"),
                     )
                     .child(
-                        DropdownButton::new("body-type-dropdown")
-                            .button(
-                                Button::new("body-type-btn")
-                                    .label(selected_label)
-                                    .small()
-                                    .ghost(),
-                            )
+                        Select::new(&self.select_state)
                             .small()
-                            .dropdown_menu(move |menu, _window, _cx| {
-                                let this = this.clone();
-                                BodyType::all().iter().fold(menu, |menu, body_type| {
-                                    let body_type = *body_type;
-                                    let this = this.clone();
-                                    menu.item(PopupMenuItem::new(body_type.as_str()).on_click(
-                                        move |_, _, cx| {
-                                            this.update(cx, |selector, cx| {
-                                                selector.set_type(body_type, cx);
-                                            });
-                                        },
-                                    ))
-                                })
-                            }),
+                            .menu_width(px(200.0)),
                     ),
             )
     }
