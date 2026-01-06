@@ -228,6 +228,15 @@ impl RequestView {
             }
         });
     }
+
+    /// Get query string from params editor
+    pub fn get_query_string(&self, cx: &App) -> String {
+        if let Some(ref params_editor) = self.params_editor {
+            params_editor.read(cx).build_query_string(cx)
+        } else {
+            String::new()
+        }
+    }
 }
 
 impl Focusable for RequestView {

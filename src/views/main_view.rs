@@ -179,13 +179,13 @@ impl MainView {
         let response_entity = tab.response.clone();
 
         // Get URL from input state
-        let url = if let Some(ref url_input) = tab.url_input {
+        let base_url = if let Some(ref url_input) = tab.url_input {
             url_input.read(cx).text().to_string()
         } else {
             String::new()
         };
 
-        if url.is_empty() {
+        if base_url.is_empty() {
             response_entity.update(cx, |resp, cx| {
                 resp.set_error("Please enter a URL".to_string(), cx);
             });
@@ -197,6 +197,21 @@ impl MainView {
             view.sync_body_to_request(cx);
             view.sync_headers_to_request(cx);
         });
+
+        // Get query string from params editor
+        let query_string = self.request_view.read(cx).get_query_string(cx);
+
+        // Build final URL with query params
+        let url = if !query_string.is_empty() {
+            // Check if URL already has query params
+            if base_url.contains('?') {
+                format!("{}&{}", base_url, &query_string[1..]) // Skip the leading '?'
+            } else {
+                format!("{}{}", base_url, query_string)
+            }
+        } else {
+            base_url
+        };
 
         // Mark as sending
         request_entity.update(cx, |req, cx| {
