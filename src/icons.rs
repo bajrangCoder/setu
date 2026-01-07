@@ -15,6 +15,7 @@ pub enum IconName {
     Plus,
     Trash,
     Check,
+    Loader,
 }
 
 impl IconNamed for IconName {
@@ -28,6 +29,7 @@ impl IconNamed for IconName {
             Self::Plus => "icons/plus.svg",
             Self::Trash => "icons/trash.svg",
             Self::Check => "icons/check.svg",
+            Self::Loader => "icons/loader.svg",
         }
         .into()
     }
