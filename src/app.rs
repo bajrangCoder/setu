@@ -4,7 +4,7 @@ use gpui_component::Root;
 
 use crate::actions::*;
 use crate::assets::Assets;
-use crate::theme::apply_setu_theme;
+use crate::theme::init_theme;
 use crate::views::MainView;
 
 /// Application configuration
@@ -20,7 +20,7 @@ impl SetuApp {
             gpui_component::init(cx);
 
             // Apply our custom color theme to gpui-component
-            apply_setu_theme(cx);
+            init_theme(cx);
 
             // Register actions and keybindings
             Self::register_actions(cx);

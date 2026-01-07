@@ -1,7 +1,7 @@
 use gpui::prelude::*;
 use gpui::{div, px, App, ClickEvent, IntoElement, Styled, Window};
 
-use crate::theme::Theme;
+use gpui_component::ActiveTheme;
 
 /// Callback type for tab click
 pub type OnTabClickCallback = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
@@ -37,8 +37,8 @@ impl PanelTab {
 }
 
 impl RenderOnce for PanelTab {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let theme = Theme::dark();
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = cx.theme();
         let is_active = self.is_active;
 
         div()
@@ -59,12 +59,12 @@ impl RenderOnce for PanelTab {
                 gpui::FontWeight::NORMAL
             })
             .when(is_active, |s| {
-                s.bg(theme.colors.bg_tertiary)
-                    .text_color(theme.colors.text_primary)
+                s.bg(theme.muted)
+                    .text_color(theme.foreground)
             })
             .when(!is_active, |s| {
-                s.text_color(theme.colors.text_muted)
-                    .hover(|h| h.bg(theme.colors.bg_tertiary.opacity(0.5)))
+                s.text_color(theme.muted_foreground)
+                    .hover(|h| h.bg(theme.muted.opacity(0.5)))
             })
             .when_some(self.on_click, |el, callback| {
                 el.on_click(move |event, window, cx| {
@@ -95,8 +95,8 @@ impl PanelTabBar {
 }
 
 impl RenderOnce for PanelTabBar {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let theme = Theme::dark();
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = cx.theme();
 
         div()
             .id("panel-tab-bar")
@@ -106,9 +106,9 @@ impl RenderOnce for PanelTabBar {
             .w_full()
             .h(px(36.0))
             .px(px(12.0))
-            .bg(theme.colors.bg_secondary)
+            .bg(theme.secondary)
             .border_b_1()
-            .border_color(theme.colors.border_primary)
+            .border_color(theme.border)
             .overflow_scroll()
             .child(
                 div()

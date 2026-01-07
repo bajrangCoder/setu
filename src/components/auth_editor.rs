@@ -9,7 +9,7 @@ use gpui_component::input::{Input, InputState};
 use gpui_component::select::{Select, SelectEvent, SelectItem, SelectState};
 use gpui_component::Sizable;
 
-use crate::theme::Theme;
+use gpui_component::ActiveTheme;
 
 /// Authentication type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -362,7 +362,7 @@ impl Render for AuthEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.ensure_inputs(window, cx);
 
-        let theme = Theme::dark();
+        let theme = cx.theme();
 
         div()
             .id("auth-editor-container")
@@ -372,7 +372,7 @@ impl Render for AuthEditor {
             .w_full()
             .flex_1()
             .overflow_hidden()
-            .bg(theme.colors.bg_tertiary)
+            .bg(theme.muted)
             .child(
                 div()
                     .flex()
@@ -381,12 +381,12 @@ impl Render for AuthEditor {
                     .justify_between()
                     .h(px(36.0))
                     .px(px(16.0))
-                    .bg(theme.colors.bg_secondary)
+                    .bg(theme.secondary)
                     .border_b_1()
-                    .border_color(theme.colors.border_primary)
+                    .border_color(theme.border)
                     .child(
                         div()
-                            .text_color(theme.colors.text_muted)
+                            .text_color(theme.muted_foreground)
                             .text_size(px(11.0))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .child("Authorization"),
@@ -426,7 +426,7 @@ impl Render for AuthEditor {
                                 .justify_center()
                                 .flex_1()
                                 .py(px(40.0))
-                                .text_color(theme.colors.text_muted.opacity(0.5))
+                                .text_color(theme.muted_foreground.opacity(0.5))
                                 .text_size(px(12.0))
                                 .child("This request does not use any authorization"),
                         )
@@ -436,7 +436,7 @@ impl Render for AuthEditor {
 }
 
 impl AuthEditor {
-    fn render_basic_auth(&self, theme: &Theme) -> impl IntoElement {
+    fn render_basic_auth(&self, theme: &gpui_component::theme::ThemeColor) -> impl IntoElement {
         div()
             .flex()
             .flex_col()
@@ -449,7 +449,7 @@ impl AuthEditor {
                     .gap(px(6.0))
                     .child(
                         div()
-                            .text_color(theme.colors.text_muted)
+                            .text_color(theme.muted_foreground)
                             .text_size(px(11.0))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .child("Username"),
@@ -457,10 +457,10 @@ impl AuthEditor {
                     .when_some(self.username_input.as_ref(), |el, input| {
                         el.child(
                             div()
-                                .bg(theme.colors.bg_secondary)
+                                .bg(theme.secondary)
                                 .rounded(px(6.0))
                                 .border_1()
-                                .border_color(theme.colors.border_primary)
+                                .border_color(theme.border)
                                 .child(Input::new(input).appearance(false).small()),
                         )
                     }),
@@ -473,7 +473,7 @@ impl AuthEditor {
                     .gap(px(6.0))
                     .child(
                         div()
-                            .text_color(theme.colors.text_muted)
+                            .text_color(theme.muted_foreground)
                             .text_size(px(11.0))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .child("Password"),
@@ -481,24 +481,24 @@ impl AuthEditor {
                     .when_some(self.password_input.as_ref(), |el, input| {
                         el.child(
                             div()
-                                .bg(theme.colors.bg_secondary)
+                                .bg(theme.secondary)
                                 .rounded(px(6.0))
                                 .border_1()
-                                .border_color(theme.colors.border_primary)
+                                .border_color(theme.border)
                                 .child(Input::new(input).appearance(false).small()),
                         )
                     }),
             )
     }
 
-    fn render_bearer_auth(&self, theme: &Theme) -> impl IntoElement {
+    fn render_bearer_auth(&self, theme: &gpui_component::theme::ThemeColor) -> impl IntoElement {
         div()
             .flex()
             .flex_col()
             .gap(px(6.0))
             .child(
                 div()
-                    .text_color(theme.colors.text_muted)
+                    .text_color(theme.muted_foreground)
                     .text_size(px(11.0))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child("Token"),
@@ -506,16 +506,16 @@ impl AuthEditor {
             .when_some(self.token_input.as_ref(), |el, input| {
                 el.child(
                     div()
-                        .bg(theme.colors.bg_secondary)
+                        .bg(theme.secondary)
                         .rounded(px(6.0))
                         .border_1()
-                        .border_color(theme.colors.border_primary)
+                        .border_color(theme.border)
                         .child(Input::new(input).appearance(false).small()),
                 )
             })
     }
 
-    fn render_api_key_auth(&self, theme: &Theme) -> impl IntoElement {
+    fn render_api_key_auth(&self, theme: &gpui_component::theme::ThemeColor) -> impl IntoElement {
         div()
             .flex()
             .flex_col()
@@ -528,7 +528,7 @@ impl AuthEditor {
                     .gap(px(6.0))
                     .child(
                         div()
-                            .text_color(theme.colors.text_muted)
+                            .text_color(theme.muted_foreground)
                             .text_size(px(11.0))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .child("Add to"),
@@ -547,7 +547,7 @@ impl AuthEditor {
                     .gap(px(6.0))
                     .child(
                         div()
-                            .text_color(theme.colors.text_muted)
+                            .text_color(theme.muted_foreground)
                             .text_size(px(11.0))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .child("Key"),
@@ -555,10 +555,10 @@ impl AuthEditor {
                     .when_some(self.api_key_name_input.as_ref(), |el, input| {
                         el.child(
                             div()
-                                .bg(theme.colors.bg_secondary)
+                                .bg(theme.secondary)
                                 .rounded(px(6.0))
                                 .border_1()
-                                .border_color(theme.colors.border_primary)
+                                .border_color(theme.border)
                                 .child(Input::new(input).appearance(false).small()),
                         )
                     }),
@@ -571,7 +571,7 @@ impl AuthEditor {
                     .gap(px(6.0))
                     .child(
                         div()
-                            .text_color(theme.colors.text_muted)
+                            .text_color(theme.muted_foreground)
                             .text_size(px(11.0))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .child("Value"),
@@ -579,10 +579,10 @@ impl AuthEditor {
                     .when_some(self.api_key_value_input.as_ref(), |el, input| {
                         el.child(
                             div()
-                                .bg(theme.colors.bg_secondary)
+                                .bg(theme.secondary)
                                 .rounded(px(6.0))
                                 .border_1()
-                                .border_color(theme.colors.border_primary)
+                                .border_color(theme.border)
                                 .child(Input::new(input).appearance(false).small()),
                         )
                     }),

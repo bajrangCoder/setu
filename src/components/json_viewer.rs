@@ -1,7 +1,7 @@
 use gpui::prelude::*;
 use gpui::{div, px, App, IntoElement, SharedString, Styled, Window};
 
-use crate::theme::Theme;
+use gpui_component::ActiveTheme;
 
 /// JSON Viewer component
 #[derive(IntoElement)]
@@ -18,8 +18,8 @@ impl JsonViewer {
 }
 
 impl RenderOnce for JsonViewer {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let theme = Theme::dark();
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = cx.theme();
 
         div()
             .flex()
@@ -27,14 +27,14 @@ impl RenderOnce for JsonViewer {
             .w_full()
             .h_full()
             .p(px(16.0))
-            .bg(theme.colors.bg_tertiary)
+            .bg(theme.muted)
             .rounded(px(8.0))
             .overflow_hidden()
             .child(
                 div()
                     .font_family("monospace")
                     .text_size(px(13.0))
-                    .text_color(theme.colors.text_primary)
+                    .text_color(theme.foreground)
                     .child(self.content),
             )
     }
@@ -45,8 +45,8 @@ impl RenderOnce for JsonViewer {
 pub struct ResponseEmpty;
 
 impl RenderOnce for ResponseEmpty {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let theme = Theme::dark();
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = cx.theme();
 
         div()
             .flex()
@@ -62,13 +62,13 @@ impl RenderOnce for ResponseEmpty {
             )
             .child(
                 div()
-                    .text_color(theme.colors.text_secondary)
+                    .text_color(theme.secondary_foreground)
                     .text_size(px(14.0))
                     .child("Enter a URL and send a request to see the response"),
             )
             .child(
                 div()
-                    .text_color(theme.colors.text_muted)
+                    .text_color(theme.muted_foreground)
                     .text_size(px(12.0))
                     .child("Press Cmd+Enter to send"),
             )
@@ -80,8 +80,8 @@ impl RenderOnce for ResponseEmpty {
 pub struct ResponseLoading;
 
 impl RenderOnce for ResponseLoading {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let theme = Theme::dark();
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = cx.theme();
 
         div()
             .flex()
@@ -97,7 +97,7 @@ impl RenderOnce for ResponseLoading {
             )
             .child(
                 div()
-                    .text_color(theme.colors.text_secondary)
+                    .text_color(theme.secondary_foreground)
                     .text_size(px(14.0))
                     .child("Sending request..."),
             )
@@ -119,8 +119,8 @@ impl ResponseError {
 }
 
 impl RenderOnce for ResponseError {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let theme = Theme::dark();
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = cx.theme();
 
         div()
             .flex()
@@ -130,24 +130,24 @@ impl RenderOnce for ResponseError {
             .w_full()
             .p(px(24.0))
             .gap(px(12.0))
-            .bg(theme.colors.error.opacity(0.1))
+            .bg(theme.danger.opacity(0.1))
             .rounded(px(8.0))
             .border_1()
-            .border_color(theme.colors.error.opacity(0.3))
+            .border_color(theme.danger.opacity(0.3))
             .child(
                 // TODO: Add proper SVG error icon
                 div().text_size(px(32.0)).child("❌"),
             )
             .child(
                 div()
-                    .text_color(theme.colors.error)
+                    .text_color(theme.danger)
                     .text_size(px(14.0))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child("Request Failed"),
             )
             .child(
                 div()
-                    .text_color(theme.colors.text_secondary)
+                    .text_color(theme.secondary_foreground)
                     .text_size(px(13.0))
                     .child(self.message),
             )

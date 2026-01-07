@@ -1,7 +1,7 @@
 use gpui::prelude::*;
 use gpui::{div, px, App, IntoElement, Styled, Window};
 
-use crate::theme::Theme;
+use crate::theme::status_color;
 
 /// Compact status badge
 #[derive(IntoElement)]
@@ -14,27 +14,16 @@ impl StatusBadge {
         Self { status_code }
     }
 
+    #[allow(dead_code)]
     pub fn with_text(self, _text: &str) -> Self {
         // Keeping method for API compatibility, but not using text for minimal design
         self
     }
-
-    fn status_color(&self, theme: &Theme) -> gpui::Hsla {
-        match self.status_code / 100 {
-            1 => theme.colors.status_1xx,
-            2 => theme.colors.status_2xx,
-            3 => theme.colors.status_3xx,
-            4 => theme.colors.status_4xx,
-            5 => theme.colors.status_5xx,
-            _ => theme.colors.text_muted,
-        }
-    }
 }
 
 impl RenderOnce for StatusBadge {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let theme = Theme::dark();
-        let color = self.status_color(&theme);
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let color = status_color(self.status_code, cx);
 
         div()
             .text_color(color)

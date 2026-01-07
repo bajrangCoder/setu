@@ -10,7 +10,7 @@ use gpui_component::Sizable;
 
 use crate::entities::{Header, RequestEntity};
 use crate::icons::IconName;
-use crate::theme::Theme;
+use gpui_component::ActiveTheme;
 
 pub struct HeaderRow {
     pub key_input: Entity<InputState>,
@@ -185,7 +185,7 @@ impl Focusable for HeaderEditor {
 
 impl Render for HeaderEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::dark();
+        let theme = cx.theme();
         let this = cx.entity().clone();
 
         div()
@@ -196,7 +196,7 @@ impl Render for HeaderEditor {
             .w_full()
             .flex_1()
             .overflow_hidden()
-            .bg(theme.colors.bg_tertiary)
+            .bg(theme.muted)
             // Header with title and actions
             .child(
                 div()
@@ -206,12 +206,12 @@ impl Render for HeaderEditor {
                     .justify_between()
                     .h(px(36.0))
                     .px(px(16.0))
-                    .bg(theme.colors.bg_secondary)
+                    .bg(theme.secondary)
                     .border_b_1()
-                    .border_color(theme.colors.border_primary)
+                    .border_color(theme.border)
                     .child(
                         div()
-                            .text_color(theme.colors.text_muted)
+                            .text_color(theme.muted_foreground)
                             .text_size(px(11.0))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .child("Header List"),
@@ -242,8 +242,8 @@ impl Render for HeaderEditor {
                     .h(px(28.0))
                     .px(px(16.0))
                     .border_b_1()
-                    .border_color(theme.colors.border_primary.opacity(0.5))
-                    .bg(theme.colors.bg_secondary.opacity(0.5))
+                    .border_color(theme.border.opacity(0.5))
+                    .bg(theme.secondary.opacity(0.5))
                     // Checkbox column
                     .child(div().w(px(32.0)))
                     // Key column header
@@ -251,7 +251,7 @@ impl Render for HeaderEditor {
                         div()
                             .w(px(180.0))
                             .min_w(px(180.0))
-                            .text_color(theme.colors.text_muted.opacity(0.7))
+                            .text_color(theme.muted_foreground.opacity(0.7))
                             .text_size(px(10.0))
                             .child("Key"),
                     )
@@ -259,7 +259,7 @@ impl Render for HeaderEditor {
                     .child(
                         div()
                             .flex_1()
-                            .text_color(theme.colors.text_muted.opacity(0.7))
+                            .text_color(theme.muted_foreground.opacity(0.7))
                             .text_size(px(10.0))
                             .child("Value"),
                     )
@@ -268,7 +268,7 @@ impl Render for HeaderEditor {
                         div()
                             .w(px(180.0))
                             .min_w(px(180.0))
-                            .text_color(theme.colors.text_muted.opacity(0.7))
+                            .text_color(theme.muted_foreground.opacity(0.7))
                             .text_size(px(10.0))
                             .child("Description"),
                     )
@@ -300,8 +300,8 @@ impl Render for HeaderEditor {
                             .min_h(px(36.0))
                             .px(px(16.0))
                             .border_b_1()
-                            .border_color(theme.colors.border_primary.opacity(0.3))
-                            .hover(|s| s.bg(theme.colors.bg_secondary.opacity(0.3)))
+                            .border_color(theme.border.opacity(0.3))
+                            .hover(|s| s.bg(theme.secondary.opacity(0.3)))
                             .when(!enabled, |el| el.opacity(0.5))
                             .child(
                                 div()
@@ -384,7 +384,7 @@ impl Render for HeaderEditor {
                                 .items_center()
                                 .justify_center()
                                 .py(px(40.0))
-                                .text_color(theme.colors.text_muted.opacity(0.5))
+                                .text_color(theme.muted_foreground.opacity(0.5))
                                 .text_size(px(12.0))
                                 .child("No headers. Click + to add one."),
                         )

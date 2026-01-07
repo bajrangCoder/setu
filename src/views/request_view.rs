@@ -1,13 +1,13 @@
 use gpui::prelude::*;
 use gpui::{
-    div, px, AnyElement, App, Context, Entity, FocusHandle, Focusable, IntoElement, Render, Styled,
+    div, AnyElement, App, Context, Entity, FocusHandle, Focusable, IntoElement, Render, Styled,
     Window,
 };
 use gpui_component::input::{Input, InputState};
 
 use crate::components::{AuthEditor, BodyType, BodyTypeSelector, HeaderEditor, ParamsEditor};
 use crate::entities::{Header, RequestBody, RequestEntity, RequestEvent};
-use crate::theme::Theme;
+use gpui_component::ActiveTheme;
 
 /// Active tab in the request panel
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -250,7 +250,7 @@ impl Render for RequestView {
         // Ensure all editors are initialized
         self.ensure_editors(window, cx);
 
-        let theme = Theme::dark();
+        let theme = cx.theme();
         let this = cx.entity().clone();
 
         div()
@@ -276,7 +276,11 @@ impl Render for RequestView {
 }
 
 impl RequestView {
-    fn render_tabs(&self, _theme: &Theme, this: Entity<RequestView>) -> impl IntoElement {
+    fn render_tabs(
+        &self,
+        _theme: &gpui_component::theme::ThemeColor,
+        this: Entity<RequestView>,
+    ) -> impl IntoElement {
         use crate::components::{PanelTab, PanelTabBar};
 
         PanelTabBar::new()
@@ -322,22 +326,22 @@ impl RequestView {
             )
     }
 
-    fn render_tab_content(&self, theme: &Theme, cx: &Context<Self>) -> AnyElement {
+    fn render_tab_content(
+        &self,
+        theme: &gpui_component::theme::ThemeColor,
+        cx: &Context<Self>,
+    ) -> AnyElement {
         let request = self.request.read(cx);
 
         match self.active_tab {
             RequestTab::Body => self.render_body_tab(theme).into_any_element(),
-            RequestTab::Params => self.render_params_tab(theme).into_any_element(),
-            RequestTab::Headers => self
-                .render_headers_tab(theme, request, cx)
-                .into_any_element(),
-            RequestTab::Auth => self.render_auth_tab(theme).into_any_element(),
+            RequestTab::Params => self.render_params_tab().into_any_element(),
+            RequestTab::Headers => self.render_headers_tab().into_any_element(),
+            RequestTab::Auth => self.render_auth_tab().into_any_element(),
         }
     }
 
-    fn render_body_tab(&self, _theme: &Theme) -> impl IntoElement {
-        let theme = Theme::dark();
-
+    fn render_body_tab(&self, theme: &gpui_component::theme::ThemeColor) -> impl IntoElement {
         // Container with body type selector and editor
         div()
             .id("request-body-editor")
@@ -357,14 +361,14 @@ impl RequestView {
                     .id("request-body-editor-scroll")
                     .flex_1()
                     .overflow_y_scroll()
-                    .bg(theme.colors.bg_tertiary)
+                    .bg(theme.muted)
                     .when_some(self.body_editor.as_ref(), |el, editor| {
                         el.child(Input::new(editor).appearance(false).size_full())
                     }),
             )
     }
 
-    fn render_params_tab(&self, _theme: &Theme) -> impl IntoElement {
+    fn render_params_tab(&self) -> impl IntoElement {
         div()
             .flex()
             .flex_col()
@@ -376,12 +380,7 @@ impl RequestView {
             })
     }
 
-    fn render_headers_tab(
-        &self,
-        _theme: &Theme,
-        _request: &RequestEntity,
-        _cx: &Context<Self>,
-    ) -> impl IntoElement {
+    fn render_headers_tab(&self) -> impl IntoElement {
         div()
             .flex()
             .flex_col()
@@ -393,7 +392,7 @@ impl RequestView {
             })
     }
 
-    fn render_auth_tab(&self, _theme: &Theme) -> impl IntoElement {
+    fn render_auth_tab(&self) -> impl IntoElement {
         div()
             .flex()
             .flex_col()

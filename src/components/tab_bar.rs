@@ -1,10 +1,11 @@
 use gpui::prelude::*;
-use gpui::{div, px, App, Entity, IntoElement, ScrollHandle, SharedString, Styled, Window};
+use gpui::{div, px, App, Entity, Hsla, IntoElement, ScrollHandle, SharedString, Styled, Window};
 use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
+use gpui_component::ActiveTheme;
 
 use crate::entities::HttpMethod;
 use crate::icons::IconName;
-use crate::theme::Theme;
+use crate::theme::method_color;
 
 /// A single tab in the tab bar
 #[derive(Clone)]
@@ -56,8 +57,8 @@ impl TabBar {
 }
 
 impl RenderOnce for TabBar {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let theme = Theme::dark();
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = cx.theme();
         let main_view = self.main_view;
         let main_view_for_new = main_view.clone();
 
@@ -67,9 +68,9 @@ impl RenderOnce for TabBar {
             .items_center()
             .w_full()
             .h(px(36.0))
-            .bg(theme.colors.bg_secondary)
+            .bg(theme.secondary)
             .border_b_1()
-            .border_color(theme.colors.border_primary)
+            .border_color(theme.border)
             // Tabs - horizontally scrollable
             .child(
                 div()
@@ -87,7 +88,7 @@ impl RenderOnce for TabBar {
                         let main_view_for_close = main_view.clone();
                         let main_view_for_context = main_view.clone();
 
-                        Tab::new(tab, main_view_for_context)
+                        Tab::new(tab, main_view_for_context, cx)
                             .on_click(move |_event, _window, cx| {
                                 main_view_for_click.update(cx, |view, cx| {
                                     view.switch_tab(index, cx);
@@ -112,12 +113,9 @@ impl RenderOnce for TabBar {
                     .mx(px(4.0))
                     .rounded(px(4.0))
                     .cursor_pointer()
-                    .text_color(theme.colors.text_muted)
+                    .text_color(theme.muted_foreground)
                     .text_size(px(14.0))
-                    .hover(|s| {
-                        s.bg(theme.colors.bg_tertiary)
-                            .text_color(theme.colors.text_secondary)
-                    })
+                    .hover(|s| s.bg(theme.muted).text_color(theme.secondary_foreground))
                     .on_click(move |_event, _window, cx| {
                         main_view_for_new.update(cx, |view, cx| {
                             view.new_tab(cx);
@@ -129,18 +127,33 @@ impl RenderOnce for TabBar {
 }
 
 /// Single tab component with click handler
+/// Stores theme colors so they're available in into_element
 pub struct Tab {
     info: TabInfo,
     main_view: Entity<crate::views::MainView>,
+    // Theme colors captured at creation time
+    method_color: Hsla,
+    bg_active: Hsla,
+    bg_hover: Hsla,
+    text_active: Hsla,
+    text_inactive: Hsla,
     on_click: Option<Box<dyn Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static>>,
     on_close: Option<Box<dyn Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static>>,
 }
 
 impl Tab {
-    pub fn new(info: TabInfo, main_view: Entity<crate::views::MainView>) -> Self {
+    pub fn new(info: TabInfo, main_view: Entity<crate::views::MainView>, cx: &App) -> Self {
+        let theme = cx.theme();
+        let m_color = method_color(&info.method, cx);
+
         Self {
             info,
             main_view,
+            method_color: m_color,
+            bg_active: theme.muted,
+            bg_hover: theme.accent,
+            text_active: theme.foreground,
+            text_inactive: theme.muted_foreground,
             on_click: None,
             on_close: None,
         }
@@ -161,26 +174,12 @@ impl Tab {
         self.on_close = Some(Box::new(callback));
         self
     }
-
-    fn method_color(&self, theme: &Theme) -> gpui::Hsla {
-        match self.info.method {
-            HttpMethod::Get => theme.colors.method_get,
-            HttpMethod::Post => theme.colors.method_post,
-            HttpMethod::Put => theme.colors.method_put,
-            HttpMethod::Delete => theme.colors.method_delete,
-            HttpMethod::Patch => theme.colors.method_patch,
-            HttpMethod::Head => theme.colors.method_head,
-            HttpMethod::Options => theme.colors.method_options,
-        }
-    }
 }
 
 impl IntoElement for Tab {
     type Element = gpui::AnyElement;
 
     fn into_element(self) -> Self::Element {
-        let theme = Theme::dark();
-        let method_color = self.method_color(&theme);
         let is_active = self.info.is_active;
         let tab_id = self.info.id;
         let tab_index = self.info.index;
@@ -191,6 +190,16 @@ impl IntoElement for Tab {
         let main_view_for_rename = main_view.clone();
         let main_view_for_close = main_view.clone();
         let main_view_for_close_others = main_view.clone();
+
+        // Use captured theme colors
+        let method_color = self.method_color;
+        let bg_active = self.bg_active;
+        let bg_hover = self.bg_hover;
+        let text_color = if is_active {
+            self.text_active
+        } else {
+            self.text_inactive
+        };
 
         div()
             .id(("tab", tab_id))
@@ -203,10 +212,9 @@ impl IntoElement for Tab {
             .mx(px(2.0))
             .rounded(px(4.0))
             .cursor_pointer()
-            .when(is_active, |s| s.bg(theme.colors.bg_tertiary))
-            .when(!is_active, |s| {
-                s.hover(|s| s.bg(theme.colors.bg_tertiary.opacity(0.5)))
-            })
+            // Active tab styling
+            .when(is_active, |s| s.bg(bg_active))
+            .when(!is_active, |s| s.hover(|h| h.bg(bg_hover.opacity(0.3))))
             .when_some(self.on_click, |el, callback| {
                 el.on_click(move |event, window, cx| {
                     callback(event, window, cx);
@@ -223,11 +231,7 @@ impl IntoElement for Tab {
             // Tab name
             .child(
                 div()
-                    .text_color(if is_active {
-                        theme.colors.text_primary
-                    } else {
-                        theme.colors.text_muted
-                    })
+                    .text_color(text_color)
                     .text_size(px(11.0))
                     .child(self.info.name),
             )
@@ -244,16 +248,12 @@ impl IntoElement for Tab {
                         .items_center()
                         .justify_center()
                         .rounded(px(2.0))
-                        .text_color(theme.colors.text_muted)
                         .text_size(px(10.0))
                         .cursor_pointer()
+                        .text_color(text_color)
                         // Hide by default for inactive tabs, show on group hover
                         .when(!is_active, |s| {
                             s.invisible().group_hover("tab", |s| s.visible())
-                        })
-                        .hover(|s| {
-                            s.bg(theme.colors.bg_secondary)
-                                .text_color(theme.colors.text_secondary)
                         })
                         .on_click(move |event, window, cx| {
                             // Stop propagation to prevent tab switch

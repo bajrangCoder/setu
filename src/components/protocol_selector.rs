@@ -1,7 +1,7 @@
 use gpui::prelude::*;
 use gpui::{div, px, App, IntoElement, Styled, Window};
 
-use crate::theme::Theme;
+use gpui_component::ActiveTheme;
 
 /// Available protocol types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -41,8 +41,8 @@ impl ProtocolSelector {
 }
 
 impl RenderOnce for ProtocolSelector {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let theme = Theme::dark();
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = cx.theme();
         let protocols = [
             ProtocolType::Rest,
             ProtocolType::WebSocket,
@@ -56,7 +56,7 @@ impl RenderOnce for ProtocolSelector {
             .items_center()
             .gap(px(2.0))
             .p(px(2.0))
-            .bg(theme.colors.bg_tertiary)
+            .bg(theme.muted)
             .rounded(px(6.0))
             .children(protocols.into_iter().map(|protocol| {
                 let is_selected = protocol == self.selected;
@@ -76,15 +76,15 @@ impl RenderOnce for ProtocolSelector {
                         gpui::CursorStyle::Arrow
                     })
                     .when(is_selected, |s| {
-                        s.bg(theme.colors.bg_elevated)
-                            .text_color(theme.colors.text_primary)
+                        s.bg(theme.popover)
+                            .text_color(theme.foreground)
                     })
                     .when(!is_selected && is_available, |s| {
-                        s.text_color(theme.colors.text_muted)
-                            .hover(|s| s.text_color(theme.colors.text_secondary))
+                        s.text_color(theme.muted_foreground)
+                            .hover(|s| s.text_color(theme.secondary_foreground))
                     })
                     .when(!is_available, |s| {
-                        s.text_color(theme.colors.text_placeholder).opacity(0.6)
+                        s.text_color(theme.muted_foreground).opacity(0.6)
                     })
                     .text_size(px(11.0))
                     .font_weight(if is_selected {
@@ -99,9 +99,9 @@ impl RenderOnce for ProtocolSelector {
                             div()
                                 .px(px(4.0))
                                 .py(px(1.0))
-                                .bg(theme.colors.accent.opacity(0.2))
+                                .bg(theme.primary.opacity(0.2))
                                 .rounded(px(3.0))
-                                .text_color(theme.colors.accent)
+                                .text_color(theme.primary)
                                 .text_size(px(8.0))
                                 .font_weight(gpui::FontWeight::BOLD)
                                 .child("SOON"),

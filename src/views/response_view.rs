@@ -17,7 +17,7 @@ use crate::components::StatusBadge;
 use crate::entities::{
     ContentCategory, ResponseData, ResponseEntity, ResponseEvent, ResponseState,
 };
-use crate::theme::Theme;
+use gpui_component::ActiveTheme;
 
 /// Active tab in the response panel
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -163,7 +163,7 @@ impl Render for ResponseView {
             ResponseTab::Headers => {}
         }
 
-        let theme = Theme::dark();
+        let theme = cx.theme();
 
         // Clone what we need before borrowing
         let state = self.response.read(cx).state.clone();
@@ -182,7 +182,7 @@ impl Render for ResponseView {
 impl ResponseView {
     fn render_content(
         &self,
-        theme: &Theme,
+        theme: &gpui_component::theme::ThemeColor,
         state: &ResponseState,
         data: Option<&ResponseData>,
         cx: &Context<Self>,
@@ -201,7 +201,7 @@ impl ResponseView {
         }
     }
 
-    fn render_empty(&self, theme: &Theme) -> impl IntoElement {
+    fn render_empty(&self, theme: &gpui_component::theme::ThemeColor) -> impl IntoElement {
         div()
             .flex_1()
             .flex()
@@ -211,19 +211,19 @@ impl ResponseView {
             .gap(px(8.0))
             .child(
                 div()
-                    .text_color(theme.colors.text_muted)
+                    .text_color(theme.muted_foreground)
                     .text_size(px(12.0))
                     .child("Response will appear here"),
             )
             .child(
                 div()
-                    .text_color(theme.colors.text_placeholder)
+                    .text_color(theme.muted_foreground)
                     .text_size(px(11.0))
                     .child("Send a request to get started"),
             )
     }
 
-    fn render_loading(&self, theme: &Theme) -> impl IntoElement {
+    fn render_loading(&self, theme: &gpui_component::theme::ThemeColor) -> impl IntoElement {
         // Use gpui-component's animated Spinner
         div()
             .flex_1()
@@ -235,13 +235,13 @@ impl ResponseView {
             .child(Spinner::new().large())
             .child(
                 div()
-                    .text_color(theme.colors.text_muted)
+                    .text_color(theme.muted_foreground)
                     .text_size(px(12.0))
                     .child("Sending request..."),
             )
     }
 
-    fn render_error(&self, theme: &Theme, message: &str) -> impl IntoElement {
+    fn render_error(&self, theme: &gpui_component::theme::ThemeColor, message: &str) -> impl IntoElement {
         div()
             .flex_1()
             .flex()
@@ -252,14 +252,14 @@ impl ResponseView {
             .p(px(16.0))
             .child(
                 div()
-                    .text_color(theme.colors.error)
+                    .text_color(theme.danger)
                     .text_size(px(12.0))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .child("Request failed"),
             )
             .child(
                 div()
-                    .text_color(theme.colors.text_muted)
+                    .text_color(theme.muted_foreground)
                     .text_size(px(11.0))
                     .child(message.to_string()),
             )
@@ -267,7 +267,7 @@ impl ResponseView {
 
     fn render_success(
         &self,
-        theme: &Theme,
+        theme: &gpui_component::theme::ThemeColor,
         data: &ResponseData,
         cx: &Context<Self>,
     ) -> impl IntoElement {
@@ -288,7 +288,7 @@ impl ResponseView {
                     .px(px(16.0))
                     .h(px(40.0))
                     .border_b_1()
-                    .border_color(theme.colors.border_primary)
+                    .border_color(theme.border)
                     // Left: status + meta
                     .child(
                         div()
@@ -298,13 +298,13 @@ impl ResponseView {
                             .child(StatusBadge::new(data.status_code))
                             .child(
                                 div()
-                                    .text_color(theme.colors.text_muted)
+                                    .text_color(theme.muted_foreground)
                                     .text_size(px(11.0))
                                     .child(data.formatted_duration()),
                             )
                             .child(
                                 div()
-                                    .text_color(theme.colors.text_muted)
+                                    .text_color(theme.muted_foreground)
                                     .text_size(px(11.0))
                                     .child(data.formatted_size()),
                             ),
@@ -323,7 +323,7 @@ impl ResponseView {
             )
     }
 
-    fn render_tabs(&self, _theme: &Theme, this: Entity<ResponseView>) -> impl IntoElement {
+    fn render_tabs(&self, _theme: &gpui_component::theme::ThemeColor, this: Entity<ResponseView>) -> impl IntoElement {
         use crate::components::PanelTab;
 
         div()
@@ -365,7 +365,7 @@ impl ResponseView {
 
     fn render_tab_content(
         &self,
-        theme: &Theme,
+        theme: &gpui_component::theme::ThemeColor,
         data: &ResponseData,
         cx: &Context<Self>,
     ) -> AnyElement {
@@ -376,7 +376,7 @@ impl ResponseView {
         }
     }
 
-    fn render_body_tab(&self, theme: &Theme, data: &ResponseData) -> impl IntoElement {
+    fn render_body_tab(&self, theme: &gpui_component::theme::ThemeColor, data: &ResponseData) -> impl IntoElement {
         let content_type = data.content_category();
 
         if content_type == ContentCategory::Image {
@@ -404,7 +404,7 @@ impl ResponseView {
                     .h_full()
                     .items_center()
                     .justify_center()
-                    .bg(theme.colors.bg_tertiary)
+                    .bg(theme.muted)
                     .p(px(16.0))
                     .child(
                         img(image)
@@ -415,7 +415,7 @@ impl ResponseView {
                     .child(
                         div()
                             .pt(px(8.0))
-                            .text_color(theme.colors.text_muted)
+                            .text_color(theme.muted_foreground)
                             .text_size(px(11.0))
                             .child(format!(
                                 "{} • {} bytes",
@@ -435,10 +435,10 @@ impl ResponseView {
                     .h_full()
                     .items_center()
                     .justify_center()
-                    .bg(theme.colors.bg_tertiary)
+                    .bg(theme.muted)
                     .child(
                         div()
-                            .text_color(theme.colors.text_muted)
+                            .text_color(theme.muted_foreground)
                             .text_size(px(12.0))
                             .child(format!(
                                 "Image ({}) - {} bytes",
@@ -460,14 +460,14 @@ impl ResponseView {
             .h_full()
             .overflow_y_scroll()
             .overflow_x_hidden()
-            .bg(theme.colors.bg_tertiary)
+            .bg(theme.muted)
             .when_some(self.body_display.as_ref(), |el, editor| {
                 el.child(Input::new(editor).appearance(false).size_full())
             })
             .into_any_element()
     }
 
-    fn render_raw_tab(&self, theme: &Theme) -> impl IntoElement {
+    fn render_raw_tab(&self, theme: &gpui_component::theme::ThemeColor) -> impl IntoElement {
         // Raw response
         div()
             .id("raw-scroll-container")
@@ -478,7 +478,7 @@ impl ResponseView {
             .h_full()
             .overflow_y_scroll()
             .overflow_x_hidden()
-            .bg(theme.colors.bg_tertiary)
+            .bg(theme.muted)
             .when_some(self.raw_display.as_ref(), |el, editor| {
                 el.child(Input::new(editor).appearance(false).size_full())
             })
@@ -486,7 +486,7 @@ impl ResponseView {
 
     fn render_headers_tab(
         &self,
-        theme: &Theme,
+        theme: &gpui_component::theme::ThemeColor,
         data: &ResponseData,
         cx: &Context<Self>,
     ) -> impl IntoElement {
@@ -506,7 +506,7 @@ impl ResponseView {
                 .justify_center()
                 .flex_1()
                 .w_full()
-                .text_color(theme.colors.text_muted)
+                .text_color(theme.muted_foreground)
                 .text_size(px(12.0))
                 .child("No headers")
                 .into_any_element();
@@ -520,11 +520,11 @@ impl ResponseView {
                 .collect(),
         );
 
-        let bg_primary = theme.colors.bg_secondary;
-        let bg_alternate = theme.colors.bg_tertiary;
-        let border_color = theme.colors.border_primary.opacity(0.3);
-        let key_color = theme.colors.text_secondary;
-        let value_color = theme.colors.text_primary;
+        let bg_primary = theme.secondary;
+        let bg_alternate = theme.muted;
+        let border_color = theme.border.opacity(0.3);
+        let key_color = theme.secondary_foreground;
+        let value_color = theme.foreground;
 
         div()
             .id("headers-virtual-container")
@@ -534,7 +534,7 @@ impl ResponseView {
             .flex_1()
             .w_full()
             .overflow_hidden()
-            .bg(theme.colors.bg_tertiary)
+            .bg(theme.muted)
             .child(
                 v_virtual_list(
                     cx.entity().clone(),

@@ -3,7 +3,7 @@ use gpui::{div, px, App, ClickEvent, Entity, IntoElement, Styled, Window};
 use gpui_component::input::{Input, InputState};
 
 use crate::components::{MethodDropdownState, MethodDropdownTrigger};
-use crate::theme::Theme;
+use gpui_component::ActiveTheme;
 
 /// Callback type for Send button
 pub type OnSendCallback = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
@@ -47,8 +47,8 @@ impl UrlBar {
 }
 
 impl RenderOnce for UrlBar {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let theme = Theme::dark();
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = cx.theme();
         let is_loading = self.is_loading;
 
         div()
@@ -58,7 +58,7 @@ impl RenderOnce for UrlBar {
             .gap(px(2.0))
             .w_full()
             .h(px(40.0))
-            .bg(theme.colors.bg_tertiary)
+            .bg(theme.muted)
             .rounded(px(6.0))
             // Method dropdown trigger
             .when_some(self.method_dropdown, |el, dropdown_state| {
@@ -69,7 +69,7 @@ impl RenderOnce for UrlBar {
                 )
             })
             // Divider
-            .child(div().w(px(1.0)).h(px(20.0)).bg(theme.colors.border_primary))
+            .child(div().w(px(1.0)).h(px(20.0)).bg(theme.border))
             // URL input using gpui-component
             .child(
                 div()
@@ -95,12 +95,12 @@ impl RenderOnce for UrlBar {
                     .h(px(32.0))
                     .mr(px(4.0))
                     .rounded(px(4.0))
-                    .bg(theme.colors.accent)
-                    .text_color(theme.colors.bg_primary)
+                    .bg(theme.primary)
+                    .text_color(theme.background)
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_size(px(12.0))
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme.colors.accent_hover))
+                    .hover(|s| s.bg(theme.primary_hover))
                     .when(is_loading, |s| s.opacity(0.7))
                     .when_some(self.on_send, |el, callback| {
                         el.on_click(move |event, window, cx| {

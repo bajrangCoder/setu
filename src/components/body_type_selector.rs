@@ -6,7 +6,7 @@ use gpui::{
 use gpui_component::select::{Select, SelectEvent, SelectItem, SelectState};
 use gpui_component::Sizable;
 
-use crate::theme::Theme;
+use gpui_component::ActiveTheme;
 
 /// Body content type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -146,8 +146,8 @@ impl Focusable for BodyTypeSelector {
 }
 
 impl Render for BodyTypeSelector {
-    fn render(&mut self, _window: &mut gpui::Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::dark();
+    fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
 
         div()
             .track_focus(&self.focus_handle)
@@ -157,9 +157,9 @@ impl Render for BodyTypeSelector {
             .justify_between()
             .px(px(12.0))
             .py(px(6.0))
-            .bg(theme.colors.bg_secondary)
+            .bg(theme.secondary)
             .border_b_1()
-            .border_color(theme.colors.border_primary)
+            .border_color(theme.border)
             .child(
                 div()
                     .flex()
@@ -168,7 +168,7 @@ impl Render for BodyTypeSelector {
                     .gap(px(8.0))
                     .child(
                         div()
-                            .text_color(theme.colors.text_muted)
+                            .text_color(theme.muted_foreground)
                             .text_size(px(11.0))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .child("Content Type"),

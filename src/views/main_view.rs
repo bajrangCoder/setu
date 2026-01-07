@@ -17,7 +17,7 @@ use crate::entities::{
     Header, HistoryEntity, HttpMethod, RequestBody, RequestEntity, ResponseEntity,
 };
 use crate::http::HttpClient;
-use crate::theme::Theme;
+use gpui_component::ActiveTheme;
 use crate::views::{CommandPaletteView, RequestView, ResponseView};
 
 /// A tab representing a request with its input state
@@ -410,7 +410,7 @@ impl Render for MainView {
         // Ensure URL input is initialized for the active tab
         self.ensure_url_input(self.active_tab_index, window, cx);
 
-        let theme = Theme::dark();
+        let theme = cx.theme();
         let history_entries = self.history.read(cx).entries.clone();
 
         // Build tab infos with index
@@ -448,8 +448,8 @@ impl Render for MainView {
             .flex()
             .flex_row()
             .size_full()
-            .bg(theme.colors.bg_primary)
-            .text_color(theme.colors.text_primary)
+            .bg(theme.background)
+            .text_color(theme.foreground)
             // Sidebar
             .child(Sidebar::new(history_entries).visible(self.sidebar_visible))
             // Main content
@@ -559,7 +559,7 @@ impl MainView {
             .child(self.request_view.clone())
     }
 
-    fn render_header(&self, theme: &Theme) -> impl IntoElement {
+    fn render_header(&self, theme: &gpui_component::theme::ThemeColor) -> impl IntoElement {
         div()
             .flex()
             .flex_row()
@@ -568,7 +568,7 @@ impl MainView {
             .h(px(44.0))
             .px(px(16.0))
             .border_b_1()
-            .border_color(theme.colors.border_primary)
+            .border_color(theme.border)
             // Left: Logo + Protocol selector
             .child(
                 div()
@@ -577,7 +577,7 @@ impl MainView {
                     .gap(px(16.0))
                     .child(
                         div()
-                            .text_color(theme.colors.accent)
+                            .text_color(theme.primary)
                             .font_weight(gpui::FontWeight::BOLD)
                             .text_size(px(14.0))
                             .child("setu"),
@@ -592,13 +592,13 @@ impl MainView {
                         .items_center()
                         .px(px(8.0))
                         .py(px(4.0))
-                        .bg(theme.colors.bg_secondary)
+                        .bg(theme.secondary)
                         .rounded(px(4.0))
                         .cursor_pointer()
-                        .hover(|s| s.bg(theme.colors.bg_tertiary))
+                        .hover(|s| s.bg(theme.muted))
                         .child(
                             div()
-                                .text_color(theme.colors.text_muted)
+                                .text_color(theme.muted_foreground)
                                 .text_size(px(11.0))
                                 .child("⌘K"),
                         ),
@@ -606,7 +606,7 @@ impl MainView {
             )
     }
 
-    fn render_shortcuts(&self, theme: &Theme) -> impl IntoElement {
+    fn render_shortcuts(&self, theme: &gpui_component::theme::ThemeColor) -> impl IntoElement {
         div()
             .flex()
             .flex_row()
@@ -615,8 +615,8 @@ impl MainView {
             .gap(px(24.0))
             .h(px(32.0))
             .border_t_1()
-            .border_color(theme.colors.border_primary)
-            .bg(theme.colors.bg_secondary)
+            .border_color(theme.border)
+            .bg(theme.secondary)
             .children(
                 [("Send", "⌘↵"), ("New Tab", "⌘T"), ("Commands", "⌘K")]
                     .into_iter()
@@ -627,7 +627,7 @@ impl MainView {
                             .gap(px(6.0))
                             .child(
                                 div()
-                                    .text_color(theme.colors.text_muted)
+                                    .text_color(theme.muted_foreground)
                                     .text_size(px(10.0))
                                     .child(label),
                             )
@@ -635,9 +635,9 @@ impl MainView {
                                 div()
                                     .px(px(4.0))
                                     .py(px(1.0))
-                                    .bg(theme.colors.bg_tertiary)
+                                    .bg(theme.muted)
                                     .rounded(px(2.0))
-                                    .text_color(theme.colors.text_muted)
+                                    .text_color(theme.muted_foreground)
                                     .text_size(px(9.0))
                                     .child(shortcut),
                             )

@@ -1,7 +1,7 @@
 use gpui::prelude::*;
 use gpui::{div, px, App, FocusHandle, Focusable, IntoElement, Render, Styled, Window};
 
-use crate::theme::Theme;
+use gpui_component::ActiveTheme;
 
 /// A command in the palette
 #[derive(Debug, Clone)]
@@ -142,8 +142,8 @@ impl Focusable for CommandPaletteView {
 }
 
 impl Render for CommandPaletteView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::dark();
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
 
         if !self.is_open {
             return div();
@@ -160,7 +160,7 @@ impl Render for CommandPaletteView {
             .items_start()
             .justify_center()
             .pt(px(100.0))
-            .bg(theme.colors.bg_overlay)
+            .bg(theme.overlay)
             .child(
                 // Palette container
                 div()
@@ -169,10 +169,10 @@ impl Render for CommandPaletteView {
                     .flex_col()
                     .w(px(500.0))
                     .max_h(px(400.0))
-                    .bg(theme.colors.bg_elevated)
+                    .bg(theme.popover)
                     .rounded(px(12.0))
                     .border_1()
-                    .border_color(theme.colors.border_primary)
+                    .border_color(theme.border)
                     .shadow_lg()
                     .overflow_hidden()
                     // Search input
@@ -184,7 +184,7 @@ impl Render for CommandPaletteView {
                             .px(px(16.0))
                             .h(px(52.0))
                             .border_b_1()
-                            .border_color(theme.colors.border_primary)
+                            .border_color(theme.border)
                             .child(
                                 // TODO: Add proper SVG search icon
                                 div().text_size(px(18.0)).child("🔍"),
@@ -193,9 +193,9 @@ impl Render for CommandPaletteView {
                                 div()
                                     .flex_1()
                                     .text_color(if self.query.is_empty() {
-                                        theme.colors.text_placeholder
+                                        theme.muted_foreground
                                     } else {
-                                        theme.colors.text_primary
+                                        theme.foreground
                                     })
                                     .text_size(px(15.0))
                                     // TODO: Replace with gpui-component Input when needed
@@ -222,15 +222,15 @@ impl Render for CommandPaletteView {
                                     .px(px(16.0))
                                     .py(px(10.0))
                                     .cursor_pointer()
-                                    .when(is_selected, |s| s.bg(theme.colors.accent.opacity(0.15)))
-                                    .hover(|s| s.bg(theme.colors.bg_tertiary))
+                                    .when(is_selected, |s| s.bg(theme.primary.opacity(0.15)))
+                                    .hover(|s| s.bg(theme.muted))
                                     // Icon
                                     .child(div().text_size(px(16.0)).child(cmd.icon))
                                     // Label
                                     .child(
                                         div()
                                             .flex_1()
-                                            .text_color(theme.colors.text_primary)
+                                            .text_color(theme.foreground)
                                             .text_size(px(14.0))
                                             .child(cmd.label),
                                     )
@@ -240,9 +240,9 @@ impl Render for CommandPaletteView {
                                             div()
                                                 .px(px(8.0))
                                                 .py(px(2.0))
-                                                .bg(theme.colors.bg_secondary)
+                                                .bg(theme.secondary)
                                                 .rounded(px(4.0))
-                                                .text_color(theme.colors.text_muted)
+                                                .text_color(theme.muted_foreground)
                                                 .text_size(px(11.0))
                                                 .child(shortcut),
                                         )

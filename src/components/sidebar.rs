@@ -6,10 +6,10 @@ use gpui::{div, px, App, IntoElement, Styled, Window};
 use gpui_component::sidebar::{
     Sidebar as GpuiSidebar, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem,
 };
-use gpui_component::Side;
+use gpui_component::{ActiveTheme, Side};
 
-use crate::entities::{HistoryEntry, HttpMethod};
-use crate::theme::Theme;
+use crate::entities::HistoryEntry;
+use crate::theme::method_color;
 
 /// Sidebar component using gpui-component's Sidebar
 #[derive(IntoElement)]
@@ -30,23 +30,11 @@ impl Sidebar {
         self.is_visible = visible;
         self
     }
-
-    fn method_color(method: &HttpMethod, theme: &Theme) -> gpui::Hsla {
-        match method {
-            HttpMethod::Get => theme.colors.method_get,
-            HttpMethod::Post => theme.colors.method_post,
-            HttpMethod::Put => theme.colors.method_put,
-            HttpMethod::Delete => theme.colors.method_delete,
-            HttpMethod::Patch => theme.colors.method_patch,
-            HttpMethod::Head => theme.colors.method_head,
-            HttpMethod::Options => theme.colors.method_options,
-        }
-    }
 }
 
 impl RenderOnce for Sidebar {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let theme = Theme::dark();
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = cx.theme();
 
         if !self.is_visible {
             return div().into_any_element();
@@ -70,7 +58,7 @@ impl RenderOnce for Sidebar {
             .header(
                 SidebarHeader::new().child(
                     div()
-                        .text_color(theme.colors.text_muted)
+                        .text_color(theme.muted_foreground)
                         .text_size(px(11.0))
                         .font_weight(gpui::FontWeight::MEDIUM)
                         .child("HISTORY"),
@@ -91,32 +79,22 @@ impl RenderOnce for Sidebar {
 
 /// Single history item - kept for reference/alternate usage
 #[derive(IntoElement)]
+#[allow(dead_code)]
 pub struct HistoryItem {
     entry: HistoryEntry,
 }
 
+#[allow(dead_code)]
 impl HistoryItem {
     pub fn new(entry: HistoryEntry) -> Self {
         Self { entry }
     }
-
-    fn method_color(&self, theme: &Theme) -> gpui::Hsla {
-        match self.entry.request.method {
-            HttpMethod::Get => theme.colors.method_get,
-            HttpMethod::Post => theme.colors.method_post,
-            HttpMethod::Put => theme.colors.method_put,
-            HttpMethod::Delete => theme.colors.method_delete,
-            HttpMethod::Patch => theme.colors.method_patch,
-            HttpMethod::Head => theme.colors.method_head,
-            HttpMethod::Options => theme.colors.method_options,
-        }
-    }
 }
 
 impl RenderOnce for HistoryItem {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let theme = Theme::dark();
-        let method_color = self.method_color(&theme);
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = cx.theme();
+        let m_color = method_color(&self.entry.request.method, cx);
         let display_name = self.entry.display_name();
         let method = self.entry.request.method.as_str();
 
@@ -129,11 +107,11 @@ impl RenderOnce for HistoryItem {
             .px(px(12.0))
             .py(px(6.0))
             .cursor_pointer()
-            .hover(|s| s.bg(theme.colors.bg_tertiary))
+            .hover(|s| s.bg(theme.muted))
             // Method - compact, colored
             .child(
                 div()
-                    .text_color(method_color)
+                    .text_color(m_color)
                     .font_weight(gpui::FontWeight::BOLD)
                     .text_size(px(9.0))
                     .w(px(32.0))
@@ -143,7 +121,7 @@ impl RenderOnce for HistoryItem {
             .child(
                 div()
                     .flex_1()
-                    .text_color(theme.colors.text_secondary)
+                    .text_color(theme.secondary_foreground)
                     .text_size(px(11.0))
                     .overflow_hidden()
                     .child(display_name),

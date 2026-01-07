@@ -1,13 +1,14 @@
 // Setu Method Dropdown
 // Provides HTTP method selection with consistent theming
-// Uses gpui-component DropdownButton but keeps custom implementation for method selection
+// Uses gpui-component theme system for all colors
 
 use gpui::prelude::*;
 use gpui::{div, px, App, Entity, IntoElement, SharedString, Styled, Window};
+use gpui_component::ActiveTheme;
 
 use crate::entities::HttpMethod;
 use crate::icons::IconName;
-use crate::theme::Theme;
+use crate::theme::method_color;
 
 /// State for the method dropdown
 pub struct MethodDropdownState {
@@ -64,19 +65,6 @@ impl MethodDropdownState {
     }
 }
 
-/// Helper function to get method color
-fn method_color(method: HttpMethod, theme: &Theme) -> gpui::Hsla {
-    match method {
-        HttpMethod::Get => theme.colors.method_get,
-        HttpMethod::Post => theme.colors.method_post,
-        HttpMethod::Put => theme.colors.method_put,
-        HttpMethod::Delete => theme.colors.method_delete,
-        HttpMethod::Patch => theme.colors.method_patch,
-        HttpMethod::Head => theme.colors.method_head,
-        HttpMethod::Options => theme.colors.method_options,
-    }
-}
-
 /// Just the trigger button for the dropdown (renders in UrlBar)
 #[derive(IntoElement)]
 pub struct MethodDropdownTrigger {
@@ -91,11 +79,11 @@ impl MethodDropdownTrigger {
 
 impl RenderOnce for MethodDropdownTrigger {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let theme = Theme::dark();
+        let theme = cx.theme();
         let state = self.state.read(cx);
         let selected = state.selected;
         let is_open = state.is_open;
-        let color = method_color(selected, &theme);
+        let color = method_color(&selected, cx);
 
         let state_entity = self.state.clone();
 
@@ -108,7 +96,7 @@ impl RenderOnce for MethodDropdownTrigger {
             .h(px(32.0))
             .rounded(px(4.0))
             .cursor_pointer()
-            .hover(|s| s.bg(theme.colors.bg_tertiary.opacity(0.5)))
+            .hover(|s| s.bg(theme.muted))
             .on_click(move |_event, _window, cx| {
                 state_entity.update(cx, |s, cx| s.toggle(cx));
             })
@@ -121,7 +109,7 @@ impl RenderOnce for MethodDropdownTrigger {
             )
             .child(
                 div()
-                    .text_color(theme.colors.text_secondary)
+                    .text_color(theme.muted_foreground)
                     .text_size(px(10.0))
                     .child(if is_open {
                         IconName::ChevronUp
@@ -150,7 +138,7 @@ impl MethodDropdownOverlay {
 
 impl RenderOnce for MethodDropdownOverlay {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let theme = Theme::dark();
+        let theme = cx.theme();
         let state = self.state.read(cx);
         let is_open = state.is_open;
         let selected = state.selected;
@@ -168,9 +156,9 @@ impl RenderOnce for MethodDropdownOverlay {
             .top(px(134.0))
             .left(px(255.0))
             .min_w(px(120.0))
-            .bg(theme.colors.bg_elevated)
+            .bg(theme.popover)
             .border_1()
-            .border_color(theme.colors.border_primary)
+            .border_color(theme.border)
             .rounded(px(6.0))
             .shadow_lg()
             .overflow_hidden()
@@ -191,7 +179,7 @@ impl RenderOnce for MethodDropdownOverlay {
                 ]
                 .into_iter()
                 .map(|method| {
-                    let color = method_color(method, &theme);
+                    let color = method_color(&method, cx);
                     let is_selected = method == selected;
                     let state = state_entity.clone();
                     let request = request_entity.clone();
@@ -206,8 +194,8 @@ impl RenderOnce for MethodDropdownOverlay {
                         .text_color(color)
                         .font_weight(gpui::FontWeight::BOLD)
                         .text_size(px(12.0))
-                        .when(is_selected, |s| s.bg(theme.colors.bg_tertiary))
-                        .hover(|s| s.bg(theme.colors.bg_tertiary))
+                        .when(is_selected, |s| s.bg(theme.muted))
+                        .hover(|s| s.bg(theme.muted))
                         .on_click(move |_event, _window, cx| {
                             // Update request method
                             request.update(cx, |req, cx| {
