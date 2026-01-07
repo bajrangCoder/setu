@@ -1,6 +1,3 @@
-// Setu Sidebar - using gpui-component's Sidebar components
-// Provides a collapsible history sidebar with consistent theming
-
 use gpui::prelude::*;
 use gpui::{div, px, App, IntoElement, Styled, Window};
 use gpui_component::sidebar::{
@@ -15,30 +12,17 @@ use crate::theme::method_color;
 #[derive(IntoElement)]
 pub struct Sidebar {
     history: Vec<HistoryEntry>,
-    is_visible: bool,
 }
 
 impl Sidebar {
     pub fn new(history: Vec<HistoryEntry>) -> Self {
-        Self {
-            history,
-            is_visible: true,
-        }
-    }
-
-    pub fn visible(mut self, visible: bool) -> Self {
-        self.is_visible = visible;
-        self
+        Self { history }
     }
 }
 
 impl RenderOnce for Sidebar {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.theme();
-
-        if !self.is_visible {
-            return div().into_any_element();
-        }
 
         // Build sidebar menu items from history
         let menu_items: Vec<SidebarMenuItem> = self
@@ -73,6 +57,7 @@ impl RenderOnce for Sidebar {
                 // Show history items
                 SidebarGroup::new("Requests").child(SidebarMenu::new().children(menu_items))
             })
+            .w_full()
             .into_any_element()
     }
 }

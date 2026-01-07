@@ -4,7 +4,7 @@ use gpui::{
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputState};
-use gpui_component::resizable::{resizable_panel, v_resizable};
+use gpui_component::resizable::{h_resizable, resizable_panel, v_resizable};
 use gpui_component::v_flex;
 use gpui_component::Root;
 use gpui_component::WindowExt;
@@ -451,65 +451,75 @@ impl Render for MainView {
             .size_full()
             .bg(theme.background)
             .text_color(theme.foreground)
-            // Sidebar
-            .child(Sidebar::new(history_entries).visible(self.sidebar_visible))
-            // Main content
             .child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .flex_col()
-                    .h_full()
-                    .overflow_hidden()
-                    // Header with protocol selector
-                    .child(self.render_header(&theme))
-                    // Tab bar - pass this entity directly with scroll handle
-                    .child(TabBar::new(
-                        tab_infos,
-                        this.clone(),
-                        self.tab_scroll_handle.clone(),
-                    ))
-                    // Content - vertical resizable split between request and response panels
+                h_resizable("sidebar-main-split")
+                    .when(self.sidebar_visible, |group| {
+                        group.child(
+                            resizable_panel()
+                                .size(px(255.0))
+                                .size_range(px(150.0)..px(600.0))
+                                .child(Sidebar::new(history_entries)),
+                        )
+                    })
                     .child(
-                        div().flex_1().flex().flex_col().overflow_hidden().child(
-                            v_resizable("request-response-split")
-                                // Request panel with URL bar
+                        resizable_panel().child(
+                            div()
+                                .flex_1()
+                                .flex()
+                                .flex_col()
+                                .h_full()
+                                .overflow_hidden()
+                                // Header with protocol selector
+                                .child(self.render_header(&theme))
+                                // Tab bar - pass this entity directly with scroll handle
+                                .child(TabBar::new(
+                                    tab_infos,
+                                    this.clone(),
+                                    self.tab_scroll_handle.clone(),
+                                ))
+                                // Content - vertical resizable split between request and response panels
                                 .child(
-                                    resizable_panel()
-                                        .size(px(300.0))
-                                        .size_range(px(150.0)..px(600.0))
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .flex_col()
-                                                .size_full()
-                                                .overflow_hidden()
-                                                .child(self.render_request_panel(
-                                                    url_input,
-                                                    method_dropdown,
-                                                    request_entity,
-                                                    is_loading,
-                                                    this_for_send,
-                                                )),
-                                        ),
+                                    div().flex_1().flex().flex_col().overflow_hidden().child(
+                                        v_resizable("request-response-split")
+                                            // Request panel with URL bar
+                                            .child(
+                                                resizable_panel()
+                                                    .size(px(300.0))
+                                                    .size_range(px(150.0)..px(600.0))
+                                                    .child(
+                                                        div()
+                                                            .flex()
+                                                            .flex_col()
+                                                            .size_full()
+                                                            .overflow_hidden()
+                                                            .child(self.render_request_panel(
+                                                                url_input,
+                                                                method_dropdown,
+                                                                request_entity,
+                                                                is_loading,
+                                                                this_for_send,
+                                                            )),
+                                                    ),
+                                            )
+                                            // Response panel
+                                            .child(
+                                                resizable_panel()
+                                                    .size_range(px(150.0)..gpui::Pixels::MAX)
+                                                    .child(
+                                                        div()
+                                                            .flex()
+                                                            .flex_col()
+                                                            .size_full()
+                                                            .overflow_hidden()
+                                                            .child(self.response_view.clone()),
+                                                    ),
+                                            ),
+                                    ),
                                 )
-                                // Response panel
-                                .child(
-                                    resizable_panel()
-                                        .size_range(px(150.0)..gpui::Pixels::MAX)
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .flex_col()
-                                                .size_full()
-                                                .overflow_hidden()
-                                                .child(self.response_view.clone()),
-                                        ),
-                                ),
+                                // Bottom shortcuts bar
+                                .child(self.render_shortcuts(&theme)),
                         ),
-                    )
-                    // Bottom shortcuts bar
-                    .child(self.render_shortcuts(&theme)),
+                    ),
             )
             // Command palette overlay
             .child(self.command_palette.clone())
