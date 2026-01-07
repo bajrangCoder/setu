@@ -2,7 +2,8 @@ use gpui::prelude::*;
 use gpui::{div, px, App, ClickEvent, Entity, IntoElement, Styled, Window};
 use gpui_component::input::{Input, InputState};
 
-use crate::components::{MethodDropdownState, MethodDropdownTrigger};
+use crate::components::{MethodDropdown, MethodDropdownState};
+use crate::entities::RequestEntity;
 use gpui_component::ActiveTheme;
 
 /// Callback type for Send button
@@ -13,6 +14,7 @@ pub type OnSendCallback = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'stat
 pub struct UrlBar {
     input_state: Entity<InputState>,
     method_dropdown: Option<Entity<MethodDropdownState>>,
+    request: Option<Entity<RequestEntity>>,
     is_loading: bool,
     on_send: Option<OnSendCallback>,
 }
@@ -22,13 +24,19 @@ impl UrlBar {
         Self {
             input_state,
             method_dropdown: None,
+            request: None,
             is_loading: false,
             on_send: None,
         }
     }
 
-    pub fn method_dropdown(mut self, dropdown_state: Entity<MethodDropdownState>) -> Self {
+    pub fn method_dropdown(
+        mut self,
+        dropdown_state: Entity<MethodDropdownState>,
+        request: Entity<RequestEntity>,
+    ) -> Self {
         self.method_dropdown = Some(dropdown_state);
+        self.request = Some(request);
         self
     }
 
@@ -61,13 +69,16 @@ impl RenderOnce for UrlBar {
             .bg(theme.muted)
             .rounded(px(6.0))
             // Method dropdown trigger
-            .when_some(self.method_dropdown, |el, dropdown_state| {
-                el.child(
-                    div()
-                        .ml(px(4.0))
-                        .child(MethodDropdownTrigger::new(dropdown_state)),
-                )
-            })
+            .when_some(
+                self.method_dropdown.zip(self.request),
+                |el, (dropdown_state, request)| {
+                    el.child(
+                        div()
+                            .ml(px(4.0))
+                            .child(MethodDropdown::new(dropdown_state, request)),
+                    )
+                },
+            )
             // Divider
             .child(div().w(px(1.0)).h(px(20.0)).bg(theme.border))
             // URL input using gpui-component

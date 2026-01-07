@@ -10,15 +10,14 @@ use gpui_component::Root;
 use gpui_component::WindowExt;
 
 use crate::components::{
-    MethodDropdownOverlay, MethodDropdownState, ProtocolSelector, ProtocolType, Sidebar, TabBar,
-    TabInfo, UrlBar,
+    MethodDropdownState, ProtocolSelector, ProtocolType, Sidebar, TabBar, TabInfo, UrlBar,
 };
 use crate::entities::{
     Header, HistoryEntity, HttpMethod, RequestBody, RequestEntity, ResponseEntity,
 };
 use crate::http::HttpClient;
-use gpui_component::ActiveTheme;
 use crate::views::{CommandPaletteView, RequestView, ResponseView};
+use gpui_component::ActiveTheme;
 
 /// A tab representing a request with its input state
 pub struct RequestTab {
@@ -429,16 +428,18 @@ impl Render for MainView {
             .collect();
 
         // Get current request state for URL bar
-        let (url_input, method_dropdown, is_loading) = if let Some(tab) = self.active_tab() {
-            let req = tab.request.read(cx);
-            (
-                tab.url_input.clone(),
-                tab.method_dropdown.clone(),
-                req.is_sending(),
-            )
-        } else {
-            return div().child("No active tab").into_any_element();
-        };
+        let (url_input, method_dropdown, request_entity, is_loading) =
+            if let Some(tab) = self.active_tab() {
+                let req = tab.request.read(cx);
+                (
+                    tab.url_input.clone(),
+                    tab.method_dropdown.clone(),
+                    tab.request.clone(),
+                    req.is_sending(),
+                )
+            } else {
+                return div().child("No active tab").into_any_element();
+            };
 
         let this = cx.entity().clone();
         let this_for_send = this.clone();
@@ -486,6 +487,7 @@ impl Render for MainView {
                                                 .child(self.render_request_panel(
                                                     url_input,
                                                     method_dropdown,
+                                                    request_entity,
                                                     is_loading,
                                                     this_for_send,
                                                 )),
@@ -511,13 +513,6 @@ impl Render for MainView {
             )
             // Command palette overlay
             .child(self.command_palette.clone())
-            // Method dropdown overlay - renders on top of everything except command palette
-            .when_some(self.active_tab(), |el, tab| {
-                el.child(MethodDropdownOverlay::new(
-                    tab.method_dropdown.clone(),
-                    tab.request.clone(),
-                ))
-            })
             // Dialog layer - renders dialogs on top of everything
             .children(Root::render_dialog_layer(window, cx))
             .into_any_element()
@@ -529,6 +524,7 @@ impl MainView {
         &self,
         url_input: Option<Entity<InputState>>,
         method_dropdown: Entity<MethodDropdownState>,
+        request: Entity<RequestEntity>,
         is_loading: bool,
         this: Entity<MainView>,
     ) -> impl IntoElement {
@@ -545,7 +541,7 @@ impl MainView {
                     .when_some(url_input, |el, input| {
                         el.child(
                             UrlBar::new(input)
-                                .method_dropdown(method_dropdown)
+                                .method_dropdown(method_dropdown, request)
                                 .loading(is_loading)
                                 .on_send(move |_, _, cx| {
                                     this.update(cx, |view, cx| {
