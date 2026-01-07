@@ -2,8 +2,12 @@ use gpui::prelude::*;
 use gpui::{
     div, px, App, Entity, FocusHandle, Focusable, IntoElement, Render, ScrollHandle, Styled, Window,
 };
-use gpui_component::input::InputState;
+use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::input::{Input, InputState};
 use gpui_component::resizable::{resizable_panel, v_resizable};
+use gpui_component::v_flex;
+use gpui_component::Root;
+use gpui_component::WindowExt;
 
 use crate::components::{
     MethodDropdownOverlay, MethodDropdownState, ProtocolSelector, ProtocolType, Sidebar, TabBar,
@@ -163,6 +167,104 @@ impl MainView {
 
             // Update views
             if let Some(tab) = self.tabs.get(self.active_tab_index) {
+                self.request_view = cx.new(|cx| RequestView::new(tab.request.clone(), cx));
+                self.response_view = cx.new(|cx| ResponseView::new(tab.response.clone(), cx));
+            }
+
+            cx.notify();
+        }
+    }
+
+    /// Rename a tab
+    pub fn rename_tab(&mut self, index: usize, new_name: String, cx: &mut Context<Self>) {
+        if index < self.tabs.len() {
+            self.tabs[index].name = new_name;
+            cx.notify();
+        }
+    }
+
+    /// Show rename dialog for a tab
+    pub fn show_rename_dialog(
+        &mut self,
+        index: usize,
+        current_name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let this = cx.entity().clone();
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(&current_name));
+
+        // Subscribe to Enter key press on the input
+        cx.subscribe_in(&input, window, move |view, state, event, window, cx| {
+            use gpui_component::input::InputEvent;
+            if let InputEvent::PressEnter { .. } = event {
+                let new_name = state.read(cx).text().to_string();
+                view.rename_tab(index, new_name, cx);
+                window.close_dialog(cx);
+            }
+        })
+        .detach();
+
+        // Clone for footer button clicks
+        let input_for_footer = input.clone();
+        let this_for_footer = this.clone();
+
+        window.open_dialog(cx, move |dialog, _, _| {
+            // Clone again before the inner move closure
+            let input_for_buttons = input_for_footer.clone();
+            let this_for_buttons = this_for_footer.clone();
+
+            dialog
+                .title("Rename Tab")
+                .child(
+                    v_flex()
+                        .gap_3()
+                        .child("Enter a new name for this tab:")
+                        .child(Input::new(&input)),
+                )
+                .footer({
+                    // Clone before moving into footer closure
+                    let input_submit = input_for_buttons.clone();
+                    let this_submit = this_for_buttons.clone();
+
+                    move |_, _, _, _| {
+                        // Clone again for on_click closure
+                        let input_click = input_submit.clone();
+                        let this_click = this_submit.clone();
+
+                        vec![
+                            Button::new("rename-submit")
+                                .primary()
+                                .label("Rename")
+                                .on_click(move |_, window, cx| {
+                                    let new_name = input_click.read(cx).text().to_string();
+                                    this_click.update(cx, |view, cx| {
+                                        view.rename_tab(index, new_name, cx);
+                                    });
+                                    window.close_dialog(cx);
+                                }),
+                            Button::new("rename-cancel").label("Cancel").on_click(
+                                |_, window, cx| {
+                                    window.close_dialog(cx);
+                                },
+                            ),
+                        ]
+                    }
+                })
+        });
+    }
+
+    /// Close all tabs except the one at the given index
+    pub fn close_other_tabs(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index < self.tabs.len() {
+            // Keep only the tab at the given index
+            let tab_to_keep = self.tabs.remove(index);
+            self.tabs.clear();
+            self.tabs.push(tab_to_keep);
+            self.active_tab_index = 0;
+
+            // Update views
+            if let Some(tab) = self.tabs.get(0) {
                 self.request_view = cx.new(|cx| RequestView::new(tab.request.clone(), cx));
                 self.response_view = cx.new(|cx| ResponseView::new(tab.response.clone(), cx));
             }
@@ -416,6 +518,8 @@ impl Render for MainView {
                     tab.request.clone(),
                 ))
             })
+            // Dialog layer - renders dialogs on top of everything
+            .children(Root::render_dialog_layer(window, cx))
             .into_any_element()
     }
 }

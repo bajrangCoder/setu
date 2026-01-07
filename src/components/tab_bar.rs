@@ -1,5 +1,6 @@
 use gpui::prelude::*;
 use gpui::{div, px, App, Entity, IntoElement, ScrollHandle, SharedString, Styled, Window};
+use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_component::IconName;
 
 use crate::entities::HttpMethod;
@@ -84,8 +85,9 @@ impl RenderOnce for TabBar {
                         let index = tab.index;
                         let main_view_for_click = main_view.clone();
                         let main_view_for_close = main_view.clone();
+                        let main_view_for_context = main_view.clone();
 
-                        Tab::new(tab)
+                        Tab::new(tab, main_view_for_context)
                             .on_click(move |_event, _window, cx| {
                                 main_view_for_click.update(cx, |view, cx| {
                                     view.switch_tab(index, cx);
@@ -126,17 +128,19 @@ impl RenderOnce for TabBar {
     }
 }
 
-/// Single tab component with click handler - custom styled with colored method badge
+/// Single tab component with click handler
 pub struct Tab {
     info: TabInfo,
+    main_view: Entity<crate::views::MainView>,
     on_click: Option<Box<dyn Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static>>,
     on_close: Option<Box<dyn Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static>>,
 }
 
 impl Tab {
-    pub fn new(info: TabInfo) -> Self {
+    pub fn new(info: TabInfo, main_view: Entity<crate::views::MainView>) -> Self {
         Self {
             info,
+            main_view,
             on_click: None,
             on_close: None,
         }
@@ -172,13 +176,21 @@ impl Tab {
 }
 
 impl IntoElement for Tab {
-    type Element = gpui::Stateful<gpui::Div>;
+    type Element = gpui::AnyElement;
 
     fn into_element(self) -> Self::Element {
         let theme = Theme::dark();
         let method_color = self.method_color(&theme);
         let is_active = self.info.is_active;
         let tab_id = self.info.id;
+        let tab_index = self.info.index;
+        let tab_name = self.info.name.clone();
+        let main_view = self.main_view.clone();
+
+        // Clone main_view for context menu closures
+        let main_view_for_rename = main_view.clone();
+        let main_view_for_close = main_view.clone();
+        let main_view_for_close_others = main_view.clone();
 
         div()
             .id(("tab", tab_id))
@@ -219,7 +231,7 @@ impl IntoElement for Tab {
                     .text_size(px(11.0))
                     .child(self.info.name),
             )
-            // Close button
+            // Close button - use group for hover
             .group("tab")
             .when_some(self.on_close, |el, on_close| {
                 el.child(
@@ -251,5 +263,39 @@ impl IntoElement for Tab {
                         .child(IconName::Close),
                 )
             })
+            // Context menu for right-click
+            .context_menu(move |menu, _window, _cx| {
+                let tab_name_for_rename = tab_name.to_string();
+                let main_view_rename = main_view_for_rename.clone();
+                let main_view_close = main_view_for_close.clone();
+                let main_view_close_others = main_view_for_close_others.clone();
+
+                menu.item(PopupMenuItem::new("Rename").icon(IconName::Menu).on_click(
+                    move |_event, window, cx| {
+                        let current_name = tab_name_for_rename.clone();
+                        main_view_rename.update(cx, |view, cx| {
+                            view.show_rename_dialog(tab_index, current_name, window, cx);
+                        });
+                    },
+                ))
+                .separator()
+                .item(PopupMenuItem::new("Close").icon(IconName::Close).on_click(
+                    move |_event, _window, cx| {
+                        main_view_close.update(cx, |view, cx| {
+                            view.close_tab(tab_index, cx);
+                        });
+                    },
+                ))
+                .item(
+                    PopupMenuItem::new("Close Others")
+                        .icon(IconName::CircleX)
+                        .on_click(move |_event, _window, cx| {
+                            main_view_close_others.update(cx, |view, cx| {
+                                view.close_other_tabs(tab_index, cx);
+                            });
+                        }),
+                )
+            })
+            .into_any_element()
     }
 }
