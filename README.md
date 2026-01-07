@@ -4,6 +4,8 @@
 
 **Setu** is a modern, minimal, and high-performance API testing application built with Rust and [GPUI](https://gpui.rs).
 
+![Setu](./assets/demo.png)
+
 ## Getting Started
 
 Ensure you have [Rust](https://www.rust-lang.org/tools/install) installed on your system.
