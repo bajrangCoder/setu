@@ -4,9 +4,9 @@
 
 use gpui::prelude::*;
 use gpui::{div, px, App, Entity, IntoElement, SharedString, Styled, Window};
-use gpui_component::IconName;
 
 use crate::entities::HttpMethod;
+use crate::icons::IconName;
 use crate::theme::Theme;
 
 /// State for the method dropdown

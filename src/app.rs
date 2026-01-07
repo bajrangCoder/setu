@@ -1,9 +1,9 @@
 use gpui::prelude::*;
 use gpui::{px, App, Application, Bounds, KeyBinding, Point, Size, WindowBounds, WindowOptions};
 use gpui_component::Root;
-use gpui_component_assets::Assets;
 
 use crate::actions::*;
+use crate::assets::Assets;
 use crate::theme::apply_setu_theme;
 use crate::views::MainView;
 

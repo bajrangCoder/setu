@@ -1,9 +1,9 @@
 use gpui::prelude::*;
 use gpui::{div, px, App, Entity, IntoElement, ScrollHandle, SharedString, Styled, Window};
 use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
-use gpui_component::IconName;
 
 use crate::entities::HttpMethod;
+use crate::icons::IconName;
 use crate::theme::Theme;
 
 /// A single tab in the tab bar
@@ -270,14 +270,16 @@ impl IntoElement for Tab {
                 let main_view_close = main_view_for_close.clone();
                 let main_view_close_others = main_view_for_close_others.clone();
 
-                menu.item(PopupMenuItem::new("Rename").icon(IconName::Menu).on_click(
-                    move |_event, window, cx| {
-                        let current_name = tab_name_for_rename.clone();
-                        main_view_rename.update(cx, |view, cx| {
-                            view.show_rename_dialog(tab_index, current_name, window, cx);
-                        });
-                    },
-                ))
+                menu.item(
+                    PopupMenuItem::new("Rename")
+                        .icon(IconName::FilePen)
+                        .on_click(move |_event, window, cx| {
+                            let current_name = tab_name_for_rename.clone();
+                            main_view_rename.update(cx, |view, cx| {
+                                view.show_rename_dialog(tab_index, current_name, window, cx);
+                            });
+                        }),
+                )
                 .separator()
                 .item(PopupMenuItem::new("Close").icon(IconName::Close).on_click(
                     move |_event, _window, cx| {

@@ -1,8 +1,10 @@
 mod actions;
 mod app;
+mod assets;
 mod components;
 mod entities;
 mod http;
+mod icons;
 mod theme;
 mod views;
 

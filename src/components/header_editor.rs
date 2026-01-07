@@ -6,10 +6,10 @@ use gpui::{
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::checkbox::Checkbox;
 use gpui_component::input::{Input, InputState};
-use gpui_component::IconName;
 use gpui_component::Sizable;
 
 use crate::entities::{Header, RequestEntity};
+use crate::icons::IconName;
 use crate::theme::Theme;
 
 pub struct HeaderRow {
@@ -362,7 +362,7 @@ impl Render for HeaderEditor {
                                             "remove-header-{}",
                                             idx
                                         )))
-                                        .icon(IconName::Delete)
+                                        .icon(IconName::Trash)
                                         .ghost()
                                         .xsmall()
                                         .on_click(
