@@ -142,16 +142,16 @@ async fn execute_request(
     // Always convert to string (lossy for binary)
     let body = String::from_utf8_lossy(&body_bytes).to_string();
 
-    Ok(ResponseData {
+    Ok(ResponseData::new(
         status_code,
         status_text,
-        headers: response_headers,
+        response_headers,
         body,
         body_bytes,
         body_size_bytes,
-        duration_ms: duration.as_millis() as u64,
+        duration.as_millis() as u64,
         content_type,
-    })
+    ))
 }
 
 impl Default for HttpClient {

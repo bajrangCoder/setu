@@ -39,8 +39,8 @@ pub struct ResponseView {
     body_display: Option<Entity<InputState>>,
     /// Raw body display (plain text)
     raw_display: Option<Entity<InputState>>,
-    /// Tracks the last displayed body content to know when to update
-    last_body_content: String,
+    /// Hash of last displayed body content for efficient change detection
+    last_body_hash: u64,
     /// Last content category for pretty display
     last_content_category: ContentCategory,
     focus_handle: FocusHandle,
@@ -61,7 +61,7 @@ impl ResponseView {
             active_tab: ResponseTab::Body,
             body_display: None,
             raw_display: None,
-            last_body_content: String::new(),
+            last_body_hash: 0,
             last_content_category: ContentCategory::Text,
             focus_handle: cx.focus_handle(),
             headers_scroll_handle: VirtualListScrollHandle::new(),
@@ -70,22 +70,26 @@ impl ResponseView {
 
     /// Initialize or update the body display with Window access (called from render)
     fn ensure_body_display(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let resp = self.response.read(cx);
-        let data = resp.data.as_ref();
-
-        let (current_content, content_category) = if let Some(data) = data {
-            (data.formatted_body(), data.content_category())
-        } else {
-            (String::new(), ContentCategory::Text)
+        let (current_hash, content_category, formatted_content) = {
+            self.response.update(cx, |resp, _cx| {
+                if let Some(ref mut data) = resp.data {
+                    let formatted = data.formatted_body();
+                    (data.body_hash(), data.content_category(), Some(formatted))
+                } else {
+                    (0, ContentCategory::Text, None)
+                }
+            })
         };
 
-        let needs_update = current_content != self.last_body_content
-            || content_category != self.last_content_category;
+        let needs_update =
+            current_hash != self.last_body_hash || content_category != self.last_content_category;
 
-        if self.body_display.is_none() {
-            // Create the pretty display for the first time
-            let content = current_content.clone();
+        if self.body_display.is_none() || needs_update {
             let lang = content_category.language();
+            let content = formatted_content
+                .map(|s| s.as_ref().clone())
+                .unwrap_or_default();
+
             let body_display = cx.new(|cx| {
                 InputState::new(window, cx)
                     .code_editor(lang)
@@ -94,36 +98,25 @@ impl ResponseView {
                     .default_value(&content)
             });
             self.body_display = Some(body_display);
-            self.last_body_content = current_content;
-            self.last_content_category = content_category;
-        } else if needs_update {
-            // Content has changed, recreate with new language
-            let content = current_content.clone();
-            let lang = content_category.language();
-            let body_display = cx.new(|cx| {
-                InputState::new(window, cx)
-                    .code_editor(lang)
-                    .line_number(true)
-                    .searchable(true)
-                    .default_value(&content)
-            });
-            self.body_display = Some(body_display);
-            self.last_body_content = current_content;
+            self.last_body_hash = current_hash;
             self.last_content_category = content_category;
         }
     }
 
     /// Initialize or update the raw display with Window access
     fn ensure_raw_display(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let resp = self.response.read(cx);
-        let current_content = resp
-            .data
-            .as_ref()
-            .map(|d| d.body.clone())
-            .unwrap_or_default();
+        let (current_hash, raw_body) = {
+            let resp = self.response.read(cx);
+            if let Some(ref data) = resp.data {
+                // Avoid cloning unless we need to update
+                (data.body_hash(), Some(data.body.clone()))
+            } else {
+                (0, None)
+            }
+        };
 
         if self.raw_display.is_none() {
-            let content = current_content.clone();
+            let content = raw_body.unwrap_or_default();
             let raw_display = cx.new(|cx| {
                 InputState::new(window, cx)
                     .code_editor("text")
@@ -132,13 +125,14 @@ impl ResponseView {
                     .default_value(&content)
             });
             self.raw_display = Some(raw_display);
-        } else if current_content != self.last_body_content {
-            // Update raw display content
+            self.last_body_hash = current_hash;
+        } else if current_hash != self.last_body_hash {
             if let Some(ref raw_display) = self.raw_display {
-                let content = current_content.clone();
+                let content = raw_body.unwrap_or_default();
                 raw_display.update(cx, |state, cx| {
                     state.set_value(content, window, cx);
                 });
+                self.last_body_hash = current_hash;
             }
         }
     }
@@ -241,7 +235,11 @@ impl ResponseView {
             )
     }
 
-    fn render_error(&self, theme: &gpui_component::theme::ThemeColor, message: &str) -> impl IntoElement {
+    fn render_error(
+        &self,
+        theme: &gpui_component::theme::ThemeColor,
+        message: &str,
+    ) -> impl IntoElement {
         div()
             .flex_1()
             .flex()
@@ -323,7 +321,11 @@ impl ResponseView {
             )
     }
 
-    fn render_tabs(&self, _theme: &gpui_component::theme::ThemeColor, this: Entity<ResponseView>) -> impl IntoElement {
+    fn render_tabs(
+        &self,
+        _theme: &gpui_component::theme::ThemeColor,
+        this: Entity<ResponseView>,
+    ) -> impl IntoElement {
         use crate::components::PanelTab;
 
         div()
@@ -376,7 +378,11 @@ impl ResponseView {
         }
     }
 
-    fn render_body_tab(&self, theme: &gpui_component::theme::ThemeColor, data: &ResponseData) -> impl IntoElement {
+    fn render_body_tab(
+        &self,
+        theme: &gpui_component::theme::ThemeColor,
+        data: &ResponseData,
+    ) -> impl IntoElement {
         let content_type = data.content_category();
 
         if content_type == ContentCategory::Image {

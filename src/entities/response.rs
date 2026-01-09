@@ -1,6 +1,9 @@
 use gpui::{Context, EventEmitter};
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 /// Response state machine
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -73,6 +76,12 @@ pub struct ResponseData {
     pub body_size_bytes: usize,
     pub duration_ms: u64,
     pub content_type: Option<String>,
+    /// Cached formatted body
+    #[serde(skip)]
+    cached_formatted_body: Option<Arc<String>>,
+    /// Hash of body content for efficient change detection
+    #[serde(skip)]
+    body_hash: u64,
 }
 
 impl Default for ResponseData {
@@ -86,11 +95,51 @@ impl Default for ResponseData {
             body_size_bytes: 0,
             duration_ms: 0,
             content_type: None,
+            cached_formatted_body: None,
+            body_hash: 0,
         }
     }
 }
 
 impl ResponseData {
+    /// Create a new ResponseData with computed hash
+    pub fn new(
+        status_code: u16,
+        status_text: String,
+        headers: HashMap<String, String>,
+        body: String,
+        body_bytes: Vec<u8>,
+        body_size_bytes: usize,
+        duration_ms: u64,
+        content_type: Option<String>,
+    ) -> Self {
+        let body_hash = Self::compute_hash(&body);
+        Self {
+            status_code,
+            status_text,
+            headers,
+            body,
+            body_bytes,
+            body_size_bytes,
+            duration_ms,
+            content_type,
+            cached_formatted_body: None,
+            body_hash,
+        }
+    }
+
+    /// Compute hash for content change detection
+    fn compute_hash(content: &str) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        content.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Get the body hash for efficient change detection
+    pub fn body_hash(&self) -> u64 {
+        self.body_hash
+    }
+
     /// Detect content category from content-type header
     pub fn content_category(&self) -> ContentCategory {
         let ct = self.content_type.as_deref().unwrap_or("").to_lowercase();
@@ -134,8 +183,12 @@ impl ResponseData {
     }
 
     /// Get formatted body if JSON, otherwise raw
-    pub fn formatted_body(&self) -> String {
-        if self.is_json() {
+    pub fn formatted_body(&mut self) -> Arc<String> {
+        if let Some(ref cached) = self.cached_formatted_body {
+            return cached.clone();
+        }
+
+        let formatted = if self.is_json() {
             // Try to pretty-print JSON
             match serde_json::from_str::<serde_json::Value>(&self.body) {
                 Ok(value) => {
@@ -145,6 +198,19 @@ impl ResponseData {
             }
         } else {
             self.body.clone()
+        };
+
+        let arc = Arc::new(formatted);
+        self.cached_formatted_body = Some(arc.clone());
+        arc
+    }
+
+    /// Get formatted body without requiring mutable access (returns cached or raw)
+    pub fn formatted_body_ref(&self) -> &str {
+        if let Some(ref cached) = self.cached_formatted_body {
+            cached.as_str()
+        } else {
+            &self.body
         }
     }
 
@@ -196,7 +262,9 @@ impl ResponseEntity {
         cx.notify();
     }
 
-    pub fn set_response(&mut self, data: ResponseData, cx: &mut Context<Self>) {
+    pub fn set_response(&mut self, mut data: ResponseData, cx: &mut Context<Self>) {
+        let _ = data.formatted_body();
+
         self.state = ResponseState::Success;
         self.data = Some(data);
         cx.emit(ResponseEvent::Received);

@@ -76,8 +76,7 @@ impl RenderOnce for ProtocolSelector {
                         gpui::CursorStyle::Arrow
                     })
                     .when(is_selected, |s| {
-                        s.bg(theme.popover)
-                            .text_color(theme.foreground)
+                        s.bg(theme.popover).text_color(theme.foreground)
                     })
                     .when(!is_selected && is_available, |s| {
                         s.text_color(theme.muted_foreground)

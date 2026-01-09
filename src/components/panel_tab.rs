@@ -59,8 +59,7 @@ impl RenderOnce for PanelTab {
                 gpui::FontWeight::NORMAL
             })
             .when(is_active, |s| {
-                s.bg(theme.muted)
-                    .text_color(theme.foreground)
+                s.bg(theme.muted).text_color(theme.foreground)
             })
             .when(!is_active, |s| {
                 s.text_color(theme.muted_foreground)
