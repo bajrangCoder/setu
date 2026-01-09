@@ -44,20 +44,76 @@ impl SetuApp {
     /// Register global keybindings
     fn register_keybindings(cx: &mut App) {
         cx.bind_keys([
-            // Application
+            // ============ Application ============
             KeyBinding::new("cmd-q", Quit, None),
-            // Request actions
+            KeyBinding::new("cmd-,", ShowSettings, None),
+            KeyBinding::new("f1", ShowHelp, None),
+            KeyBinding::new("cmd-?", ShowHelp, None),
+            KeyBinding::new("ctrl-cmd-f", ToggleFullscreen, None),
+            // ============ Request Actions ============
             KeyBinding::new("cmd-enter", SendRequest, None),
+            KeyBinding::new("ctrl-enter", SendRequest, None),
             KeyBinding::new("cmd-n", NewRequest, None),
-            // UI
-            KeyBinding::new("cmd-k", ToggleCommandPalette, None),
-            KeyBinding::new("cmd-b", ToggleSidebar, None),
+            KeyBinding::new("cmd-d", DuplicateRequest, None),
+            KeyBinding::new("cmd-s", SaveRequest, None),
+            KeyBinding::new("cmd-o", OpenRequest, None),
+            KeyBinding::new("escape", CancelRequest, None),
+            // ============ Tab Navigation ============
+            KeyBinding::new("ctrl-tab", NextTab, None),
+            KeyBinding::new("cmd-shift-]", NextTab, None),
+            KeyBinding::new("alt-cmd-right", NextTab, None),
+            KeyBinding::new("ctrl-shift-tab", PreviousTab, None),
+            KeyBinding::new("cmd-shift-[", PreviousTab, None),
+            KeyBinding::new("alt-cmd-left", PreviousTab, None),
+            KeyBinding::new("cmd-w", CloseTab, None),
+            KeyBinding::new("cmd-shift-w", CloseAllTabs, None),
+            KeyBinding::new("cmd-alt-w", CloseOtherTabs, None),
+            KeyBinding::new("cmd-shift-t", ReopenClosedTab, None),
+            // Go to specific tab (like browsers/VSCode)
+            KeyBinding::new("cmd-1", GoToTab1, None),
+            KeyBinding::new("cmd-2", GoToTab2, None),
+            KeyBinding::new("cmd-3", GoToTab3, None),
+            KeyBinding::new("cmd-4", GoToTab4, None),
+            KeyBinding::new("cmd-5", GoToTab5, None),
+            KeyBinding::new("cmd-6", GoToTab6, None),
+            KeyBinding::new("cmd-7", GoToTab7, None),
+            KeyBinding::new("cmd-8", GoToTab8, None),
+            KeyBinding::new("cmd-9", GoToLastTab, None),
+            // ============ Focus & Navigation ============
             KeyBinding::new("cmd-l", FocusUrlBar, None),
-            // Method shortcuts (when URL bar focused)
-            KeyBinding::new("alt-g", SetMethodGet, Some("UrlBar")),
-            KeyBinding::new("alt-p", SetMethodPost, Some("UrlBar")),
-            KeyBinding::new("alt-u", SetMethodPut, Some("UrlBar")),
-            KeyBinding::new("alt-d", SetMethodDelete, Some("UrlBar")),
+            KeyBinding::new("cmd-u", FocusUrlBar, None),
+            KeyBinding::new("cmd-shift-b", SwitchToBodyTab, None),
+            KeyBinding::new("cmd-shift-p", SwitchToParamsTab, None),
+            KeyBinding::new("cmd-shift-h", SwitchToHeadersTab, None),
+            KeyBinding::new("cmd-shift-a", SwitchToAuthTab, None),
+            KeyBinding::new("cmd-alt-b", SwitchToResponseBody, None),
+            KeyBinding::new("cmd-alt-h", SwitchToResponseHeaders, None),
+            // Cycle through tabs within panels
+            KeyBinding::new("ctrl-shift-left", CycleRequestTabs, None),
+            KeyBinding::new("ctrl-shift-right", CycleResponseTabs, None),
+            // ============ UI Toggles ============
+            KeyBinding::new("cmd-k", ToggleCommandPalette, None),
+            KeyBinding::new("cmd-p", ToggleCommandPalette, None),
+            KeyBinding::new("cmd-b", ToggleSidebar, None),
+            KeyBinding::new("cmd-\\", ToggleSidebar, None),
+            KeyBinding::new("cmd-=", ZoomIn, None),
+            KeyBinding::new("cmd-+", ZoomIn, None),
+            KeyBinding::new("cmd--", ZoomOut, None),
+            KeyBinding::new("cmd-0", ResetZoom, None),
+            // ============ Editing (Document-level) ============
+            KeyBinding::new("cmd-shift-f", FormatDocument, None),
+            KeyBinding::new("alt-shift-f", FormatDocument, None),
+            // ============ History ============
+            KeyBinding::new("cmd-shift-delete", ClearHistory, None),
+            // ============ HTTP Method Shortcuts ============
+            // Alt + first letter (like Postman)
+            KeyBinding::new("alt-g", SetMethodGet, None),
+            KeyBinding::new("alt-p", SetMethodPost, None),
+            KeyBinding::new("alt-u", SetMethodPut, None),
+            KeyBinding::new("alt-d", SetMethodDelete, None),
+            KeyBinding::new("alt-a", SetMethodPatch, None),
+            KeyBinding::new("alt-h", SetMethodHead, None),
+            KeyBinding::new("alt-o", SetMethodOptions, None),
         ]);
     }
 

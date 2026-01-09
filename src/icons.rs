@@ -16,6 +16,13 @@ pub enum IconName {
     Trash,
     Check,
     Loader,
+    CircleDot,
+    Command,
+    CopyPlus,
+    Link,
+    PanelLeft,
+    Search,
+    Send,
 }
 
 impl IconNamed for IconName {
@@ -30,6 +37,13 @@ impl IconNamed for IconName {
             Self::Trash => "icons/trash.svg",
             Self::Check => "icons/check.svg",
             Self::Loader => "icons/loader.svg",
+            Self::CircleDot => "icons/circle-dot.svg",
+            Self::Command => "icons/command.svg",
+            Self::CopyPlus => "icons/copy-plus.svg",
+            Self::Link => "icons/link.svg",
+            Self::PanelLeft => "icons/panel-left.svg",
+            Self::Search => "icons/search.svg",
+            Self::Send => "icons/send.svg",
         }
         .into()
     }

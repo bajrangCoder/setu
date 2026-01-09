@@ -1,7 +1,7 @@
 - Add support for saving history
 - support other HTTP response content types
-- command palette
-- keyboard shortcuts
+- ~~command palette~~ ✅
+- ~~keyboard shortcuts~~ ✅
 - some ui updates for smooth experience
 - editor tool bar with option like prettify, import, etc
 - optimise performance for large requests or showing raw response data

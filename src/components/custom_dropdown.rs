@@ -56,6 +56,15 @@ impl MethodDropdownState {
         self.selected
     }
 
+    pub fn method(&self) -> HttpMethod {
+        self.selected
+    }
+
+    pub fn set_method(&mut self, method: HttpMethod, cx: &mut Context<Self>) {
+        self.selected = method;
+        cx.notify();
+    }
+
     #[allow(dead_code)]
     pub fn is_open(&self) -> bool {
         self.is_open

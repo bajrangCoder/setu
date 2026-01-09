@@ -9,6 +9,7 @@ use gpui_component::v_flex;
 use gpui_component::Root;
 use gpui_component::WindowExt;
 
+use crate::actions::*;
 use crate::components::{
     MethodDropdownState, ProtocolSelector, ProtocolType, Sidebar, TabBar, TabInfo, UrlBar,
 };
@@ -16,7 +17,7 @@ use crate::entities::{
     Header, HistoryEntity, HttpMethod, RequestBody, RequestEntity, ResponseEntity,
 };
 use crate::http::HttpClient;
-use crate::views::{CommandPaletteView, RequestView, ResponseView};
+use crate::views::{CommandId, CommandPaletteEvent, CommandPaletteView, RequestView, ResponseView};
 use gpui_component::ActiveTheme;
 
 /// A tab representing a request with its input state
@@ -71,6 +72,12 @@ impl MainView {
         let response_view = cx.new(|cx| ResponseView::new(response.clone(), cx));
         let command_palette = cx.new(|cx| CommandPaletteView::new(cx));
         let history = cx.new(|_| HistoryEntity::new());
+
+        cx.subscribe(&command_palette, |this, _, event, cx| {
+            let CommandPaletteEvent::ExecuteCommand(cmd_id) = event;
+            this.execute_command(*cmd_id, cx);
+        })
+        .detach();
 
         let http_client = HttpClient::new().expect("Failed to create HTTP client");
 
@@ -391,10 +398,194 @@ impl MainView {
         cx.notify();
     }
 
-    pub fn toggle_command_palette(&mut self, cx: &mut Context<Self>) {
+    pub fn toggle_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.command_palette.update(cx, |palette, cx| {
-            palette.toggle(cx);
+            palette.toggle(window, cx);
         });
+    }
+
+    pub fn execute_command(&mut self, cmd_id: CommandId, cx: &mut Context<Self>) {
+        match cmd_id {
+            CommandId::SendRequest => self.send_request(cx),
+            CommandId::NewRequest => self.new_tab(cx),
+            CommandId::CloseTab => self.close_current_tab(cx),
+            CommandId::CloseAllTabs => self.close_all_tabs(cx),
+            CommandId::CloseOtherTabs => self.close_current_other_tabs(cx),
+            CommandId::NextTab => self.next_tab(cx),
+            CommandId::PreviousTab => self.previous_tab(cx),
+            CommandId::GoToLastTab => self.go_to_last_tab(cx),
+            CommandId::ToggleSidebar => self.toggle_sidebar(cx),
+            CommandId::SetMethodGet => self.set_method(HttpMethod::Get, cx),
+            CommandId::SetMethodPost => self.set_method(HttpMethod::Post, cx),
+            CommandId::SetMethodPut => self.set_method(HttpMethod::Put, cx),
+            CommandId::SetMethodDelete => self.set_method(HttpMethod::Delete, cx),
+            CommandId::SetMethodPatch => self.set_method(HttpMethod::Patch, cx),
+            CommandId::SetMethodHead => self.set_method(HttpMethod::Head, cx),
+            CommandId::SetMethodOptions => self.set_method(HttpMethod::Options, cx),
+            CommandId::ClearHistory => {
+                self.history.update(cx, |h, cx| h.clear(cx));
+            }
+            CommandId::SwitchToBodyTab => {
+                self.switch_to_request_tab(crate::views::request_view::RequestTab::Body, cx);
+            }
+            CommandId::SwitchToParamsTab => {
+                self.switch_to_request_tab(crate::views::request_view::RequestTab::Params, cx);
+            }
+            CommandId::SwitchToHeadersTab => {
+                self.switch_to_request_tab(crate::views::request_view::RequestTab::Headers, cx);
+            }
+            CommandId::SwitchToAuthTab => {
+                self.switch_to_request_tab(crate::views::request_view::RequestTab::Auth, cx);
+            }
+            CommandId::SwitchToResponseBody => {
+                self.switch_to_response_tab(crate::views::response_view::ResponseTab::Body, cx);
+            }
+            CommandId::SwitchToResponseHeaders => {
+                self.switch_to_response_tab(crate::views::response_view::ResponseTab::Headers, cx);
+            }
+            CommandId::DuplicateRequest | CommandId::FocusUrlBar => {
+                // These need window access, handled separately
+            }
+        }
+    }
+
+    pub fn next_tab(&mut self, cx: &mut Context<Self>) {
+        let next_index = (self.active_tab_index + 1) % self.tabs.len();
+        self.switch_tab(next_index, cx);
+    }
+
+    pub fn previous_tab(&mut self, cx: &mut Context<Self>) {
+        let prev_index = if self.active_tab_index == 0 {
+            self.tabs.len() - 1
+        } else {
+            self.active_tab_index - 1
+        };
+        self.switch_tab(prev_index, cx);
+    }
+
+    pub fn go_to_tab(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index < self.tabs.len() {
+            self.switch_tab(index, cx);
+        }
+    }
+
+    pub fn go_to_last_tab(&mut self, cx: &mut Context<Self>) {
+        let last_index = self.tabs.len().saturating_sub(1);
+        self.switch_tab(last_index, cx);
+    }
+
+    pub fn close_current_tab(&mut self, cx: &mut Context<Self>) {
+        self.close_tab(self.active_tab_index, cx);
+    }
+
+    pub fn close_all_tabs(&mut self, cx: &mut Context<Self>) {
+        while self.tabs.len() > 1 {
+            self.tabs.pop();
+        }
+        self.active_tab_index = 0;
+        if let Some(tab) = self.tabs.get(0) {
+            self.request_view = cx.new(|cx| RequestView::new(tab.request.clone(), cx));
+            self.response_view = cx.new(|cx| ResponseView::new(tab.response.clone(), cx));
+        }
+        cx.notify();
+    }
+
+    pub fn close_current_other_tabs(&mut self, cx: &mut Context<Self>) {
+        self.close_other_tabs(self.active_tab_index, cx);
+    }
+
+    pub fn duplicate_request(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(current_tab) = self.active_tab() {
+            let old_request = current_tab.request.clone();
+            let old_url_input = current_tab.url_input.clone();
+            let old_method_dropdown = current_tab.method_dropdown.clone();
+            let old_name = current_tab.name.clone();
+
+            let new_method = old_method_dropdown.read(cx).method();
+
+            let old_headers: Vec<_> = old_request.read(cx).headers().to_vec();
+            let old_body = old_request.read(cx).body().clone();
+
+            let new_request = cx.new(|_| RequestEntity::new());
+            let new_response = cx.new(|_| ResponseEntity::new());
+            let new_method_dropdown = cx.new(|_| MethodDropdownState::new(new_method));
+
+            let new_url_input = if let Some(old_url) = old_url_input {
+                let url_text = old_url.read(cx).text().to_string();
+                Some(cx.new(|cx| {
+                    InputState::new(window, cx)
+                        .placeholder("Enter request URL...")
+                        .default_value(&url_text)
+                }))
+            } else {
+                None
+            };
+
+            new_request.update(cx, |new_req, cx| {
+                for header in old_headers {
+                    new_req.add_header(header, cx);
+                }
+                new_req.set_body(old_body, cx);
+            });
+
+            let new_tab = RequestTab {
+                id: self.next_tab_id,
+                name: format!("{} (copy)", old_name),
+                request: new_request.clone(),
+                response: new_response.clone(),
+                url_input: new_url_input,
+                method_dropdown: new_method_dropdown,
+            };
+
+            self.next_tab_id += 1;
+            self.tabs.push(new_tab);
+            self.active_tab_index = self.tabs.len() - 1;
+            self.request_view = cx.new(|cx| RequestView::new(new_request.clone(), cx));
+            self.response_view = cx.new(|cx| ResponseView::new(new_response.clone(), cx));
+            self.tab_scroll_handle.scroll_to_item(self.active_tab_index);
+            cx.notify();
+        }
+    }
+
+    pub fn set_method(&mut self, method: HttpMethod, cx: &mut Context<Self>) {
+        if let Some(tab) = self.tabs.get(self.active_tab_index) {
+            tab.method_dropdown.update(cx, |state, cx| {
+                state.set_method(method, cx);
+            });
+            tab.request.update(cx, |req, cx| {
+                req.set_method(method, cx);
+            });
+        }
+    }
+
+    pub fn switch_to_request_tab(
+        &mut self,
+        tab: crate::views::request_view::RequestTab,
+        cx: &mut Context<Self>,
+    ) {
+        self.request_view.update(cx, |view, cx| {
+            view.set_tab(tab, cx);
+        });
+    }
+
+    pub fn switch_to_response_tab(
+        &mut self,
+        tab: crate::views::response_view::ResponseTab,
+        cx: &mut Context<Self>,
+    ) {
+        self.response_view.update(cx, |view, cx| {
+            view.set_tab(tab, cx);
+        });
+    }
+
+    pub fn focus_url_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(tab) = self.tabs.get(self.active_tab_index) {
+            if let Some(url_input) = &tab.url_input {
+                url_input.update(cx, |state, cx| {
+                    state.focus(window, cx);
+                });
+            }
+        }
     }
 }
 
@@ -445,12 +636,127 @@ impl Render for MainView {
         let this_for_send = this.clone();
 
         div()
+            .id("main-view")
+            .key_context("MainView")
             .track_focus(&self.focus_handle)
+            .focusable()
             .flex()
             .flex_row()
             .size_full()
             .bg(theme.background)
             .text_color(theme.foreground)
+            // Request actions
+            .on_action(cx.listener(|this, _: &SendRequest, _window, cx| {
+                this.send_request(cx);
+            }))
+            .on_action(cx.listener(|this, _: &NewRequest, _window, cx| {
+                this.new_tab(cx);
+            }))
+            .on_action(cx.listener(|this, _: &DuplicateRequest, window, cx| {
+                this.duplicate_request(window, cx);
+            }))
+            // Tab navigation
+            .on_action(cx.listener(|this, _: &NextTab, _window, cx| {
+                this.next_tab(cx);
+            }))
+            .on_action(cx.listener(|this, _: &PreviousTab, _window, cx| {
+                this.previous_tab(cx);
+            }))
+            .on_action(cx.listener(|this, _: &CloseTab, _window, cx| {
+                this.close_current_tab(cx);
+            }))
+            .on_action(cx.listener(|this, _: &CloseAllTabs, _window, cx| {
+                this.close_all_tabs(cx);
+            }))
+            .on_action(cx.listener(|this, _: &CloseOtherTabs, _window, cx| {
+                this.close_current_other_tabs(cx);
+            }))
+            // Go to specific tabs
+            .on_action(cx.listener(|this, _: &GoToTab1, _window, cx| {
+                this.go_to_tab(0, cx);
+            }))
+            .on_action(cx.listener(|this, _: &GoToTab2, _window, cx| {
+                this.go_to_tab(1, cx);
+            }))
+            .on_action(cx.listener(|this, _: &GoToTab3, _window, cx| {
+                this.go_to_tab(2, cx);
+            }))
+            .on_action(cx.listener(|this, _: &GoToTab4, _window, cx| {
+                this.go_to_tab(3, cx);
+            }))
+            .on_action(cx.listener(|this, _: &GoToTab5, _window, cx| {
+                this.go_to_tab(4, cx);
+            }))
+            .on_action(cx.listener(|this, _: &GoToTab6, _window, cx| {
+                this.go_to_tab(5, cx);
+            }))
+            .on_action(cx.listener(|this, _: &GoToTab7, _window, cx| {
+                this.go_to_tab(6, cx);
+            }))
+            .on_action(cx.listener(|this, _: &GoToTab8, _window, cx| {
+                this.go_to_tab(7, cx);
+            }))
+            .on_action(cx.listener(|this, _: &GoToLastTab, _window, cx| {
+                this.go_to_last_tab(cx);
+            }))
+            // UI toggles
+            .on_action(cx.listener(|this, _: &ToggleSidebar, _window, cx| {
+                this.toggle_sidebar(cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleCommandPalette, window, cx| {
+                this.toggle_command_palette(window, cx);
+            }))
+            // Request panel tabs
+            .on_action(cx.listener(|this, _: &SwitchToBodyTab, _window, cx| {
+                this.switch_to_request_tab(crate::views::request_view::RequestTab::Body, cx);
+            }))
+            .on_action(cx.listener(|this, _: &SwitchToParamsTab, _window, cx| {
+                this.switch_to_request_tab(crate::views::request_view::RequestTab::Params, cx);
+            }))
+            .on_action(cx.listener(|this, _: &SwitchToHeadersTab, _window, cx| {
+                this.switch_to_request_tab(crate::views::request_view::RequestTab::Headers, cx);
+            }))
+            .on_action(cx.listener(|this, _: &SwitchToAuthTab, _window, cx| {
+                this.switch_to_request_tab(crate::views::request_view::RequestTab::Auth, cx);
+            }))
+            // Response panel tabs
+            .on_action(cx.listener(|this, _: &SwitchToResponseBody, _window, cx| {
+                this.switch_to_response_tab(crate::views::response_view::ResponseTab::Body, cx);
+            }))
+            .on_action(
+                cx.listener(|this, _: &SwitchToResponseHeaders, _window, cx| {
+                    this.switch_to_response_tab(
+                        crate::views::response_view::ResponseTab::Headers,
+                        cx,
+                    );
+                }),
+            )
+            // Focus URL bar
+            .on_action(cx.listener(|this, _: &FocusUrlBar, window, cx| {
+                this.focus_url_bar(window, cx);
+            }))
+            // HTTP method shortcuts
+            .on_action(cx.listener(|this, _: &SetMethodGet, _window, cx| {
+                this.set_method(HttpMethod::Get, cx);
+            }))
+            .on_action(cx.listener(|this, _: &SetMethodPost, _window, cx| {
+                this.set_method(HttpMethod::Post, cx);
+            }))
+            .on_action(cx.listener(|this, _: &SetMethodPut, _window, cx| {
+                this.set_method(HttpMethod::Put, cx);
+            }))
+            .on_action(cx.listener(|this, _: &SetMethodDelete, _window, cx| {
+                this.set_method(HttpMethod::Delete, cx);
+            }))
+            .on_action(cx.listener(|this, _: &SetMethodPatch, _window, cx| {
+                this.set_method(HttpMethod::Patch, cx);
+            }))
+            .on_action(cx.listener(|this, _: &SetMethodHead, _window, cx| {
+                this.set_method(HttpMethod::Head, cx);
+            }))
+            .on_action(cx.listener(|this, _: &SetMethodOptions, _window, cx| {
+                this.set_method(HttpMethod::Options, cx);
+            }))
             .child(
                 h_resizable("sidebar-main-split")
                     .when(self.sidebar_visible, |group| {
@@ -590,26 +896,6 @@ impl MainView {
                     )
                     .child(ProtocolSelector::new(ProtocolType::Rest)),
             )
-            // Right
-            .child(
-                div().flex().items_center().gap(px(8.0)).child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .px(px(8.0))
-                        .py(px(4.0))
-                        .bg(theme.secondary)
-                        .rounded(px(4.0))
-                        .cursor_pointer()
-                        .hover(|s| s.bg(theme.muted))
-                        .child(
-                            div()
-                                .text_color(theme.muted_foreground)
-                                .text_size(px(11.0))
-                                .child("⌘K"),
-                        ),
-                ),
-            )
     }
 
     fn render_shortcuts(&self, theme: &gpui_component::theme::ThemeColor) -> impl IntoElement {
@@ -618,36 +904,44 @@ impl MainView {
             .flex_row()
             .items_center()
             .justify_center()
-            .gap(px(24.0))
+            .gap(px(16.0))
             .h(px(32.0))
             .border_t_1()
             .border_color(theme.border)
             .bg(theme.secondary)
             .children(
-                [("Send", "⌘↵"), ("New Tab", "⌘T"), ("Commands", "⌘K")]
-                    .into_iter()
-                    .map(|(label, shortcut)| {
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.0))
-                            .child(
-                                div()
-                                    .text_color(theme.muted_foreground)
-                                    .text_size(px(10.0))
-                                    .child(label),
-                            )
-                            .child(
-                                div()
-                                    .px(px(4.0))
-                                    .py(px(1.0))
-                                    .bg(theme.muted)
-                                    .rounded(px(2.0))
-                                    .text_color(theme.muted_foreground)
-                                    .text_size(px(9.0))
-                                    .child(shortcut),
-                            )
-                    }),
+                [
+                    ("Send", "⌘↵"),
+                    ("New", "⌘N"),
+                    ("Close", "⌘W"),
+                    ("Next Tab", "⌃⇥"),
+                    ("URL", "⌘L"),
+                    ("Sidebar", "⌘B"),
+                    ("Commands", "⌘K"),
+                ]
+                .into_iter()
+                .map(|(label, shortcut)| {
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.0))
+                        .child(
+                            div()
+                                .text_color(theme.muted_foreground)
+                                .text_size(px(10.0))
+                                .child(label),
+                        )
+                        .child(
+                            div()
+                                .px(px(4.0))
+                                .py(px(1.0))
+                                .bg(theme.muted)
+                                .rounded(px(2.0))
+                                .text_color(theme.muted_foreground)
+                                .text_size(px(9.0))
+                                .child(shortcut),
+                        )
+                }),
             )
     }
 }
