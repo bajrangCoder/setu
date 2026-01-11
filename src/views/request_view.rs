@@ -1,13 +1,14 @@
 use gpui::prelude::*;
 use gpui::{
-    div, AnyElement, App, Context, Entity, FocusHandle, Focusable, IntoElement, Render, Styled,
+    div, px, AnyElement, App, Context, Entity, FocusHandle, Focusable, IntoElement, Render, Styled,
     Window,
 };
 use gpui_component::input::{Input, InputState};
 
 use crate::components::{AuthEditor, BodyType, BodyTypeSelector, HeaderEditor, ParamsEditor};
 use crate::entities::{Header, RequestBody, RequestEntity, RequestEvent};
-use gpui_component::ActiveTheme;
+use crate::icons::IconName;
+use gpui_component::{ActiveTheme, Icon};
 
 /// Active tab in the request panel
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -45,8 +46,8 @@ impl RequestView {
             request,
             active_tab: RequestTab::Body,
             body_editor: None,
-            body_type: BodyType::Json,
-            last_applied_body_type: BodyType::Json,
+            body_type: BodyType::None,
+            last_applied_body_type: BodyType::None,
             body_type_selector: None,
             header_editor: None,
             params_editor: None,
@@ -355,17 +356,44 @@ impl RequestView {
             .when_some(self.body_type_selector.as_ref(), |el, selector| {
                 el.child(selector.clone())
             })
-            // Body editor
-            .child(
-                div()
-                    .id("request-body-editor-scroll")
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .bg(theme.muted)
-                    .when_some(self.body_editor.as_ref(), |el, editor| {
-                        el.child(Input::new(editor).appearance(false).size_full())
-                    }),
-            )
+            // Body editor (only show when body type is not None)
+            .when(self.body_type != BodyType::None, |el| {
+                el.child(
+                    div()
+                        .id("request-body-editor-scroll")
+                        .flex_1()
+                        .overflow_y_scroll()
+                        .bg(theme.muted)
+                        .when_some(self.body_editor.as_ref(), |el, editor| {
+                            el.child(Input::new(editor).appearance(false).size_full())
+                        }),
+                )
+            })
+            // Placeholder when body type is None
+            .when(self.body_type == BodyType::None, |el| {
+                el.child(
+                    div()
+                        .id("request-body-none-placeholder")
+                        .flex_1()
+                        .flex()
+                        .flex_col()
+                        .gap(px(12.0))
+                        .items_center()
+                        .justify_center()
+                        .bg(theme.muted)
+                        .child(
+                            Icon::new(IconName::Ban)
+                                .size(px(32.0))
+                                .text_color(theme.muted_foreground),
+                        )
+                        .child(
+                            div()
+                                .text_color(theme.muted_foreground)
+                                .text_size(px(13.0))
+                                .child("This request does not have a body"),
+                        ),
+                )
+            })
     }
 
     fn render_params_tab(&self) -> impl IntoElement {

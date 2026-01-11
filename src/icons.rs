@@ -23,6 +23,7 @@ pub enum IconName {
     PanelLeft,
     Search,
     Send,
+    Ban,
 }
 
 impl IconNamed for IconName {
@@ -44,6 +45,7 @@ impl IconNamed for IconName {
             Self::PanelLeft => "icons/panel-left.svg",
             Self::Search => "icons/search.svg",
             Self::Send => "icons/send.svg",
+            Self::Ban => "icons/ban.svg",
         }
         .into()
     }
