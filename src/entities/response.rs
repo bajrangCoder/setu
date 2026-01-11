@@ -26,7 +26,7 @@ pub enum ContentCategory {
     Text,
     Binary,
 }
-
+#[allow(dead_code)]
 impl ContentCategory {
     /// Get the language name for syntax highlighting
     pub fn language(&self) -> &'static str {
@@ -101,6 +101,7 @@ impl Default for ResponseData {
     }
 }
 
+#[allow(dead_code)]
 impl ResponseData {
     /// Create a new ResponseData with computed hash
     pub fn new(
@@ -247,6 +248,7 @@ pub struct ResponseEntity {
     pub data: Option<ResponseData>,
 }
 
+#[allow(dead_code)]
 impl ResponseEntity {
     pub fn new() -> Self {
         Self {

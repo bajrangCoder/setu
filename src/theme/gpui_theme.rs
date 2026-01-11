@@ -214,7 +214,7 @@ fn apply_setu_teal_theme(cx: &mut App) {
 }
 
 /// Get HTTP method color
-pub fn method_color(method: &crate::entities::HttpMethod, cx: &App) -> Hsla {
+pub fn method_color(method: &crate::entities::HttpMethod, _cx: &App) -> Hsla {
     use crate::entities::HttpMethod;
 
     let colors = SetuColors::teal();
@@ -230,7 +230,7 @@ pub fn method_color(method: &crate::entities::HttpMethod, cx: &App) -> Hsla {
 }
 
 /// Get status code color
-pub fn status_color(status_code: u16, cx: &App) -> Hsla {
+pub fn status_color(status_code: u16, _cx: &App) -> Hsla {
     let colors = SetuColors::teal();
     match status_code / 100 {
         1 => colors.status_1xx,

@@ -304,6 +304,7 @@ impl AuthEditor {
         }
     }
 
+    #[allow(dead_code)]
     /// Set auth type
     pub fn set_auth_type(
         &mut self,

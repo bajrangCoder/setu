@@ -16,6 +16,7 @@ pub enum HttpMethod {
     Options,
 }
 
+#[allow(dead_code)]
 impl HttpMethod {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -76,6 +77,7 @@ pub enum RequestBody {
     FormData(HashMap<String, String>),
 }
 
+#[allow(dead_code)]
 impl RequestBody {
     pub fn is_empty(&self) -> bool {
         match self {
@@ -129,6 +131,7 @@ pub struct RequestEntity {
     pub data: RequestData,
 }
 
+#[allow(dead_code)]
 impl RequestEntity {
     pub fn new() -> Self {
         Self {

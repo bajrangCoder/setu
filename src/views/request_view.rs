@@ -331,7 +331,7 @@ impl RequestView {
         theme: &gpui_component::theme::ThemeColor,
         cx: &Context<Self>,
     ) -> AnyElement {
-        let request = self.request.read(cx);
+        let _request = self.request.read(cx);
 
         match self.active_tab {
             RequestTab::Body => self.render_body_tab(theme).into_any_element(),
