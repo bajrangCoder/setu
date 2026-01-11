@@ -3,5 +3,5 @@
 - ~~command palette~~ ✅
 - ~~keyboard shortcuts~~ ✅
 - some ui updates for smooth experience
-- editor tool bar with option like prettify, import, etc
+- editor tool bar with option like prettify, import, etc (Partially done)
 - optimise performance for large requests or showing raw response data
