@@ -181,6 +181,12 @@ impl RequestEntity {
         }
     }
 
+    pub fn clear_headers(&mut self, cx: &mut Context<Self>) {
+        self.data.headers.clear();
+        cx.emit(RequestEvent::HeadersChanged);
+        cx.notify();
+    }
+
     pub fn set_sending(&mut self, sending: bool, cx: &mut Context<Self>) {
         self.data.is_sending = sending;
         if sending {

@@ -155,6 +155,18 @@ impl HeaderEditor {
         }
     }
 
+    /// Clear all header rows
+    pub fn clear_all_headers(&mut self, cx: &mut Context<Self>) {
+        self.header_rows.clear();
+
+        // Also clear from request entity
+        self.request.update(cx, |req, cx| {
+            req.clear_headers(cx);
+        });
+
+        cx.notify();
+    }
+
     /// Toggle header enabled state
     pub fn toggle_header(&mut self, index: usize, cx: &mut Context<Self>) {
         if let Some(row) = self.header_rows.get_mut(index) {
@@ -217,20 +229,41 @@ impl Render for HeaderEditor {
                             .child("Header List"),
                     )
                     .child(
-                        div().flex().flex_row().items_center().gap(px(4.0)).child(
-                            Button::new("add-header-btn")
-                                .icon(IconName::Plus)
-                                .ghost()
-                                .xsmall()
-                                .on_click({
-                                    let this = this.clone();
-                                    move |_, window, cx| {
-                                        this.update(cx, |editor, cx| {
-                                            editor.add_header(window, cx);
-                                        });
-                                    }
-                                }),
-                        ),
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(4.0))
+                            .child(
+                                Button::new("clear-all-headers-btn")
+                                    .icon(IconName::Trash)
+                                    .ghost()
+                                    .xsmall()
+                                    .tooltip("Clear All")
+                                    .on_click({
+                                        let this = this.clone();
+                                        move |_, _, cx| {
+                                            this.update(cx, |editor, cx| {
+                                                editor.clear_all_headers(cx);
+                                            });
+                                        }
+                                    }),
+                            )
+                            .child(
+                                Button::new("add-header-btn")
+                                    .icon(IconName::Plus)
+                                    .ghost()
+                                    .xsmall()
+                                    .tooltip("Add New")
+                                    .on_click({
+                                        let this = this.clone();
+                                        move |_, window, cx| {
+                                            this.update(cx, |editor, cx| {
+                                                editor.add_header(window, cx);
+                                            });
+                                        }
+                                    }),
+                            ),
                     ),
             )
             // Table header
@@ -365,6 +398,7 @@ impl Render for HeaderEditor {
                                         .icon(IconName::Trash)
                                         .ghost()
                                         .xsmall()
+                                        .tooltip("Remove")
                                         .on_click(
                                             move |_, _, cx| {
                                                 this_remove.update(cx, |editor, cx| {

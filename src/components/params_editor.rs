@@ -64,6 +64,12 @@ impl ParamsEditor {
         }
     }
 
+    /// Clear all param rows
+    pub fn clear_all_params(&mut self, cx: &mut Context<Self>) {
+        self.param_rows.clear();
+        cx.notify();
+    }
+
     /// Toggle param enabled state
     pub fn toggle_param(&mut self, index: usize, cx: &mut Context<Self>) {
         if let Some(row) = self.param_rows.get_mut(index) {
@@ -147,20 +153,41 @@ impl Render for ParamsEditor {
                             .child("Query Parameters"),
                     )
                     .child(
-                        div().flex().flex_row().items_center().gap(px(4.0)).child(
-                            Button::new("add-param-btn")
-                                .icon(IconName::Plus)
-                                .ghost()
-                                .xsmall()
-                                .on_click({
-                                    let this = this.clone();
-                                    move |_, window, cx| {
-                                        this.update(cx, |editor, cx| {
-                                            editor.add_param(window, cx);
-                                        });
-                                    }
-                                }),
-                        ),
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(4.0))
+                            .child(
+                                Button::new("clear-all-params-btn")
+                                    .icon(IconName::Trash)
+                                    .ghost()
+                                    .xsmall()
+                                    .tooltip("Clear All")
+                                    .on_click({
+                                        let this = this.clone();
+                                        move |_, _, cx| {
+                                            this.update(cx, |editor, cx| {
+                                                editor.clear_all_params(cx);
+                                            });
+                                        }
+                                    }),
+                            )
+                            .child(
+                                Button::new("add-param-btn")
+                                    .icon(IconName::Plus)
+                                    .ghost()
+                                    .xsmall()
+                                    .tooltip("Add New")
+                                    .on_click({
+                                        let this = this.clone();
+                                        move |_, window, cx| {
+                                            this.update(cx, |editor, cx| {
+                                                editor.add_param(window, cx);
+                                            });
+                                        }
+                                    }),
+                            ),
                     ),
             )
             .child(
@@ -282,6 +309,7 @@ impl Render for ParamsEditor {
                                         .icon(IconName::Trash)
                                         .ghost()
                                         .xsmall()
+                                        .tooltip("Remove")
                                         .on_click(
                                             move |_, _, cx| {
                                                 this_remove.update(cx, |editor, cx| {
