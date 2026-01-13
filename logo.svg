@@ -1,0 +1,10 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="512" height="512" rx="100" fill="black"/>
+  <!-- Deck -->
+  <rect x="80" y="300" width="352" height="24" rx="12" fill="white"/>
+  <!-- Towers -->
+  <rect x="144" y="128" width="24" height="256" rx="12" fill="white"/>
+  <rect x="344" y="128" width="24" height="256" rx="12" fill="white"/>
+  <!-- Main Cable -->
+  <path d="M156 152 Q 256 448 356 152" stroke="white" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
