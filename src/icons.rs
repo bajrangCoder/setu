@@ -24,6 +24,8 @@ pub enum IconName {
     Search,
     Send,
     Ban,
+    FilePlus,
+    FileUp,
 }
 
 impl IconNamed for IconName {
@@ -46,6 +48,8 @@ impl IconNamed for IconName {
             Self::Search => "icons/search.svg",
             Self::Send => "icons/send.svg",
             Self::Ban => "icons/ban.svg",
+            Self::FilePlus => "icons/file-plus.svg",
+            Self::FileUp => "icons/file-up.svg",
         }
         .into()
     }
