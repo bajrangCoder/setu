@@ -3,10 +3,11 @@ use gpui::{
     div, px, App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, Render,
     SharedString, Styled, Window,
 };
+use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::select::{Select, SelectEvent, SelectItem, SelectState};
-use gpui_component::Sizable;
+use gpui_component::{ActiveTheme, Sizable};
 
-use gpui_component::ActiveTheme;
+use crate::icons::IconName;
 
 /// Body content type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -81,11 +82,14 @@ impl SelectItem for BodyType {
     }
 }
 
-/// Event emitted when body type changes
+/// Events emitted by the body type selector
 #[derive(Clone, Debug)]
-pub struct BodyTypeChanged(pub BodyType);
+pub enum BodyTypeSelectorEvent {
+    TypeChanged(BodyType),
+    ImportRequested,
+}
 
-impl EventEmitter<BodyTypeChanged> for BodyTypeSelector {}
+impl EventEmitter<BodyTypeSelectorEvent> for BodyTypeSelector {}
 
 /// Body type selector
 pub struct BodyTypeSelector {
@@ -107,7 +111,7 @@ impl BodyTypeSelector {
             |this, _, event: &SelectEvent<Vec<BodyType>>, cx| {
                 if let SelectEvent::Confirm(Some(value)) = event {
                     this.selected = *value;
-                    cx.emit(BodyTypeChanged(*value));
+                    cx.emit(BodyTypeSelectorEvent::TypeChanged(*value));
                     cx.notify();
                 }
             },
@@ -128,7 +132,7 @@ impl BodyTypeSelector {
             self.select_state.update(cx, |state, cx| {
                 state.set_selected_value(&body_type, window, cx);
             });
-            cx.emit(BodyTypeChanged(body_type));
+            cx.emit(BodyTypeSelectorEvent::TypeChanged(body_type));
             cx.notify();
         }
     }
@@ -148,6 +152,13 @@ impl Focusable for BodyTypeSelector {
 impl Render for BodyTypeSelector {
     fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
+        let this = cx.entity().clone();
+
+        // Only show import button for body types that support file import
+        let show_import = matches!(
+            self.selected,
+            BodyType::Json | BodyType::Text | BodyType::Xml | BodyType::Html
+        );
 
         div()
             .track_focus(&self.focus_handle)
@@ -179,5 +190,19 @@ impl Render for BodyTypeSelector {
                             .menu_width(px(200.0)),
                     ),
             )
+            .when(show_import, |el| {
+                el.child(
+                    Button::new("import-body")
+                        .icon(IconName::FileUp)
+                        .ghost()
+                        .xsmall()
+                        .tooltip("Import from file")
+                        .on_click(move |_, _, cx| {
+                            this.update(cx, |_, cx| {
+                                cx.emit(BodyTypeSelectorEvent::ImportRequested);
+                            });
+                        }),
+                )
+            })
     }
 }

@@ -1,11 +1,13 @@
 use gpui::prelude::*;
 use gpui::{
-    div, px, AnyElement, App, Context, Entity, FocusHandle, Focusable, IntoElement, Render, Styled,
-    Window,
+    div, px, AnyElement, App, Context, Entity, FocusHandle, Focusable, IntoElement,
+    PathPromptOptions, Render, Styled, Window,
 };
 use gpui_component::input::{Input, InputState};
 
-use crate::components::{AuthEditor, BodyType, BodyTypeSelector, HeaderEditor, ParamsEditor};
+use crate::components::{
+    AuthEditor, BodyType, BodyTypeSelector, BodyTypeSelectorEvent, HeaderEditor, ParamsEditor,
+};
 use crate::entities::{Header, RequestBody, RequestEntity, RequestEvent};
 use crate::icons::IconName;
 use gpui_component::{ActiveTheme, Icon};
@@ -120,13 +122,18 @@ impl RequestView {
         if self.body_type_selector.is_none() {
             let selector = cx.new(|cx| BodyTypeSelector::new(window, cx));
 
-            // Subscribe to body type changes
-            cx.subscribe(
+            // Subscribe to body type selector events
+            cx.subscribe_in(
                 &selector,
-                |this, _selector, event: &crate::components::BodyTypeChanged, cx| {
-                    this.body_type = event.0;
-                    // Notify to update headers (Content-Type will be added automatically)
-                    cx.notify();
+                window,
+                |this, _selector, event: &BodyTypeSelectorEvent, window, cx| match event {
+                    BodyTypeSelectorEvent::TypeChanged(body_type) => {
+                        this.body_type = *body_type;
+                        cx.notify();
+                    }
+                    BodyTypeSelectorEvent::ImportRequested => {
+                        this.import_body_from_file(window, cx);
+                    }
                 },
             )
             .detach();
@@ -237,6 +244,97 @@ impl RequestView {
         } else {
             String::new()
         }
+    }
+
+    /// Import body content from a file
+    pub fn import_body_from_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let body_editor = self.body_editor.clone();
+        let body_type = self.body_type;
+        let this = cx.entity().clone();
+
+        // Build file filter extensions based on content type
+        let file_extensions: Option<Vec<&'static str>> = match body_type {
+            BodyType::Json => Some(vec!["json"]),
+            BodyType::Xml => Some(vec!["xml"]),
+            BodyType::Html => Some(vec!["html", "htm"]),
+            BodyType::Text => Some(vec!["txt", "text"]),
+            _ => None,
+        };
+
+        // Create file prompt options
+        let options = PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Select file to import".into()),
+        };
+
+        // Open file picker - returns oneshot::Receiver
+        let paths_receiver = cx.prompt_for_paths(options);
+
+        cx.spawn_in(window, async move |_weak_this, cx| {
+            // Await the file picker result from the oneshot channel
+            // Returns Result<Result<Option<Vec<PathBuf>>, anyhow::Error>, oneshot::Canceled>
+            let channel_result = paths_receiver.await;
+
+            // Handle channel error (oneshot::Canceled)
+            let Ok(platform_result) = channel_result else {
+                log::error!("File picker channel closed unexpectedly");
+                return;
+            };
+
+            // Handle platform error (anyhow::Error)
+            let Ok(paths_opt) = platform_result else {
+                log::error!("File picker failed");
+                return;
+            };
+
+            // User cancelled the dialog
+            let Some(paths) = paths_opt else {
+                return;
+            };
+
+            let Some(path) = paths.first() else {
+                return;
+            };
+
+            // Validate file extension if we have a filter
+            if let Some(ref extensions) = file_extensions {
+                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                    if !extensions.iter().any(|e| e.eq_ignore_ascii_case(ext)) {
+                        log::warn!(
+                            "File extension '{}' doesn't match expected type for {:?}",
+                            ext,
+                            body_type
+                        );
+                    }
+                }
+            }
+
+            // Read file content
+            let content = match std::fs::read_to_string(path) {
+                Ok(c) => c,
+                Err(e) => {
+                    log::error!("Failed to read file: {}", e);
+                    return;
+                }
+            };
+
+            // Update UI using AsyncWindowContext.update
+            let _ = cx.update(|window, app| {
+                // Update body editor
+                if let Some(ref editor) = body_editor {
+                    editor.update(app, |state, cx| {
+                        state.set_value(content, window, cx);
+                    });
+                }
+                // Notify view to refresh
+                this.update(app, |_view, cx| {
+                    cx.notify();
+                });
+            });
+        })
+        .detach();
     }
 }
 
