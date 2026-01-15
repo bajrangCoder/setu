@@ -102,10 +102,17 @@ async fn execute_request(
                 .header("Content-Type", "application/json")
                 .body(normalized_json)
         }
-        // For form data, serialize as JSON for now
-        RequestBody::FormData(data) => request
-            .header("Content-Type", "application/json")
-            .body(serde_json::to_string(data).unwrap_or_default()),
+        // For form data, send as application/x-www-form-urlencoded
+        RequestBody::FormData(data) => {
+            let encoded: String = data
+                .iter()
+                .map(|(k, v)| format!("{}={}", urlencoding::encode(k), urlencoding::encode(v)))
+                .collect::<Vec<_>>()
+                .join("&");
+            request
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .body(encoded)
+        }
     };
 
     // Execute request

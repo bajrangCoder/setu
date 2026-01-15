@@ -19,3 +19,4 @@ uuid = { version = "1.19.0", features = ["v4"] }
 serde = { version = "1.0.228", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
 rust-embed = "8.9.0"
+urlencoding = "2.1.3"

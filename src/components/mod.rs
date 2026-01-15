@@ -1,6 +1,7 @@
 pub mod auth_editor;
 pub mod body_type_selector;
 pub mod custom_dropdown;
+pub mod form_data_editor;
 pub mod header_editor;
 pub mod json_viewer;
 pub mod params_editor;
@@ -15,6 +16,7 @@ pub mod url_bar;
 pub use auth_editor::*;
 pub use body_type_selector::*;
 pub use custom_dropdown::*;
+pub use form_data_editor::*;
 pub use header_editor::*;
 pub use params_editor::*;
 

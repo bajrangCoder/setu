@@ -6,7 +6,8 @@ use gpui::{
 use gpui_component::input::{Input, InputState};
 
 use crate::components::{
-    AuthEditor, BodyType, BodyTypeSelector, BodyTypeSelectorEvent, HeaderEditor, ParamsEditor,
+    AuthEditor, BodyType, BodyTypeSelector, BodyTypeSelectorEvent, FormDataEditor, HeaderEditor,
+    ParamsEditor,
 };
 use crate::entities::{Header, RequestBody, RequestEntity, RequestEvent};
 use crate::icons::IconName;
@@ -31,6 +32,7 @@ pub struct RequestView {
     /// Last body type applied to the editor (for syntax highlighting)
     last_applied_body_type: BodyType,
     body_type_selector: Option<Entity<BodyTypeSelector>>,
+    form_data_editor: Option<Entity<FormDataEditor>>,
     header_editor: Option<Entity<HeaderEditor>>,
     params_editor: Option<Entity<ParamsEditor>>,
     auth_editor: Option<Entity<AuthEditor>>,
@@ -51,6 +53,7 @@ impl RequestView {
             body_type: BodyType::None,
             last_applied_body_type: BodyType::None,
             body_type_selector: None,
+            form_data_editor: None,
             header_editor: None,
             params_editor: None,
             auth_editor: None,
@@ -145,6 +148,10 @@ impl RequestView {
             self.params_editor = Some(cx.new(|cx| ParamsEditor::new(cx)));
         }
 
+        if self.form_data_editor.is_none() {
+            self.form_data_editor = Some(cx.new(|cx| FormDataEditor::new(cx)));
+        }
+
         if self.auth_editor.is_none() {
             self.auth_editor = Some(cx.new(|cx| AuthEditor::new(window, cx)));
         }
@@ -170,8 +177,14 @@ impl RequestView {
             BodyType::None => RequestBody::None,
             BodyType::Json => RequestBody::Json(content),
             BodyType::Text | BodyType::Html | BodyType::Xml => RequestBody::Text(content),
-            BodyType::FormUrlEncoded | BodyType::FormData => {
-                // Parse form data from content
+            BodyType::FormUrlEncoded => {
+                if let Some(ref editor) = self.form_data_editor {
+                    RequestBody::FormData(editor.read(cx).get_form_data(cx))
+                } else {
+                    RequestBody::FormData(std::collections::HashMap::new())
+                }
+            }
+            BodyType::FormData => {
                 let mut form_data = std::collections::HashMap::new();
                 for line in content.lines() {
                     if let Some((key, value)) = line.split_once('=') {
@@ -454,19 +467,28 @@ impl RequestView {
             .when_some(self.body_type_selector.as_ref(), |el, selector| {
                 el.child(selector.clone())
             })
-            // Body editor (only show when body type is not None)
-            .when(self.body_type != BodyType::None, |el| {
-                el.child(
-                    div()
-                        .id("request-body-editor-scroll")
-                        .flex_1()
-                        .overflow_y_scroll()
-                        .bg(theme.muted)
-                        .when_some(self.body_editor.as_ref(), |el, editor| {
-                            el.child(Input::new(editor).appearance(false).size_full())
-                        }),
-                )
+            // Form data editor for x-www-form-urlencoded
+            .when(self.body_type == BodyType::FormUrlEncoded, |el| {
+                el.when_some(self.form_data_editor.as_ref(), |el, editor| {
+                    el.child(editor.clone())
+                })
             })
+            // Body editor (only show when body type is not None and not FormUrlEncoded)
+            .when(
+                self.body_type != BodyType::None && self.body_type != BodyType::FormUrlEncoded,
+                |el| {
+                    el.child(
+                        div()
+                            .id("request-body-editor-scroll")
+                            .flex_1()
+                            .overflow_y_scroll()
+                            .bg(theme.muted)
+                            .when_some(self.body_editor.as_ref(), |el, editor| {
+                                el.child(Input::new(editor).appearance(false).size_full())
+                            }),
+                    )
+                },
+            )
             // Placeholder when body type is None
             .when(self.body_type == BodyType::None, |el| {
                 el.child(
