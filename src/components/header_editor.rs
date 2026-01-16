@@ -19,6 +19,13 @@ pub struct HeaderRow {
     pub enabled: bool,
 }
 
+#[derive(Clone)]
+struct DraggedHeader {
+    index: usize,
+    key: String,
+    value: String,
+}
+
 /// Header editor
 pub struct HeaderEditor {
     request: Entity<RequestEntity>,
@@ -28,7 +35,6 @@ pub struct HeaderEditor {
 
 impl HeaderEditor {
     pub fn new(request: Entity<RequestEntity>, cx: &mut Context<Self>) -> Self {
-        // Subscribe to request changes
         cx.subscribe(&request, |this, _request, _event, cx| {
             this.sync_headers_from_request(cx);
             cx.notify();
@@ -41,15 +47,12 @@ impl HeaderEditor {
             focus_handle: cx.focus_handle(),
         };
 
-        // Initial sync
         editor.sync_headers_from_request(cx);
 
         editor
     }
 
-    /// Sync header rows from request entity
     fn sync_headers_from_request(&mut self, cx: &mut Context<Self>) {
-        // Only sync if the number of headers changed
         let request_headers = self.request.read(cx).headers();
         if request_headers.len() == self.header_rows.len() {
             return;
@@ -127,7 +130,6 @@ impl HeaderEditor {
         for row in &self.header_rows {
             let existing_key = row.key_input.read(cx).text().to_string();
             if existing_key.to_lowercase() == key.to_lowercase() {
-                // Update existing header value
                 let val = value.to_string();
                 row.value_input.update(cx, |state, cx| {
                     state.set_value(val, window, cx);
@@ -175,7 +177,15 @@ impl HeaderEditor {
         }
     }
 
-    /// Get all headers as Header structs
+    pub fn move_header(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
+        if from == to || from >= self.header_rows.len() || to >= self.header_rows.len() {
+            return;
+        }
+        let row = self.header_rows.remove(from);
+        self.header_rows.insert(to, row);
+        cx.notify();
+    }
+
     pub fn get_headers(&self, cx: &App) -> Vec<Header> {
         self.header_rows
             .iter()
@@ -209,7 +219,6 @@ impl Render for HeaderEditor {
             .flex_1()
             .overflow_hidden()
             .bg(theme.muted)
-            // Header with title and actions
             .child(
                 div()
                     .flex()
@@ -266,7 +275,6 @@ impl Render for HeaderEditor {
                             ),
                     ),
             )
-            // Table header
             .child(
                 div()
                     .flex()
@@ -277,18 +285,16 @@ impl Render for HeaderEditor {
                     .border_b_1()
                     .border_color(theme.border.opacity(0.5))
                     .bg(theme.secondary.opacity(0.5))
-                    // Checkbox column
+                    .child(div().w(px(24.0)))
                     .child(div().w(px(32.0)))
-                    // Key column header
                     .child(
                         div()
-                            .w(px(180.0))
-                            .min_w(px(180.0))
+                            .w(px(150.0))
+                            .min_w(px(150.0))
                             .text_color(theme.muted_foreground.opacity(0.7))
                             .text_size(px(10.0))
                             .child("Key"),
                     )
-                    // Value column header
                     .child(
                         div()
                             .flex_1()
@@ -296,19 +302,16 @@ impl Render for HeaderEditor {
                             .text_size(px(10.0))
                             .child("Value"),
                     )
-                    // Description column header
                     .child(
                         div()
-                            .w(px(180.0))
-                            .min_w(px(180.0))
+                            .w(px(150.0))
+                            .min_w(px(150.0))
                             .text_color(theme.muted_foreground.opacity(0.7))
                             .text_size(px(10.0))
                             .child("Description"),
                     )
-                    // Actions column
-                    .child(div().w(px(60.0))),
+                    .child(div().w(px(40.0))),
             )
-            // Scrollable content
             .child(
                 div()
                     .id("header-rows-scroll")
@@ -316,10 +319,10 @@ impl Render for HeaderEditor {
                     .flex()
                     .flex_col()
                     .overflow_y_scroll()
-                    // Header rows
                     .children(self.header_rows.iter().enumerate().map(|(idx, row)| {
                         let this_toggle = this.clone();
                         let this_remove = this.clone();
+                        let this_drop = this.clone();
                         let enabled = row.enabled;
 
                         div()
@@ -336,6 +339,46 @@ impl Render for HeaderEditor {
                             .border_color(theme.border.opacity(0.3))
                             .hover(|s| s.bg(theme.secondary.opacity(0.3)))
                             .when(!enabled, |el| el.opacity(0.5))
+                            .on_drop(move |dragged: &DraggedHeader, _, cx| {
+                                this_drop.update(cx, |editor, cx| {
+                                    editor.move_header(dragged.index, idx, cx);
+                                });
+                            })
+                            .drag_over::<DraggedHeader>(|style, _, _, cx| {
+                                let theme = cx.theme();
+                                style.bg(theme.primary.opacity(0.15))
+                            })
+                            .child(
+                                div()
+                                    .id(ElementId::from(SharedString::from(format!(
+                                        "header-drag-handle-{}",
+                                        idx
+                                    ))))
+                                    .w(px(24.0))
+                                    .h_full()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_grab()
+                                    .on_drag(
+                                        DraggedHeader {
+                                            index: idx,
+                                            key: row.key_input.read(cx).text().to_string(),
+                                            value: row.value_input.read(cx).text().to_string(),
+                                        },
+                                        |dragged, _, _, cx| {
+                                            cx.new(|_| HeaderDragPreview {
+                                                key: dragged.key.clone(),
+                                                value: dragged.value.clone(),
+                                            })
+                                        },
+                                    )
+                                    .child(
+                                        gpui_component::Icon::new(IconName::GripVertical)
+                                            .size(px(14.0))
+                                            .text_color(theme.muted_foreground.opacity(0.5)),
+                                    ),
+                            )
                             .child(
                                 div()
                                     .w(px(32.0))
@@ -357,39 +400,33 @@ impl Render for HeaderEditor {
                                         ),
                                     ),
                             )
-                            // Key input
                             .child(
                                 div()
-                                    .w(px(180.0))
-                                    .min_w(px(180.0))
+                                    .w(px(150.0))
+                                    .min_w(px(150.0))
                                     .pr(px(8.0))
                                     .child(Input::new(&row.key_input).appearance(false).xsmall()),
                             )
-                            // Value input
                             .child(
                                 div()
                                     .flex_1()
                                     .pr(px(8.0))
                                     .child(Input::new(&row.value_input).appearance(false).xsmall()),
                             )
-                            // Description input
                             .child(
-                                div().w(px(180.0)).min_w(px(180.0)).pr(px(8.0)).child(
+                                div().w(px(150.0)).min_w(px(150.0)).pr(px(8.0)).child(
                                     Input::new(&row.description_input)
                                         .appearance(false)
                                         .xsmall(),
                                 ),
                             )
-                            // Actions
                             .child(
                                 div()
-                                    .w(px(60.0))
+                                    .w(px(40.0))
                                     .flex()
                                     .flex_row()
                                     .items_center()
                                     .justify_end()
-                                    .gap(px(2.0))
-                                    // Delete button
                                     .child(
                                         Button::new(SharedString::from(format!(
                                             "remove-header-{}",
@@ -409,7 +446,6 @@ impl Render for HeaderEditor {
                                     ),
                             )
                     }))
-                    // Empty state
                     .when(self.header_rows.is_empty(), |el| {
                         el.child(
                             div()
@@ -423,6 +459,101 @@ impl Render for HeaderEditor {
                                 .child("No headers. Click + to add one."),
                         )
                     }),
+            )
+    }
+}
+
+struct HeaderDragPreview {
+    key: String,
+    value: String,
+}
+
+impl Render for HeaderDragPreview {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+
+        div()
+            .w(px(400.0))
+            .flex()
+            .flex_row()
+            .items_center()
+            .h(px(36.0))
+            .px(px(16.0))
+            .bg(theme.background.opacity(0.95))
+            .border_1()
+            .border_color(theme.primary.opacity(0.5))
+            .rounded(px(6.0))
+            .shadow_lg()
+            .opacity(0.9)
+            .child(
+                div()
+                    .w(px(24.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        gpui_component::Icon::new(IconName::GripVertical)
+                            .size(px(14.0))
+                            .text_color(theme.muted_foreground),
+                    ),
+            )
+            .child(
+                div()
+                    .w(px(24.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .w(px(14.0))
+                            .h(px(14.0))
+                            .rounded(px(3.0))
+                            .border_1()
+                            .border_color(theme.primary)
+                            .bg(theme.primary.opacity(0.2)),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .px(px(8.0))
+                    .text_color(theme.foreground)
+                    .text_size(px(12.0))
+                    .overflow_hidden()
+                    .child(if self.key.is_empty() {
+                        div()
+                            .text_color(theme.muted_foreground.opacity(0.5))
+                            .child("Header name")
+                    } else {
+                        div().child(self.key.clone())
+                    }),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .px(px(8.0))
+                    .text_color(theme.foreground)
+                    .text_size(px(12.0))
+                    .overflow_hidden()
+                    .child(if self.value.is_empty() {
+                        div()
+                            .text_color(theme.muted_foreground.opacity(0.5))
+                            .child("Value")
+                    } else {
+                        div().child(self.value.clone())
+                    }),
+            )
+            .child(
+                div()
+                    .w(px(32.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        gpui_component::Icon::new(IconName::Trash)
+                            .size(px(14.0))
+                            .text_color(theme.muted_foreground.opacity(0.5)),
+                    ),
             )
     }
 }
