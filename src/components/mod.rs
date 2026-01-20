@@ -4,6 +4,7 @@ pub mod custom_dropdown;
 pub mod form_data_editor;
 pub mod header_editor;
 pub mod json_viewer;
+pub mod multipart_form_data_editor;
 pub mod params_editor;
 
 pub mod panel_tab;
@@ -18,6 +19,7 @@ pub use body_type_selector::*;
 pub use custom_dropdown::*;
 pub use form_data_editor::*;
 pub use header_editor::*;
+pub use multipart_form_data_editor::*;
 pub use params_editor::*;
 
 pub use panel_tab::*;

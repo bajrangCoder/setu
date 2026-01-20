@@ -67,6 +67,36 @@ impl Header {
     }
 }
 
+/// A multipart form field that can be either text or a file
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultipartField {
+    pub key: String,
+    pub value: String,
+    pub file_path: Option<String>,
+}
+
+impl MultipartField {
+    pub fn text(key: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            value: value.into(),
+            file_path: None,
+        }
+    }
+
+    pub fn file(key: impl Into<String>, path: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            value: String::new(),
+            file_path: Some(path.into()),
+        }
+    }
+
+    pub fn is_file(&self) -> bool {
+        self.file_path.is_some()
+    }
+}
+
 /// Request body content
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub enum RequestBody {
@@ -75,6 +105,7 @@ pub enum RequestBody {
     Text(String),
     Json(String),
     FormData(HashMap<String, String>),
+    MultipartFormData(Vec<MultipartField>),
 }
 
 #[allow(dead_code)]
@@ -84,6 +115,7 @@ impl RequestBody {
             RequestBody::None => true,
             RequestBody::Text(s) | RequestBody::Json(s) => s.is_empty(),
             RequestBody::FormData(m) => m.is_empty(),
+            RequestBody::MultipartFormData(fields) => fields.is_empty(),
         }
     }
 }

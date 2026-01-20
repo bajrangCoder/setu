@@ -81,8 +81,14 @@ async fn execute_request(
         HttpMethod::Options => client.request(reqwest::Method::OPTIONS, &url),
     };
 
-    // Add headers
+    // Check if this is a multipart request
+    let is_multipart = matches!(body, RequestBody::MultipartFormData(_));
+
+    // Add headers (skip Content-Type for multipart - reqwest sets it with boundary)
     for header in headers.iter().filter(|h| h.enabled) {
+        if is_multipart && header.key.to_lowercase() == "content-type" {
+            continue;
+        }
         request = request.header(&header.key, &header.value);
     }
 
@@ -112,6 +118,43 @@ async fn execute_request(
             request
                 .header("Content-Type", "application/x-www-form-urlencoded")
                 .body(encoded)
+        }
+        // For multipart form data, use reqwest's multipart support
+        RequestBody::MultipartFormData(fields) => {
+            let mut form = reqwest::multipart::Form::new();
+
+            for field in fields {
+                if let Some(ref file_path) = field.file_path {
+                    let path = std::path::Path::new(file_path);
+                    match tokio::fs::read(path).await {
+                        Ok(file_bytes) => {
+                            let file_name = path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("file")
+                                .to_string();
+
+                            let mime_type = mime_guess::from_path(path)
+                                .first_or_octet_stream()
+                                .to_string();
+
+                            let part = reqwest::multipart::Part::bytes(file_bytes)
+                                .file_name(file_name)
+                                .mime_str(&mime_type)
+                                .unwrap_or_else(|_| reqwest::multipart::Part::bytes(vec![]));
+
+                            form = form.part(field.key.clone(), part);
+                        }
+                        Err(e) => {
+                            log::error!("Failed to read file {}: {}", file_path, e);
+                        }
+                    }
+                } else {
+                    form = form.text(field.key.clone(), field.value.clone());
+                }
+            }
+
+            request.multipart(form)
         }
     };
 

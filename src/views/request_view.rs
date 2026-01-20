@@ -7,7 +7,7 @@ use gpui_component::input::{Input, InputState};
 
 use crate::components::{
     AuthEditor, BodyType, BodyTypeSelector, BodyTypeSelectorEvent, FormDataEditor, HeaderEditor,
-    ParamsEditor,
+    MultipartFormDataEditor, ParamsEditor,
 };
 use crate::entities::{Header, RequestBody, RequestEntity, RequestEvent};
 use crate::icons::IconName;
@@ -23,7 +23,6 @@ pub enum RequestTab {
     Auth,
 }
 
-/// Request view
 pub struct RequestView {
     pub request: Entity<RequestEntity>,
     active_tab: RequestTab,
@@ -33,6 +32,7 @@ pub struct RequestView {
     last_applied_body_type: BodyType,
     body_type_selector: Option<Entity<BodyTypeSelector>>,
     form_data_editor: Option<Entity<FormDataEditor>>,
+    multipart_form_data_editor: Option<Entity<MultipartFormDataEditor>>,
     header_editor: Option<Entity<HeaderEditor>>,
     params_editor: Option<Entity<ParamsEditor>>,
     auth_editor: Option<Entity<AuthEditor>>,
@@ -54,6 +54,7 @@ impl RequestView {
             last_applied_body_type: BodyType::None,
             body_type_selector: None,
             form_data_editor: None,
+            multipart_form_data_editor: None,
             header_editor: None,
             params_editor: None,
             auth_editor: None,
@@ -109,7 +110,8 @@ impl RequestView {
         let body_type_changed = self.body_type != self.last_applied_body_type;
 
         // Update Content-Type header when body type changes
-        if body_type_changed {
+        // Skip for FormData (multipart) - reqwest sets this automatically with boundary
+        if body_type_changed && self.body_type != BodyType::FormData {
             if let Some(content_type) = self.body_type.content_type() {
                 if let Some(ref header_editor) = self.header_editor {
                     header_editor.update(cx, |editor, cx| {
@@ -152,6 +154,10 @@ impl RequestView {
             self.form_data_editor = Some(cx.new(|cx| FormDataEditor::new(cx)));
         }
 
+        if self.multipart_form_data_editor.is_none() {
+            self.multipart_form_data_editor = Some(cx.new(|cx| MultipartFormDataEditor::new(cx)));
+        }
+
         if self.auth_editor.is_none() {
             self.auth_editor = Some(cx.new(|cx| AuthEditor::new(window, cx)));
         }
@@ -185,13 +191,11 @@ impl RequestView {
                 }
             }
             BodyType::FormData => {
-                let mut form_data = std::collections::HashMap::new();
-                for line in content.lines() {
-                    if let Some((key, value)) = line.split_once('=') {
-                        form_data.insert(key.trim().to_string(), value.trim().to_string());
-                    }
+                if let Some(ref editor) = self.multipart_form_data_editor {
+                    RequestBody::MultipartFormData(editor.read(cx).get_multipart_fields(cx))
+                } else {
+                    RequestBody::MultipartFormData(Vec::new())
                 }
-                RequestBody::FormData(form_data)
             }
         }
     }
@@ -206,13 +210,16 @@ impl RequestView {
         }
 
         // Add Content-Type header based on body type
-        if let Some(content_type) = self.body_type.content_type() {
-            // Check if Content-Type is already present
-            if !headers
-                .iter()
-                .any(|h| h.key.to_lowercase() == "content-type")
-            {
-                headers.push(Header::new("Content-Type", content_type));
+        // Skip for FormData (multipart) - reqwest sets this automatically with boundary
+        if self.body_type != BodyType::FormData {
+            if let Some(content_type) = self.body_type.content_type() {
+                // Check if Content-Type is already present
+                if !headers
+                    .iter()
+                    .any(|h| h.key.to_lowercase() == "content-type")
+                {
+                    headers.push(Header::new("Content-Type", content_type));
+                }
             }
         }
 
@@ -473,9 +480,17 @@ impl RequestView {
                     el.child(editor.clone())
                 })
             })
-            // Body editor (only show when body type is not None and not FormUrlEncoded)
+            // Multipart form data editor for form-data
+            .when(self.body_type == BodyType::FormData, |el| {
+                el.when_some(self.multipart_form_data_editor.as_ref(), |el, editor| {
+                    el.child(editor.clone())
+                })
+            })
+            // Body editor (only show when body type is not None, FormUrlEncoded, or FormData)
             .when(
-                self.body_type != BodyType::None && self.body_type != BodyType::FormUrlEncoded,
+                self.body_type != BodyType::None
+                    && self.body_type != BodyType::FormUrlEncoded
+                    && self.body_type != BodyType::FormData,
                 |el| {
                     el.child(
                         div()
