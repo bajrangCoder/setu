@@ -11,7 +11,7 @@ use gpui_component::WindowExt;
 
 use crate::actions::*;
 use crate::components::{
-    MethodDropdownState, ProtocolSelector, ProtocolType, Sidebar, TabBar, TabInfo, UrlBar,
+    BodyType, MethodDropdownState, ProtocolSelector, ProtocolType, Sidebar, TabBar, TabInfo, UrlBar,
 };
 use crate::entities::{
     Header, HistoryEntity, HttpMethod, RequestBody, RequestEntity, ResponseEntity,
@@ -20,7 +20,6 @@ use crate::http::HttpClient;
 use crate::views::{CommandId, CommandPaletteEvent, CommandPaletteView, RequestView, ResponseView};
 use gpui_component::ActiveTheme;
 
-/// A tab representing a request with its input state
 pub struct RequestTab {
     pub id: usize,
     pub name: String,
@@ -28,6 +27,8 @@ pub struct RequestTab {
     pub response: Entity<ResponseEntity>,
     pub url_input: Option<Entity<InputState>>,
     pub method_dropdown: Entity<MethodDropdownState>,
+    pub request_view: Entity<RequestView>,
+    pub response_view: Entity<ResponseView>,
 }
 
 /// Main application view
@@ -38,9 +39,7 @@ pub struct MainView {
     next_tab_id: usize,
     tab_scroll_handle: ScrollHandle,
 
-    // Child views (for active tab)
-    request_view: Entity<RequestView>,
-    response_view: Entity<ResponseView>,
+    // Command palette (shared across tabs)
     command_palette: Entity<CommandPaletteView>,
 
     // Shared state
@@ -58,18 +57,20 @@ impl MainView {
         let request = cx.new(|_| RequestEntity::new());
         let response = cx.new(|_| ResponseEntity::new());
         let method_dropdown = cx.new(|_| MethodDropdownState::new(HttpMethod::Get));
+        let request_view = cx.new(|cx| RequestView::new(request.clone(), BodyType::None, cx));
+        let response_view = cx.new(|cx| ResponseView::new(response.clone(), cx));
 
         let initial_tab = RequestTab {
             id: 0,
-            name: "Untitled".to_string(),
+            name: "Untitled 1".to_string(),
             request: request.clone(),
             response: response.clone(),
-            url_input: None, // Will be initialized lazily with Window access
+            url_input: None,
             method_dropdown,
+            request_view,
+            response_view,
         };
 
-        let request_view = cx.new(|cx| RequestView::new(request.clone(), cx));
-        let response_view = cx.new(|cx| ResponseView::new(response.clone(), cx));
         let command_palette = cx.new(|cx| CommandPaletteView::new(cx));
         let history = cx.new(|_| HistoryEntity::new());
 
@@ -86,8 +87,6 @@ impl MainView {
             active_tab_index: 0,
             next_tab_id: 1,
             tab_scroll_handle: ScrollHandle::new(),
-            request_view,
-            response_view,
             command_palette,
             history,
             http_client,
@@ -117,23 +116,23 @@ impl MainView {
         let request = cx.new(|_| RequestEntity::new());
         let response = cx.new(|_| ResponseEntity::new());
         let method_dropdown = cx.new(|_| MethodDropdownState::new(HttpMethod::Get));
-
-        let tab = RequestTab {
-            id: self.next_tab_id,
-            name: "Untitled".to_string(),
-            request: request.clone(),
-            response: response.clone(),
-            url_input: None, // Will be initialized lazily
-            method_dropdown,
-        };
+        let request_view = cx.new(|cx| RequestView::new(request.clone(), BodyType::None, cx));
+        let response_view = cx.new(|cx| ResponseView::new(response.clone(), cx));
 
         self.next_tab_id += 1;
+        let tab = RequestTab {
+            id: self.next_tab_id,
+            name: format!("Untitled {}", self.next_tab_id),
+            request: request.clone(),
+            response: response.clone(),
+            url_input: None,
+            method_dropdown,
+            request_view,
+            response_view,
+        };
+
         self.tabs.push(tab);
         self.active_tab_index = self.tabs.len() - 1;
-
-        // Update views for new tab
-        self.request_view = cx.new(|cx| RequestView::new(request.clone(), cx));
-        self.response_view = cx.new(|cx| ResponseView::new(response.clone(), cx));
 
         // Scroll to the newly added tab
         self.tab_scroll_handle.scroll_to_item(self.active_tab_index);
@@ -146,10 +145,10 @@ impl MainView {
         if index < self.tabs.len() && index != self.active_tab_index {
             self.active_tab_index = index;
 
-            // Update views for this tab
+            // Notify the views to re-render with their current data
             if let Some(tab) = self.tabs.get(index) {
-                self.request_view = cx.new(|cx| RequestView::new(tab.request.clone(), cx));
-                self.response_view = cx.new(|cx| ResponseView::new(tab.response.clone(), cx));
+                tab.request_view.update(cx, |_, cx| cx.notify());
+                tab.response_view.update(cx, |_, cx| cx.notify());
             }
 
             // Scroll to the selected tab to ensure it's visible
@@ -169,12 +168,6 @@ impl MainView {
                 self.active_tab_index = self.tabs.len() - 1;
             } else if index < self.active_tab_index {
                 self.active_tab_index -= 1;
-            }
-
-            // Update views
-            if let Some(tab) = self.tabs.get(self.active_tab_index) {
-                self.request_view = cx.new(|cx| RequestView::new(tab.request.clone(), cx));
-                self.response_view = cx.new(|cx| ResponseView::new(tab.response.clone(), cx));
             }
 
             cx.notify();
@@ -269,12 +262,6 @@ impl MainView {
             self.tabs.push(tab_to_keep);
             self.active_tab_index = 0;
 
-            // Update views
-            if let Some(tab) = self.tabs.get(0) {
-                self.request_view = cx.new(|cx| RequestView::new(tab.request.clone(), cx));
-                self.response_view = cx.new(|cx| ResponseView::new(tab.response.clone(), cx));
-            }
-
             cx.notify();
         }
     }
@@ -285,6 +272,7 @@ impl MainView {
 
         let request_entity = tab.request.clone();
         let response_entity = tab.response.clone();
+        let request_view = tab.request_view.clone();
 
         // Get URL from input state
         let base_url = if let Some(ref url_input) = tab.url_input {
@@ -301,13 +289,13 @@ impl MainView {
         }
 
         // Sync body and headers from RequestView to RequestEntity
-        self.request_view.update(cx, |view, cx| {
+        request_view.update(cx, |view, cx| {
             view.sync_body_to_request(cx);
             view.sync_headers_to_request(cx);
         });
 
         // Get query string from params editor
-        let query_string = self.request_view.read(cx).get_query_string(cx);
+        let query_string = request_view.read(cx).get_query_string(cx);
 
         // Build final URL with query params
         let url = if !query_string.is_empty() {
@@ -483,10 +471,6 @@ impl MainView {
             self.tabs.pop();
         }
         self.active_tab_index = 0;
-        if let Some(tab) = self.tabs.get(0) {
-            self.request_view = cx.new(|cx| RequestView::new(tab.request.clone(), cx));
-            self.response_view = cx.new(|cx| ResponseView::new(tab.response.clone(), cx));
-        }
         cx.notify();
     }
 
@@ -500,8 +484,10 @@ impl MainView {
             let old_url_input = current_tab.url_input.clone();
             let old_method_dropdown = current_tab.method_dropdown.clone();
             let old_name = current_tab.name.clone();
+            let old_request_view = current_tab.request_view.clone();
 
             let new_method = old_method_dropdown.read(cx).method();
+            let old_body_type = old_request_view.read(cx).get_body_type();
 
             let old_headers: Vec<_> = old_request.read(cx).headers().to_vec();
             let old_body = old_request.read(cx).body().clone();
@@ -528,6 +514,11 @@ impl MainView {
                 new_req.set_body(old_body, cx);
             });
 
+            let new_request_view =
+                cx.new(|cx| RequestView::new(new_request.clone(), old_body_type, cx));
+            let new_response_view = cx.new(|cx| ResponseView::new(new_response.clone(), cx));
+
+            self.next_tab_id += 1;
             let new_tab = RequestTab {
                 id: self.next_tab_id,
                 name: format!("{} (copy)", old_name),
@@ -535,13 +526,12 @@ impl MainView {
                 response: new_response.clone(),
                 url_input: new_url_input,
                 method_dropdown: new_method_dropdown,
+                request_view: new_request_view,
+                response_view: new_response_view,
             };
 
-            self.next_tab_id += 1;
             self.tabs.push(new_tab);
             self.active_tab_index = self.tabs.len() - 1;
-            self.request_view = cx.new(|cx| RequestView::new(new_request.clone(), cx));
-            self.response_view = cx.new(|cx| ResponseView::new(new_response.clone(), cx));
             self.tab_scroll_handle.scroll_to_item(self.active_tab_index);
             cx.notify();
         }
@@ -563,9 +553,11 @@ impl MainView {
         tab: crate::views::request_view::RequestTab,
         cx: &mut Context<Self>,
     ) {
-        self.request_view.update(cx, |view, cx| {
-            view.set_tab(tab, cx);
-        });
+        if let Some(active_tab) = self.tabs.get(self.active_tab_index) {
+            active_tab.request_view.update(cx, |view, cx| {
+                view.set_tab(tab, cx);
+            });
+        }
     }
 
     pub fn switch_to_response_tab(
@@ -573,9 +565,11 @@ impl MainView {
         tab: crate::views::response_view::ResponseTab,
         cx: &mut Context<Self>,
     ) {
-        self.response_view.update(cx, |view, cx| {
-            view.set_tab(tab, cx);
-        });
+        if let Some(active_tab) = self.tabs.get(self.active_tab_index) {
+            active_tab.response_view.update(cx, |view, cx| {
+                view.set_tab(tab, cx);
+            });
+        }
     }
 
     pub fn focus_url_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -619,7 +613,7 @@ impl Render for MainView {
             .collect();
 
         // Get current request state for URL bar
-        let (url_input, method_dropdown, request_entity, is_loading) =
+        let (url_input, method_dropdown, request_entity, is_loading, request_view, response_view) =
             if let Some(tab) = self.active_tab() {
                 let req = tab.request.read(cx);
                 (
@@ -627,6 +621,8 @@ impl Render for MainView {
                     tab.method_dropdown.clone(),
                     tab.request.clone(),
                     req.is_sending(),
+                    tab.request_view.clone(),
+                    tab.response_view.clone(),
                 )
             } else {
                 return div().child("No active tab").into_any_element();
@@ -804,6 +800,7 @@ impl Render for MainView {
                                                                 request_entity,
                                                                 is_loading,
                                                                 this_for_send,
+                                                                request_view,
                                                             )),
                                                     ),
                                             )
@@ -817,7 +814,7 @@ impl Render for MainView {
                                                             .flex_col()
                                                             .size_full()
                                                             .overflow_hidden()
-                                                            .child(self.response_view.clone()),
+                                                            .child(response_view.clone()),
                                                     ),
                                             ),
                                     ),
@@ -843,6 +840,7 @@ impl MainView {
         request: Entity<RequestEntity>,
         is_loading: bool,
         this: Entity<MainView>,
+        request_view: Entity<RequestView>,
     ) -> impl IntoElement {
         div()
             .flex()
@@ -868,7 +866,7 @@ impl MainView {
                     }),
             )
             // Request view tabs (body, headers, etc.)
-            .child(self.request_view.clone())
+            .child(request_view.clone())
     }
 
     fn render_header(&self, theme: &gpui_component::theme::ThemeColor) -> impl IntoElement {

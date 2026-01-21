@@ -1,6 +1,6 @@
 use gpui::prelude::*;
 use gpui::{
-    div, px, AnyElement, App, Context, Entity, FocusHandle, Focusable, IntoElement,
+    div, px, AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
     PathPromptOptions, Render, Styled, Window,
 };
 use gpui_component::input::{Input, InputState};
@@ -12,6 +12,11 @@ use crate::components::{
 use crate::entities::{Header, RequestBody, RequestEntity, RequestEvent};
 use crate::icons::IconName;
 use gpui_component::{ActiveTheme, Icon};
+
+#[derive(Debug, Clone)]
+pub enum RequestViewEvent {
+    BodyTypeChanged(BodyType),
+}
 
 /// Active tab in the request panel
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -40,7 +45,11 @@ pub struct RequestView {
 }
 
 impl RequestView {
-    pub fn new(request: Entity<RequestEntity>, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        request: Entity<RequestEntity>,
+        initial_body_type: BodyType,
+        cx: &mut Context<Self>,
+    ) -> Self {
         cx.subscribe(&request, |_this, _request, _event: &RequestEvent, cx| {
             cx.notify();
         })
@@ -50,7 +59,7 @@ impl RequestView {
             request,
             active_tab: RequestTab::Body,
             body_editor: None,
-            body_type: BodyType::None,
+            body_type: initial_body_type,
             last_applied_body_type: BodyType::None,
             body_type_selector: None,
             form_data_editor: None,
@@ -60,6 +69,11 @@ impl RequestView {
             auth_editor: None,
             focus_handle: cx.focus_handle(),
         }
+    }
+
+    /// Get the current body type
+    pub fn get_body_type(&self) -> BodyType {
+        self.body_type
     }
 
     /// Initialize the body editor with Window access
@@ -134,6 +148,7 @@ impl RequestView {
                 |this, _selector, event: &BodyTypeSelectorEvent, window, cx| match event {
                     BodyTypeSelectorEvent::TypeChanged(body_type) => {
                         this.body_type = *body_type;
+                        cx.emit(RequestViewEvent::BodyTypeChanged(*body_type));
                         cx.notify();
                     }
                     BodyTypeSelectorEvent::ImportRequested => {
@@ -567,3 +582,5 @@ impl RequestView {
             })
     }
 }
+
+impl EventEmitter<RequestViewEvent> for RequestView {}
