@@ -32,6 +32,7 @@ pub enum IconName {
     CircleCheck,
     Info,
     TriangleAlert,
+    Copy,
 }
 
 impl IconNamed for IconName {
@@ -62,6 +63,7 @@ impl IconNamed for IconName {
             Self::CircleCheck => "icons/circle-check.svg",
             Self::Info => "icons/info.svg",
             Self::TriangleAlert => "icons/triangle-alert.svg",
+            Self::Copy => "icons/copy.svg",
         }
         .into()
     }
