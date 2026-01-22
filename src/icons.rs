@@ -28,6 +28,10 @@ pub enum IconName {
     FilePlus,
     FileUp,
     File,
+    Sparkles,
+    CircleCheck,
+    Info,
+    TriangleAlert,
 }
 
 impl IconNamed for IconName {
@@ -54,6 +58,10 @@ impl IconNamed for IconName {
             Self::FilePlus => "icons/file-plus.svg",
             Self::FileUp => "icons/file-up.svg",
             Self::File => "icons/file.svg",
+            Self::Sparkles => "icons/sparkles.svg",
+            Self::CircleCheck => "icons/circle-check.svg",
+            Self::Info => "icons/info.svg",
+            Self::TriangleAlert => "icons/triangle-alert.svg",
         }
         .into()
     }
