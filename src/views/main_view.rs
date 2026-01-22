@@ -786,7 +786,7 @@ impl Render for MainView {
                                             // Request panel with URL bar
                                             .child(
                                                 resizable_panel()
-                                                    .size(px(300.0))
+                                                    .size(px(400.0))
                                                     .size_range(px(150.0)..px(600.0))
                                                     .child(
                                                         div()
@@ -828,6 +828,8 @@ impl Render for MainView {
             .child(self.command_palette.clone())
             // Dialog layer - renders dialogs on top of everything
             .children(Root::render_dialog_layer(window, cx))
+            // Notification layer - renders notifications on top of everything
+            .children(Root::render_notification_layer(window, cx))
             .into_any_element()
     }
 }

@@ -4,6 +4,8 @@ use gpui::{
     PathPromptOptions, Render, Styled, Window,
 };
 use gpui_component::input::{Input, InputState};
+use gpui_component::notification::NotificationType;
+use gpui_component::WindowExt;
 
 use crate::components::{
     AuthEditor, BodyType, BodyTypeSelector, BodyTypeSelectorEvent, FormDataEditor, HeaderEditor,
@@ -153,6 +155,9 @@ impl RequestView {
                     }
                     BodyTypeSelectorEvent::ImportRequested => {
                         this.import_body_from_file(window, cx);
+                    }
+                    BodyTypeSelectorEvent::BeautifyRequested => {
+                        this.beautify_json(window, cx);
                     }
                 },
             )
@@ -370,6 +375,49 @@ impl RequestView {
             });
         })
         .detach();
+    }
+
+    /// Beautify/format JSON content in the body editor
+    pub fn beautify_json(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ref body_editor) = self.body_editor else {
+            log::warn!("Body editor not found");
+            window.push_notification(
+                (NotificationType::Warning, "Body editor not initialized"),
+                cx,
+            );
+            return;
+        };
+
+        let current_text = body_editor.read(cx).text().to_string();
+
+        if current_text.trim().is_empty() {
+            window.push_notification((NotificationType::Warning, "No content to beautify"), cx);
+            return;
+        }
+
+        match serde_json::from_str::<serde_json::Value>(&current_text) {
+            Ok(value) => match serde_json::to_string_pretty(&value) {
+                Ok(formatted) => {
+                    body_editor.update(cx, |state, cx| {
+                        state.set_value(formatted, window, cx);
+                    });
+                    window.push_notification(
+                        (NotificationType::Success, "JSON formatted successfully"),
+                        cx,
+                    );
+                    cx.notify();
+                }
+                Err(e) => {
+                    log::warn!("Failed to format JSON: {}", e);
+                    window
+                        .push_notification((NotificationType::Error, "Failed to format JSON"), cx);
+                }
+            },
+            Err(e) => {
+                log::warn!("Invalid JSON, cannot beautify: {}", e);
+                window.push_notification((NotificationType::Error, "Invalid JSON syntax"), cx);
+            }
+        }
     }
 }
 

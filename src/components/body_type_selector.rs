@@ -87,6 +87,7 @@ impl SelectItem for BodyType {
 pub enum BodyTypeSelectorEvent {
     TypeChanged(BodyType),
     ImportRequested,
+    BeautifyRequested,
 }
 
 impl EventEmitter<BodyTypeSelectorEvent> for BodyTypeSelector {}
@@ -153,12 +154,16 @@ impl Render for BodyTypeSelector {
     fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let this = cx.entity().clone();
+        let this_for_beautify = cx.entity().clone();
 
         // Only show import button for body types that support file import
         let show_import = matches!(
             self.selected,
             BodyType::Json | BodyType::Text | BodyType::Xml | BodyType::Html
         );
+
+        // Only show beautify button for JSON
+        let show_beautify = self.selected == BodyType::Json;
 
         div()
             .track_focus(&self.focus_handle)
@@ -190,19 +195,40 @@ impl Render for BodyTypeSelector {
                             .menu_width(px(200.0)),
                     ),
             )
-            .when(show_import, |el| {
-                el.child(
-                    Button::new("import-body")
-                        .icon(IconName::FileUp)
-                        .ghost()
-                        .xsmall()
-                        .tooltip("Import from file")
-                        .on_click(move |_, _, cx| {
-                            this.update(cx, |_, cx| {
-                                cx.emit(BodyTypeSelectorEvent::ImportRequested);
-                            });
-                        }),
-                )
-            })
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(4.0))
+                    .when(show_beautify, |el| {
+                        el.child(
+                            Button::new("beautify-body")
+                                .icon(IconName::Sparkles)
+                                .ghost()
+                                .xsmall()
+                                .tooltip("Beautify JSON")
+                                .on_click(move |_, _, cx| {
+                                    this_for_beautify.update(cx, |_, cx| {
+                                        cx.emit(BodyTypeSelectorEvent::BeautifyRequested);
+                                    });
+                                }),
+                        )
+                    })
+                    .when(show_import, |el| {
+                        el.child(
+                            Button::new("import-body")
+                                .icon(IconName::FileUp)
+                                .ghost()
+                                .xsmall()
+                                .tooltip("Import from file")
+                                .on_click(move |_, _, cx| {
+                                    this.update(cx, |_, cx| {
+                                        cx.emit(BodyTypeSelectorEvent::ImportRequested);
+                                    });
+                                }),
+                        )
+                    }),
+            )
     }
 }
