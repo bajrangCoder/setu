@@ -75,6 +75,7 @@ pub struct MultipartField {
     pub file_path: Option<String>,
 }
 
+#[allow(dead_code)]
 impl MultipartField {
     pub fn text(key: impl Into<String>, value: impl Into<String>) -> Self {
         Self {

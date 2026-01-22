@@ -3,7 +3,6 @@ pub mod body_type_selector;
 pub mod custom_dropdown;
 pub mod form_data_editor;
 pub mod header_editor;
-pub mod json_viewer;
 pub mod multipart_form_data_editor;
 pub mod params_editor;
 

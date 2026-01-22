@@ -54,6 +54,7 @@ impl ContentCategory {
 }
 
 /// Events emitted by ResponseEntity
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum ResponseEvent {
     Loading,

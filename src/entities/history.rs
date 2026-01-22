@@ -16,6 +16,7 @@ pub struct HistoryEntry {
     pub timestamp: DateTime<Utc>,
 }
 
+#[allow(dead_code)]
 impl HistoryEntry {
     pub fn new(request: RequestData, response: Option<ResponseData>) -> Self {
         Self {
@@ -46,6 +47,7 @@ impl HistoryEntry {
 }
 
 /// Events emitted by HistoryEntity
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum HistoryEvent {
     EntryAdded(Uuid),
@@ -54,11 +56,13 @@ pub enum HistoryEvent {
 }
 
 /// HistoryEntity - stores all request history
+#[allow(dead_code)]
 pub struct HistoryEntity {
     pub entries: Vec<HistoryEntry>,
     pub max_entries: usize,
 }
 
+#[allow(dead_code)]
 impl HistoryEntity {
     pub fn new() -> Self {
         Self {

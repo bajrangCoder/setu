@@ -15,6 +15,7 @@ use crate::entities::{Header, RequestBody, RequestEntity, RequestEvent};
 use crate::icons::IconName;
 use gpui_component::{ActiveTheme, Icon};
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum RequestViewEvent {
     BodyTypeChanged(BodyType),
