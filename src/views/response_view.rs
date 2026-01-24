@@ -6,18 +6,23 @@ use gpui::{
     div, img, px, size, AnyElement, App, Context, ElementId, Entity, FocusHandle, Focusable, Image,
     ImageFormat, IntoElement, Pixels, Render, SharedString, Size, Styled, Window,
 };
+use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputState};
+use gpui_component::notification::NotificationType;
 use gpui_component::scroll::Scrollbar;
 use gpui_component::spinner::Spinner;
 use gpui_component::v_virtual_list;
 use gpui_component::Sizable;
 use gpui_component::VirtualListScrollHandle;
+use gpui_component::WindowExt;
 
 use crate::components::StatusBadge;
 use crate::entities::{
     ContentCategory, ResponseData, ResponseEntity, ResponseEvent, ResponseState,
 };
+use crate::icons::IconName;
 use gpui_component::ActiveTheme;
+use gpui_component::Icon;
 
 /// Active tab in the response panel
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -551,6 +556,7 @@ impl ResponseView {
                         visible_range
                             .map(|idx| {
                                 let (key, value) = &headers[idx];
+                                let value_for_copy = value.clone();
                                 let bg_color = if idx % 2 == 0 {
                                     bg_primary
                                 } else {
@@ -562,6 +568,7 @@ impl ResponseView {
                                         "header-row-{}",
                                         idx
                                     ))))
+                                    .group("header-row")
                                     .w_full()
                                     .h(row_height)
                                     .flex()
@@ -584,15 +591,61 @@ impl ResponseView {
                                             .text_ellipsis()
                                             .child(key.clone()),
                                     )
-                                    // Value column
+                                    // Value column with copy button
                                     .child(
                                         div()
                                             .flex_1()
-                                            .text_color(value_color)
-                                            .text_size(px(12.0))
-                                            .overflow_hidden()
-                                            .text_ellipsis()
-                                            .child(value.clone()),
+                                            .flex()
+                                            .flex_row()
+                                            .items_center()
+                                            .gap(px(8.0))
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .text_color(value_color)
+                                                    .text_size(px(12.0))
+                                                    .overflow_hidden()
+                                                    .text_ellipsis()
+                                                    .child(value.clone()),
+                                            )
+                                            .child(
+                                                div()
+                                                    .id(SharedString::from(format!(
+                                                        "copy-btn-wrapper-{}",
+                                                        idx
+                                                    )))
+                                                    .invisible()
+                                                    .group_hover("header-row", |s| s.visible())
+                                                    .child(
+                                                        Button::new(SharedString::from(format!(
+                                                            "copy-header-{}",
+                                                            idx
+                                                        )))
+                                                        .icon(
+                                                            Icon::new(IconName::Copy)
+                                                                .size(px(14.0)),
+                                                        )
+                                                        .ghost()
+                                                        .xsmall()
+                                                        .rounded(px(4.0))
+                                                        .cursor_pointer()
+                                                        .tooltip("Copy value")
+                                                        .on_click(move |_event, window, cx| {
+                                                            cx.write_to_clipboard(
+                                                                gpui::ClipboardItem::new_string(
+                                                                    value_for_copy.clone(),
+                                                                ),
+                                                            );
+                                                            window.push_notification(
+                                                                (
+                                                                    NotificationType::Success,
+                                                                    "Copied to clipboard",
+                                                                ),
+                                                                cx,
+                                                            );
+                                                        }),
+                                                    ),
+                                            ),
                                     )
                             })
                             .collect()
