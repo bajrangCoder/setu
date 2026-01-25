@@ -160,6 +160,9 @@ impl RequestView {
                     BodyTypeSelectorEvent::BeautifyRequested => {
                         this.beautify_json(window, cx);
                     }
+                    BodyTypeSelectorEvent::ClearRequested => {
+                        this.clear_body(window, cx);
+                    }
                 },
             )
             .detach();
@@ -419,6 +422,20 @@ impl RequestView {
                 window.push_notification((NotificationType::Error, "Invalid JSON syntax"), cx);
             }
         }
+    }
+
+    /// Clear the body editor content
+    pub fn clear_body(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ref body_editor) = self.body_editor else {
+            log::warn!("Body editor not found");
+            return;
+        };
+
+        body_editor.update(cx, |state, cx| {
+            state.set_value(String::new(), window, cx);
+        });
+
+        cx.notify();
     }
 }
 

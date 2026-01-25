@@ -88,6 +88,7 @@ pub enum BodyTypeSelectorEvent {
     TypeChanged(BodyType),
     ImportRequested,
     BeautifyRequested,
+    ClearRequested,
 }
 
 impl EventEmitter<BodyTypeSelectorEvent> for BodyTypeSelector {}
@@ -155,6 +156,7 @@ impl Render for BodyTypeSelector {
         let theme = cx.theme();
         let this = cx.entity().clone();
         let this_for_beautify = cx.entity().clone();
+        let this_for_clear = cx.entity().clone();
 
         // Only show import button for body types that support file import
         let show_import = matches!(
@@ -164,6 +166,12 @@ impl Render for BodyTypeSelector {
 
         // Only show beautify button for JSON
         let show_beautify = self.selected == BodyType::Json;
+
+        // Show clear button for text-based body types (JSON, XML, HTML, Text)
+        let show_clear = matches!(
+            self.selected,
+            BodyType::Json | BodyType::Xml | BodyType::Html | BodyType::Text
+        );
 
         div()
             .track_focus(&self.focus_handle)
@@ -211,6 +219,20 @@ impl Render for BodyTypeSelector {
                                 .on_click(move |_, _, cx| {
                                     this_for_beautify.update(cx, |_, cx| {
                                         cx.emit(BodyTypeSelectorEvent::BeautifyRequested);
+                                    });
+                                }),
+                        )
+                    })
+                    .when(show_clear, |el| {
+                        el.child(
+                            Button::new("clear-body")
+                                .icon(IconName::Trash)
+                                .ghost()
+                                .xsmall()
+                                .tooltip("Clear body content")
+                                .on_click(move |_, _, cx| {
+                                    this_for_clear.update(cx, |_, cx| {
+                                        cx.emit(BodyTypeSelectorEvent::ClearRequested);
                                     });
                                 }),
                         )
