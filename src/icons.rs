@@ -33,6 +33,7 @@ pub enum IconName {
     Info,
     TriangleAlert,
     Copy,
+    FileDown,
 }
 
 impl IconNamed for IconName {
@@ -64,6 +65,7 @@ impl IconNamed for IconName {
             Self::Info => "icons/info.svg",
             Self::TriangleAlert => "icons/triangle-alert.svg",
             Self::Copy => "icons/copy.svg",
+            Self::FileDown => "icons/file-down.svg",
         }
         .into()
     }
