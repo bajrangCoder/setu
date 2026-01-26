@@ -4,7 +4,8 @@ use std::sync::Arc;
 use gpui::prelude::*;
 use gpui::{
     div, img, px, size, AnyElement, App, Context, ElementId, Entity, FocusHandle, Focusable, Image,
-    ImageFormat, IntoElement, Pixels, Render, SharedString, Size, Styled, Window,
+    ImageFormat, IntoElement, PathPromptOptions, Pixels, Render, SharedString, Size, Styled,
+    Window,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputState};
@@ -146,6 +147,149 @@ impl ResponseView {
         self.active_tab = tab;
         cx.notify();
     }
+
+    fn copy_response(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let content = self
+            .response
+            .read(cx)
+            .data
+            .as_ref()
+            .map(|d| match self.active_tab {
+                ResponseTab::Body => d.formatted_body_ref().to_string(),
+                ResponseTab::Raw => d.body.clone(),
+                ResponseTab::Headers => {
+                    let headers_json: Vec<serde_json::Value> = d
+                        .headers
+                        .iter()
+                        .map(|(k, v)| {
+                            serde_json::json!({
+                                "key": k,
+                                "value": v
+                            })
+                        })
+                        .collect();
+                    serde_json::to_string(&headers_json).unwrap_or_else(|_| "[]".to_string())
+                }
+            });
+
+        if let Some(content) = content {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(content));
+            window.push_notification(
+                (
+                    gpui_component::notification::NotificationType::Success,
+                    "Response copied to clipboard",
+                ),
+                cx,
+            );
+        }
+    }
+
+    fn save_to_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let content = self
+            .response
+            .read(cx)
+            .data
+            .as_ref()
+            .map(|d| match self.active_tab {
+                ResponseTab::Body => d.formatted_body_ref().to_string(),
+                ResponseTab::Raw => d.body.clone(),
+                ResponseTab::Headers => {
+                    let headers_json: Vec<serde_json::Value> = d
+                        .headers
+                        .iter()
+                        .map(|(k, v)| {
+                            serde_json::json!({
+                                "key": k,
+                                "value": v
+                            })
+                        })
+                        .collect();
+                    serde_json::to_string_pretty(&headers_json).unwrap_or_else(|_| "[]".to_string())
+                }
+            });
+
+        let Some(content) = content else { return };
+
+        let default_extension = match self.active_tab {
+            ResponseTab::Headers => "json",
+            _ => {
+                let content_category = self
+                    .response
+                    .read(cx)
+                    .data
+                    .as_ref()
+                    .map(|d| d.content_category())
+                    .unwrap_or(ContentCategory::Text);
+
+                match content_category {
+                    ContentCategory::Json => "json",
+                    ContentCategory::Xml => "xml",
+                    ContentCategory::Html => "html",
+                    ContentCategory::Image => "png",
+                    _ => "txt",
+                }
+            }
+        };
+
+        let default_name = format!("response.{}", default_extension);
+        let this = cx.entity().clone();
+
+        let options = PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Select folder to save response".into()),
+        };
+
+        let paths_receiver = cx.prompt_for_paths(options);
+
+        cx.spawn_in(window, async move |_weak_this, cx| {
+            let channel_result = paths_receiver.await;
+
+            let Ok(platform_result) = channel_result else {
+                log::error!("File picker channel closed unexpectedly");
+                return;
+            };
+
+            let Ok(paths_opt) = platform_result else {
+                log::error!("File picker failed");
+                return;
+            };
+
+            let Some(paths) = paths_opt else {
+                return;
+            };
+
+            let Some(dir_path) = paths.first() else {
+                return;
+            };
+
+            let file_path = dir_path.join(&default_name);
+
+            if let Err(e) = std::fs::write(&file_path, &content) {
+                log::error!("Failed to save response: {}", e);
+                let _ = cx.update(|window, app| {
+                    window.push_notification(
+                        (NotificationType::Error, "Failed to save response"),
+                        app,
+                    );
+                });
+                return;
+            }
+
+            log::info!("Response saved to: {}", file_path.display());
+            let _ = cx.update(|window, app| {
+                window.push_notification(
+                    (NotificationType::Success, "Response saved successfully"),
+                    app,
+                );
+                this.update(app, |_view, cx| {
+                    cx.notify();
+                });
+            });
+        })
+        .detach();
+    }
 }
 
 impl Focusable for ResponseView {
@@ -223,7 +367,6 @@ impl ResponseView {
     }
 
     fn render_loading(&self, theme: &gpui_component::theme::ThemeColor) -> impl IntoElement {
-        // Use gpui-component's animated Spinner
         div()
             .flex_1()
             .flex()
@@ -376,11 +519,79 @@ impl ResponseView {
         data: &ResponseData,
         cx: &Context<Self>,
     ) -> AnyElement {
-        match self.active_tab {
-            ResponseTab::Body => self.render_body_tab(theme, data).into_any_element(),
-            ResponseTab::Raw => self.render_raw_tab(theme).into_any_element(),
-            ResponseTab::Headers => self.render_headers_tab(theme, data, cx).into_any_element(),
-        }
+        let this = cx.entity().clone();
+        let this_save = cx.entity().clone();
+
+        let tab_label = match self.active_tab {
+            ResponseTab::Body => "Response Body",
+            ResponseTab::Raw => "Raw Response",
+            ResponseTab::Headers => "Headers List",
+        };
+
+        div()
+            .id("response-tab-content")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .w_full()
+            .overflow_hidden()
+            .child(
+                div()
+                    .id("response-tools-bar")
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .px(px(12.0))
+                    .py(px(6.0))
+                    .bg(theme.secondary)
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .child(
+                        div()
+                            .text_color(theme.muted_foreground)
+                            .text_size(px(11.0))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(tab_label),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(4.0))
+                            .child(
+                                Button::new("copy-response")
+                                    .icon(Icon::new(IconName::Copy).size(px(14.0)))
+                                    .ghost()
+                                    .xsmall()
+                                    .tooltip("Copy response")
+                                    .on_click(move |_, window, cx| {
+                                        this.update(cx, |view, cx| {
+                                            view.copy_response(window, cx);
+                                        });
+                                    }),
+                            )
+                            .child(
+                                Button::new("save-response")
+                                    .icon(Icon::new(IconName::FileDown).size(px(14.0)))
+                                    .ghost()
+                                    .xsmall()
+                                    .tooltip("Save to file")
+                                    .on_click(move |_, window, cx| {
+                                        this_save.update(cx, |view, cx| {
+                                            view.save_to_file(window, cx);
+                                        });
+                                    }),
+                            ),
+                    ),
+            )
+            .child(match self.active_tab {
+                ResponseTab::Body => self.render_body_tab(theme, data).into_any_element(),
+                ResponseTab::Raw => self.render_raw_tab(theme).into_any_element(),
+                ResponseTab::Headers => self.render_headers_tab(theme, data, cx).into_any_element(),
+            })
+            .into_any_element()
     }
 
     fn render_body_tab(
