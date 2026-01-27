@@ -45,6 +45,7 @@ pub struct RequestView {
     params_editor: Option<Entity<ParamsEditor>>,
     auth_editor: Option<Entity<AuthEditor>>,
     focus_handle: FocusHandle,
+    wrap_lines: bool,
 }
 
 impl RequestView {
@@ -71,6 +72,7 @@ impl RequestView {
             params_editor: None,
             auth_editor: None,
             focus_handle: cx.focus_handle(),
+            wrap_lines: true,
         }
     }
 
@@ -90,11 +92,13 @@ impl RequestView {
   "value": 123
 }"#;
 
+            let wrap_lines = self.wrap_lines;
             let body_editor = cx.new(|cx| {
                 InputState::new(window, cx)
                     .code_editor(syntax_lang)
                     .line_number(true)
                     .searchable(true)
+                    .soft_wrap(wrap_lines)
                     .default_value(initial_content)
             });
 
@@ -162,6 +166,15 @@ impl RequestView {
                     }
                     BodyTypeSelectorEvent::ClearRequested => {
                         this.clear_body(window, cx);
+                    }
+                    BodyTypeSelectorEvent::WrapToggled(wrap) => {
+                        this.wrap_lines = *wrap;
+                        if let Some(ref body_editor) = this.body_editor {
+                            body_editor.update(cx, |state, cx| {
+                                state.set_soft_wrap(*wrap, window, cx);
+                            });
+                        }
+                        cx.notify();
                     }
                 },
             )
@@ -542,7 +555,6 @@ impl RequestView {
     }
 
     fn render_body_tab(&self, theme: &gpui_component::theme::ThemeColor) -> impl IntoElement {
-        // Container with body type selector and editor
         div()
             .id("request-body-editor")
             .flex()

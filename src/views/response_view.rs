@@ -13,6 +13,7 @@ use gpui_component::notification::NotificationType;
 use gpui_component::scroll::Scrollbar;
 use gpui_component::spinner::Spinner;
 use gpui_component::v_virtual_list;
+use gpui_component::Selectable;
 use gpui_component::Sizable;
 use gpui_component::VirtualListScrollHandle;
 use gpui_component::WindowExt;
@@ -52,6 +53,8 @@ pub struct ResponseView {
     focus_handle: FocusHandle,
     /// Virtual list scroll handle for headers tab
     headers_scroll_handle: VirtualListScrollHandle,
+    /// Whether to wrap lines in the editor
+    wrap_lines: bool,
 }
 
 impl ResponseView {
@@ -71,10 +74,10 @@ impl ResponseView {
             last_content_category: ContentCategory::Text,
             focus_handle: cx.focus_handle(),
             headers_scroll_handle: VirtualListScrollHandle::new(),
+            wrap_lines: true,
         }
     }
 
-    /// Initialize or update the body display with Window access (called from render)
     fn ensure_body_display(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (current_hash, content_category, formatted_content) = {
             self.response.update(cx, |resp, _cx| {
@@ -96,11 +99,13 @@ impl ResponseView {
                 .map(|s| s.as_ref().clone())
                 .unwrap_or_default();
 
+            let wrap_lines = self.wrap_lines;
             let body_display = cx.new(|cx| {
                 InputState::new(window, cx)
                     .code_editor(lang)
                     .line_number(true)
                     .searchable(true)
+                    .soft_wrap(wrap_lines)
                     .default_value(&content)
             });
             self.body_display = Some(body_display);
@@ -109,12 +114,10 @@ impl ResponseView {
         }
     }
 
-    /// Initialize or update the raw display with Window access
     fn ensure_raw_display(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (current_hash, raw_body) = {
             let resp = self.response.read(cx);
             if let Some(ref data) = resp.data {
-                // Avoid cloning unless we need to update
                 (data.body_hash(), Some(data.body.clone()))
             } else {
                 (0, None)
@@ -123,11 +126,13 @@ impl ResponseView {
 
         if self.raw_display.is_none() {
             let content = raw_body.unwrap_or_default();
+            let wrap_lines = self.wrap_lines;
             let raw_display = cx.new(|cx| {
                 InputState::new(window, cx)
                     .code_editor("text")
                     .line_number(true)
                     .searchable(true)
+                    .soft_wrap(wrap_lines)
                     .default_value(&content)
             });
             self.raw_display = Some(raw_display);
@@ -145,6 +150,21 @@ impl ResponseView {
 
     pub fn set_tab(&mut self, tab: ResponseTab, cx: &mut Context<Self>) {
         self.active_tab = tab;
+        cx.notify();
+    }
+
+    pub fn toggle_wrap_lines(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.wrap_lines = !self.wrap_lines;
+        if let Some(ref body_display) = self.body_display {
+            body_display.update(cx, |state, cx| {
+                state.set_soft_wrap(self.wrap_lines, window, cx);
+            });
+        }
+        if let Some(ref raw_display) = self.raw_display {
+            raw_display.update(cx, |state, cx| {
+                state.set_soft_wrap(self.wrap_lines, window, cx);
+            });
+        }
         cx.notify();
     }
 
@@ -521,12 +541,16 @@ impl ResponseView {
     ) -> AnyElement {
         let this = cx.entity().clone();
         let this_save = cx.entity().clone();
+        let this_wrap = cx.entity().clone();
 
         let tab_label = match self.active_tab {
             ResponseTab::Body => "Response Body",
             ResponseTab::Raw => "Raw Response",
             ResponseTab::Headers => "Headers List",
         };
+
+        let wrap_lines = self.wrap_lines;
+        let show_wrap_toggle = self.active_tab != ResponseTab::Headers;
 
         div()
             .id("response-tab-content")
@@ -560,6 +584,25 @@ impl ResponseView {
                             .flex_row()
                             .items_center()
                             .gap(px(4.0))
+                            .when(show_wrap_toggle, |el| {
+                                el.child(
+                                    Button::new("toggle-wrap-lines")
+                                        .icon(Icon::new(IconName::TextWrap).size(px(14.0)))
+                                        .ghost()
+                                        .xsmall()
+                                        .tooltip(if wrap_lines {
+                                            "Disable word wrap"
+                                        } else {
+                                            "Enable word wrap"
+                                        })
+                                        .when(wrap_lines, |btn| btn.selected(true))
+                                        .on_click(move |_, window, cx| {
+                                            this_wrap.update(cx, |view, cx| {
+                                                view.toggle_wrap_lines(window, cx);
+                                            });
+                                        }),
+                                )
+                            })
                             .child(
                                 Button::new("copy-response")
                                     .icon(Icon::new(IconName::Copy).size(px(14.0)))

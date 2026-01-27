@@ -5,7 +5,7 @@ use gpui::{
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::select::{Select, SelectEvent, SelectItem, SelectState};
-use gpui_component::{ActiveTheme, Sizable};
+use gpui_component::{ActiveTheme, Selectable, Sizable};
 
 use crate::icons::IconName;
 
@@ -89,6 +89,7 @@ pub enum BodyTypeSelectorEvent {
     ImportRequested,
     BeautifyRequested,
     ClearRequested,
+    WrapToggled(bool),
 }
 
 impl EventEmitter<BodyTypeSelectorEvent> for BodyTypeSelector {}
@@ -98,6 +99,7 @@ pub struct BodyTypeSelector {
     selected: BodyType,
     select_state: Entity<SelectState<Vec<BodyType>>>,
     focus_handle: FocusHandle,
+    wrap_lines: bool,
 }
 
 #[allow(dead_code)]
@@ -124,6 +126,7 @@ impl BodyTypeSelector {
             selected: BodyType::None,
             select_state,
             focus_handle: cx.focus_handle(),
+            wrap_lines: true,
         }
     }
 
@@ -143,6 +146,21 @@ impl BodyTypeSelector {
     pub fn selected(&self) -> BodyType {
         self.selected
     }
+
+    /// Toggle wrap lines and emit event
+    pub fn toggle_wrap_lines(&mut self, cx: &mut Context<Self>) {
+        self.wrap_lines = !self.wrap_lines;
+        cx.emit(BodyTypeSelectorEvent::WrapToggled(self.wrap_lines));
+        cx.notify();
+    }
+
+    /// Set wrap lines state (for syncing from parent)
+    pub fn set_wrap_lines(&mut self, wrap: bool, cx: &mut Context<Self>) {
+        if self.wrap_lines != wrap {
+            self.wrap_lines = wrap;
+            cx.notify();
+        }
+    }
 }
 
 impl Focusable for BodyTypeSelector {
@@ -157,6 +175,7 @@ impl Render for BodyTypeSelector {
         let this = cx.entity().clone();
         let this_for_beautify = cx.entity().clone();
         let this_for_clear = cx.entity().clone();
+        let this_for_wrap = cx.entity().clone();
 
         // Only show import button for body types that support file import
         let show_import = matches!(
@@ -172,6 +191,14 @@ impl Render for BodyTypeSelector {
             self.selected,
             BodyType::Json | BodyType::Xml | BodyType::Html | BodyType::Text
         );
+
+        // Show wrap toggle for text-based body types
+        let show_wrap = matches!(
+            self.selected,
+            BodyType::Json | BodyType::Xml | BodyType::Html | BodyType::Text
+        );
+
+        let wrap_lines = self.wrap_lines;
 
         div()
             .track_focus(&self.focus_handle)
@@ -209,6 +236,25 @@ impl Render for BodyTypeSelector {
                     .flex_row()
                     .items_center()
                     .gap(px(4.0))
+                    .when(show_wrap, |el| {
+                        el.child(
+                            Button::new("toggle-wrap-lines")
+                                .icon(IconName::TextWrap)
+                                .ghost()
+                                .xsmall()
+                                .tooltip(if wrap_lines {
+                                    "Disable word wrap"
+                                } else {
+                                    "Enable word wrap"
+                                })
+                                .when(wrap_lines, |btn| btn.selected(true))
+                                .on_click(move |_, _, cx| {
+                                    this_for_wrap.update(cx, |view, cx| {
+                                        view.toggle_wrap_lines(cx);
+                                    });
+                                }),
+                        )
+                    })
                     .when(show_beautify, |el| {
                         el.child(
                             Button::new("beautify-body")
