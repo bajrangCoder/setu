@@ -35,6 +35,11 @@ pub enum IconName {
     Copy,
     FileDown,
     TextWrap,
+    Funnel,
+    CaseSensitive,
+    ChevronLeft,
+    ChevronRight,
+    Replace,
 }
 
 impl IconNamed for IconName {
@@ -68,6 +73,11 @@ impl IconNamed for IconName {
             Self::Copy => "icons/copy.svg",
             Self::FileDown => "icons/file-down.svg",
             Self::TextWrap => "icons/text-wrap.svg",
+            Self::Funnel => "icons/funnel.svg",
+            Self::CaseSensitive => "icons/case-sensitive.svg",
+            Self::ChevronLeft => "icons/chevron-left.svg",
+            Self::ChevronRight => "icons/chevron-right.svg",
+            Self::Replace => "icons/replace.svg",
         }
         .into()
     }
