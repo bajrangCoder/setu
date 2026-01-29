@@ -176,6 +176,9 @@ impl RequestView {
                         }
                         cx.notify();
                     }
+                    BodyTypeSelectorEvent::FindRequested => {
+                        this.trigger_search(window, cx);
+                    }
                 },
             )
             .detach();
@@ -449,6 +452,11 @@ impl RequestView {
         });
 
         cx.notify();
+    }
+
+    /// Trigger search in the body editor
+    pub fn trigger_search(&mut self, window: &mut Window, _cx: &mut Context<Self>) {
+        crate::utils::trigger_editor_search(self.body_editor.clone(), window);
     }
 }
 

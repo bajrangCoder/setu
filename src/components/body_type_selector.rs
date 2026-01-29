@@ -90,6 +90,7 @@ pub enum BodyTypeSelectorEvent {
     BeautifyRequested,
     ClearRequested,
     WrapToggled(bool),
+    FindRequested,
 }
 
 impl EventEmitter<BodyTypeSelectorEvent> for BodyTypeSelector {}
@@ -176,6 +177,7 @@ impl Render for BodyTypeSelector {
         let this_for_beautify = cx.entity().clone();
         let this_for_clear = cx.entity().clone();
         let this_for_wrap = cx.entity().clone();
+        let this_for_find = cx.entity().clone();
 
         // Only show import button for body types that support file import
         let show_import = matches!(
@@ -194,6 +196,12 @@ impl Render for BodyTypeSelector {
 
         // Show wrap toggle for text-based body types
         let show_wrap = matches!(
+            self.selected,
+            BodyType::Json | BodyType::Xml | BodyType::Html | BodyType::Text
+        );
+
+        // Show find button for text-based body types
+        let show_find = matches!(
             self.selected,
             BodyType::Json | BodyType::Xml | BodyType::Html | BodyType::Text
         );
@@ -251,6 +259,20 @@ impl Render for BodyTypeSelector {
                                 .on_click(move |_, _, cx| {
                                     this_for_wrap.update(cx, |view, cx| {
                                         view.toggle_wrap_lines(cx);
+                                    });
+                                }),
+                        )
+                    })
+                    .when(show_find, |el| {
+                        el.child(
+                            Button::new("find-in-body")
+                                .icon(IconName::Funnel)
+                                .ghost()
+                                .xsmall()
+                                .tooltip("Find in body (Cmd+F)")
+                                .on_click(move |_, _, cx| {
+                                    this_for_find.update(cx, |_, cx| {
+                                        cx.emit(BodyTypeSelectorEvent::FindRequested);
                                     });
                                 }),
                         )

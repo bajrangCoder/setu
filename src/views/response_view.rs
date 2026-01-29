@@ -168,6 +168,15 @@ impl ResponseView {
         cx.notify();
     }
 
+    pub fn trigger_search(&mut self, window: &mut Window, _cx: &mut Context<Self>) {
+        let editor = match self.active_tab {
+            ResponseTab::Body => self.body_display.clone(),
+            ResponseTab::Raw => self.raw_display.clone(),
+            ResponseTab::Headers => None,
+        };
+        crate::utils::trigger_editor_search(editor, window);
+    }
+
     fn copy_response(&self, window: &mut Window, cx: &mut Context<Self>) {
         let content = self
             .response
@@ -542,6 +551,7 @@ impl ResponseView {
         let this = cx.entity().clone();
         let this_save = cx.entity().clone();
         let this_wrap = cx.entity().clone();
+        let this_search = cx.entity().clone();
 
         let tab_label = match self.active_tab {
             ResponseTab::Body => "Response Body",
@@ -599,6 +609,20 @@ impl ResponseView {
                                         .on_click(move |_, window, cx| {
                                             this_wrap.update(cx, |view, cx| {
                                                 view.toggle_wrap_lines(window, cx);
+                                            });
+                                        }),
+                                )
+                            })
+                            .when(show_wrap_toggle, |el| {
+                                el.child(
+                                    Button::new("find-in-response")
+                                        .icon(Icon::new(IconName::Funnel).size(px(14.0)))
+                                        .ghost()
+                                        .xsmall()
+                                        .tooltip("Find in response (Cmd+F)")
+                                        .on_click(move |_, window, cx| {
+                                            this_search.update(cx, |view, cx| {
+                                                view.trigger_search(window, cx);
                                             });
                                         }),
                                 )
