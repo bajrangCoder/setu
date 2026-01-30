@@ -8,19 +8,24 @@ use gpui_component::resizable::{h_resizable, resizable_panel, v_resizable};
 use gpui_component::v_flex;
 use gpui_component::Root;
 use gpui_component::WindowExt;
+use uuid::Uuid;
 
 use crate::actions::*;
 use crate::components::{
-    BodyType, MethodDropdownState, ProtocolSelector, ProtocolType, Sidebar, TabBar, TabInfo, UrlBar,
+    AppSidebar, BodyType, MethodDropdownState, ProtocolSelector, ProtocolType, SidebarTab, TabBar,
+    TabInfo, UrlBar,
 };
 use crate::entities::{
-    Header, HistoryEntity, HttpMethod, RequestBody, RequestEntity, ResponseEntity,
+    CollectionsEntity, Header, HistoryEntity, HttpMethod, RequestBody, RequestData, RequestEntity,
+    ResponseData, ResponseEntity,
 };
 use crate::http::HttpClient;
-use crate::views::{CommandId, CommandPaletteEvent, CommandPaletteView, RequestView, ResponseView};
+use crate::views::request_view::RequestView;
+use crate::views::response_view::ResponseView;
+use crate::views::{CommandId, CommandPaletteEvent, CommandPaletteView};
 use gpui_component::ActiveTheme;
 
-pub struct RequestTab {
+pub struct TabState {
     pub id: usize,
     pub name: String,
     pub request: Entity<RequestEntity>,
@@ -34,7 +39,7 @@ pub struct RequestTab {
 /// Main application view
 pub struct MainView {
     // Tabs
-    tabs: Vec<RequestTab>,
+    tabs: Vec<TabState>,
     active_tab_index: usize,
     next_tab_id: usize,
     tab_scroll_handle: ScrollHandle,
@@ -44,10 +49,14 @@ pub struct MainView {
 
     // Shared state
     history: Entity<HistoryEntity>,
+    collections: Entity<CollectionsEntity>,
     http_client: HttpClient,
 
     // UI state
     sidebar_visible: bool,
+    sidebar_tab: SidebarTab,
+    history_search: Option<Entity<InputState>>,
+    collections_search: Option<Entity<InputState>>,
     focus_handle: FocusHandle,
 }
 
@@ -60,7 +69,7 @@ impl MainView {
         let request_view = cx.new(|cx| RequestView::new(request.clone(), BodyType::None, cx));
         let response_view = cx.new(|cx| ResponseView::new(response.clone(), cx));
 
-        let initial_tab = RequestTab {
+        let initial_tab = TabState {
             id: 0,
             name: "Untitled 1".to_string(),
             request: request.clone(),
@@ -73,6 +82,7 @@ impl MainView {
 
         let command_palette = cx.new(|cx| CommandPaletteView::new(cx));
         let history = cx.new(|_| HistoryEntity::new());
+        let collections = cx.new(|_| CollectionsEntity::new());
 
         cx.subscribe(&command_palette, |this, _, event, cx| {
             let CommandPaletteEvent::ExecuteCommand(cmd_id) = event;
@@ -89,8 +99,12 @@ impl MainView {
             tab_scroll_handle: ScrollHandle::new(),
             command_palette,
             history,
+            collections,
             http_client,
             sidebar_visible: true,
+            sidebar_tab: SidebarTab::History,
+            history_search: None,
+            collections_search: None,
             focus_handle: cx.focus_handle(),
         }
     }
@@ -106,8 +120,236 @@ impl MainView {
         }
     }
 
+    /// Ensure sidebar search inputs are initialized
+    fn ensure_sidebar_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.history_search.is_none() {
+            self.history_search =
+                Some(cx.new(|cx| InputState::new(window, cx).placeholder("Search history...")));
+        }
+        if self.collections_search.is_none() {
+            self.collections_search =
+                Some(cx.new(|cx| InputState::new(window, cx).placeholder("Search collections...")));
+        }
+    }
+
+    /// Set sidebar tab
+    pub fn set_sidebar_tab(&mut self, tab: SidebarTab, cx: &mut Context<Self>) {
+        self.sidebar_tab = tab;
+        cx.notify();
+    }
+
+    /// Load a history entry into a new tab
+    pub fn load_history_entry(
+        &mut self,
+        entry_id: Uuid,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // First extract all data we need, then drop the borrow
+        let entry_data = {
+            let history = self.history.read(cx);
+            history.get_entry(entry_id).map(|entry| {
+                (
+                    entry.request.clone(),
+                    entry.response.clone(),
+                    entry.display_name(),
+                )
+            })
+        };
+
+        let Some((request_data, response_data, tab_name)) = entry_data else {
+            return;
+        };
+
+        // Now we can use cx freely
+        let request = cx.new(|cx| {
+            let mut req = RequestEntity::new();
+            req.set_url(request_data.url.clone(), cx);
+            req.set_method(request_data.method, cx);
+            req
+        });
+
+        let response = cx.new(|cx| {
+            let mut resp = ResponseEntity::new();
+            if let Some(resp_data) = response_data {
+                resp.set_response(resp_data, cx);
+            }
+            resp
+        });
+
+        let method_dropdown = cx.new(|_| MethodDropdownState::new(request_data.method));
+        let request_view = cx.new(|cx| RequestView::new(request.clone(), BodyType::Json, cx));
+        let response_view = cx.new(|cx| ResponseView::new(response.clone(), cx));
+        let url_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Enter request URL...")
+                .default_value(&request_data.url)
+        });
+
+        let tab = TabState {
+            id: self.next_tab_id,
+            name: tab_name,
+            request: request.clone(),
+            response: response.clone(),
+            url_input: Some(url_input),
+            method_dropdown,
+            request_view,
+            response_view,
+        };
+
+        self.tabs.push(tab);
+        self.active_tab_index = self.tabs.len() - 1;
+        self.next_tab_id += 1;
+        cx.notify();
+    }
+
+    /// Delete a history entry
+    pub fn delete_history_entry(&mut self, entry_id: Uuid, cx: &mut Context<Self>) {
+        self.history.update(cx, |history, cx| {
+            history.remove_entry(entry_id, cx);
+        });
+    }
+
+    /// Toggle star status of a history entry
+    pub fn toggle_history_star(&mut self, entry_id: Uuid, cx: &mut Context<Self>) {
+        self.history.update(cx, |history, cx| {
+            history.toggle_star(entry_id, cx);
+        });
+    }
+
+    /// Clear all history
+    pub fn clear_history(&mut self, cx: &mut Context<Self>) {
+        self.history.update(cx, |history, cx| {
+            history.clear_unstarred(cx);
+        });
+    }
+
+    /// Add current request to history
+    pub fn add_to_history(
+        &mut self,
+        request: RequestData,
+        response: Option<ResponseData>,
+        cx: &mut Context<Self>,
+    ) {
+        self.history.update(cx, |history, cx| {
+            history.add_entry(request, response, cx);
+        });
+    }
+
+    /// Load a collection item into a new tab
+    pub fn load_collection_item(
+        &mut self,
+        collection_id: Uuid,
+        item_id: Uuid,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // First extract all data we need, then drop the borrow
+        let item_data = {
+            let collections = self.collections.read(cx);
+            collections
+                .get_collection(collection_id)
+                .and_then(|collection| {
+                    collection
+                        .get_item(item_id)
+                        .map(|item| (item.request.clone(), item.display_name()))
+                })
+        };
+
+        let Some((request_data, tab_name)) = item_data else {
+            return;
+        };
+
+        // Now we can use cx freely
+        let request = cx.new(|cx| {
+            let mut req = RequestEntity::new();
+            req.set_url(request_data.url.clone(), cx);
+            req.set_method(request_data.method, cx);
+            req
+        });
+
+        let response = cx.new(|_| ResponseEntity::new());
+        let method_dropdown = cx.new(|_| MethodDropdownState::new(request_data.method));
+        let request_view = cx.new(|cx| RequestView::new(request.clone(), BodyType::Json, cx));
+        let response_view = cx.new(|cx| ResponseView::new(response.clone(), cx));
+        let url_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Enter request URL...")
+                .default_value(&request_data.url)
+        });
+
+        let tab = TabState {
+            id: self.next_tab_id,
+            name: tab_name,
+            request: request.clone(),
+            response: response.clone(),
+            url_input: Some(url_input),
+            method_dropdown,
+            request_view,
+            response_view,
+        };
+
+        self.tabs.push(tab);
+        self.active_tab_index = self.tabs.len() - 1;
+        self.next_tab_id += 1;
+        cx.notify();
+    }
+
+    /// Create a new collection
+    pub fn create_new_collection(&mut self, cx: &mut Context<Self>) {
+        self.collections.update(cx, |collections, cx| {
+            collections.create_collection("New Collection", cx);
+        });
+    }
+
+    /// Delete a collection
+    pub fn delete_collection(&mut self, collection_id: Uuid, cx: &mut Context<Self>) {
+        self.collections.update(cx, |collections, cx| {
+            collections.remove_collection(collection_id, cx);
+        });
+    }
+
+    /// Delete an item from a collection
+    pub fn delete_collection_item(
+        &mut self,
+        collection_id: Uuid,
+        item_id: Uuid,
+        cx: &mut Context<Self>,
+    ) {
+        self.collections.update(cx, |collections, cx| {
+            collections.remove_item_from_collection(collection_id, item_id, cx);
+        });
+    }
+
+    /// Toggle collection expanded state
+    pub fn toggle_collection_expand(&mut self, collection_id: Uuid, cx: &mut Context<Self>) {
+        self.collections.update(cx, |collections, cx| {
+            collections.toggle_collection_expanded(collection_id, cx);
+        });
+    }
+
+    /// Save current request to a collection
+    pub fn save_to_collection(&mut self, collection_id: Uuid, cx: &mut Context<Self>) {
+        if let Some(tab) = self.active_tab() {
+            let request = tab.request.read(cx);
+            let request_data = RequestData {
+                id: Uuid::new_v4(),
+                name: tab.name.clone(),
+                url: request.url().to_string(),
+                method: request.method(),
+                headers: request.headers().to_vec(),
+                body: RequestBody::None,
+                is_sending: false,
+            };
+
+            self.collections.update(cx, |collections, cx| {
+                collections.add_item_to_collection(collection_id, request_data, cx);
+            });
+        }
+    }
+
     /// Get the active tab
-    fn active_tab(&self) -> Option<&RequestTab> {
+    fn active_tab(&self) -> Option<&TabState> {
         self.tabs.get(self.active_tab_index)
     }
 
@@ -120,7 +362,7 @@ impl MainView {
         let response_view = cx.new(|cx| ResponseView::new(response.clone(), cx));
 
         self.next_tab_id += 1;
-        let tab = RequestTab {
+        let tab = TabState {
             id: self.next_tab_id,
             name: format!("Untitled {}", self.next_tab_id),
             request: request.clone(),
@@ -334,6 +576,19 @@ impl MainView {
         );
         log::info!("Body: {:?}", body);
 
+        // Create request data for history before sending
+        let history_request_data = RequestData {
+            id: Uuid::new_v4(),
+            name: tab.name.clone(),
+            url: url.clone(),
+            method,
+            headers: headers.clone(),
+            body: body.clone(),
+            is_sending: false,
+        };
+
+        let history_entity = self.history.clone();
+
         // Spawn HTTP request on Tokio runtime
         let result_rx = self.http_client.spawn_request(method, url, headers, body);
 
@@ -359,12 +614,31 @@ impl MainView {
                             data.body_size_bytes,
                             data.duration_ms
                         );
+
+                        // Create response data for history (clone the data)
+                        let history_response_data = data.clone();
+
+                        // Add to history
+                        history_entity.update(app, |history, cx| {
+                            history.add_entry(
+                                history_request_data.clone(),
+                                Some(history_response_data),
+                                cx,
+                            );
+                        });
+
                         response_entity.update(app, |resp, cx| {
                             resp.set_success(data, cx);
                         });
                     }
                     Ok(Err(e)) => {
                         log::error!("Request failed: {}", e);
+
+                        // Add to history even on error (no response data)
+                        history_entity.update(app, |history, cx| {
+                            history.add_entry(history_request_data.clone(), None, cx);
+                        });
+
                         response_entity.update(app, |resp, cx| {
                             resp.set_error(e.to_string(), cx);
                         });
@@ -519,7 +793,7 @@ impl MainView {
             let new_response_view = cx.new(|cx| ResponseView::new(new_response.clone(), cx));
 
             self.next_tab_id += 1;
-            let new_tab = RequestTab {
+            let new_tab = TabState {
                 id: self.next_tab_id,
                 name: format!("{} (copy)", old_name),
                 request: new_request.clone(),
@@ -593,9 +867,10 @@ impl Render for MainView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Ensure URL input is initialized for the active tab
         self.ensure_url_input(self.active_tab_index, window, cx);
+        // Ensure sidebar search inputs are initialized
+        self.ensure_sidebar_inputs(window, cx);
 
         let theme = cx.theme();
-        let history_entries = self.history.read(cx).entries.clone();
 
         // Build tab infos with index
         let tab_infos: Vec<TabInfo> = self
@@ -756,11 +1031,107 @@ impl Render for MainView {
             .child(
                 h_resizable("sidebar-main-split")
                     .when(self.sidebar_visible, |group| {
+                        let history = self.history.clone();
+                        let collections = self.collections.clone();
+                        let history_search = self
+                            .history_search
+                            .clone()
+                            .expect("history_search should be initialized");
+                        let collections_search = self
+                            .collections_search
+                            .clone()
+                            .expect("collections_search should be initialized");
+                        let sidebar_tab = self.sidebar_tab;
+
+                        let this_for_tab = this.clone();
+                        let this_for_load_history = this.clone();
+                        let this_for_delete_history = this.clone();
+                        let this_for_toggle_star = this.clone();
+                        let this_for_clear_history = this.clone();
+                        let this_for_load_collection = this.clone();
+                        let this_for_delete_collection = this.clone();
+                        let this_for_delete_item = this.clone();
+                        let this_for_new_collection = this.clone();
+                        let this_for_toggle_expand = this.clone();
+
                         group.child(
                             resizable_panel()
-                                .size(px(255.0))
-                                .size_range(px(150.0)..px(600.0))
-                                .child(Sidebar::new(history_entries)),
+                                .size(px(300.0))
+                                .size_range(px(200.0)..px(600.0))
+                                .child(
+                                    AppSidebar::new(
+                                        history,
+                                        collections,
+                                        history_search,
+                                        collections_search,
+                                    )
+                                    .active_tab(sidebar_tab)
+                                    .on_tab_change(move |tab, _window, cx| {
+                                        this_for_tab.update(cx, |view, cx| {
+                                            view.set_sidebar_tab(tab, cx);
+                                        });
+                                    })
+                                    .on_load_history_request(move |entry_id, window, cx| {
+                                        this_for_load_history.update(cx, |view, cx| {
+                                            view.load_history_entry(entry_id, window, cx);
+                                        });
+                                    })
+                                    .on_delete_history_entry(move |entry_id, _window, cx| {
+                                        this_for_delete_history.update(cx, |view, cx| {
+                                            view.delete_history_entry(entry_id, cx);
+                                        });
+                                    })
+                                    .on_toggle_star(move |entry_id, _window, cx| {
+                                        this_for_toggle_star.update(cx, |view, cx| {
+                                            view.toggle_history_star(entry_id, cx);
+                                        });
+                                    })
+                                    .on_clear_history(move |_window, cx| {
+                                        this_for_clear_history.update(cx, |view, cx| {
+                                            view.clear_history(cx);
+                                        });
+                                    })
+                                    .on_load_collection_request(
+                                        move |collection_id, item_id, window, cx| {
+                                            this_for_load_collection.update(cx, |view, cx| {
+                                                view.load_collection_item(
+                                                    collection_id,
+                                                    item_id,
+                                                    window,
+                                                    cx,
+                                                );
+                                            });
+                                        },
+                                    )
+                                    .on_delete_collection(move |collection_id, _window, cx| {
+                                        this_for_delete_collection.update(cx, |view, cx| {
+                                            view.delete_collection(collection_id, cx);
+                                        });
+                                    })
+                                    .on_delete_collection_item(
+                                        move |collection_id, item_id, _window, cx| {
+                                            this_for_delete_item.update(cx, |view, cx| {
+                                                view.delete_collection_item(
+                                                    collection_id,
+                                                    item_id,
+                                                    cx,
+                                                );
+                                            });
+                                        },
+                                    )
+                                    .on_new_collection(move |_window, cx| {
+                                        this_for_new_collection.update(cx, |view, cx| {
+                                            view.create_new_collection(cx);
+                                        });
+                                    })
+                                    .on_toggle_collection_expand(
+                                        move |collection_id, _window, cx| {
+                                            this_for_toggle_expand.update(cx, |view, cx| {
+                                                view.toggle_collection_expand(collection_id, cx);
+                                            });
+                                        },
+                                    ),
+                                ),
                         )
                     })
                     .child(

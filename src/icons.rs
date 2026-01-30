@@ -40,6 +40,12 @@ pub enum IconName {
     ChevronLeft,
     ChevronRight,
     Replace,
+    History,
+    Folder,
+    FolderOpen,
+    FolderPlus,
+    Star,
+    StarFilled,
 }
 
 impl IconNamed for IconName {
@@ -78,6 +84,12 @@ impl IconNamed for IconName {
             Self::ChevronLeft => "icons/chevron-left.svg",
             Self::ChevronRight => "icons/chevron-right.svg",
             Self::Replace => "icons/replace.svg",
+            Self::History => "icons/history.svg",
+            Self::Folder => "icons/folder.svg",
+            Self::FolderOpen => "icons/folder-open.svg",
+            Self::FolderPlus => "icons/folder-plus.svg",
+            Self::Star => "icons/star.svg",
+            Self::StarFilled => "icons/star-filled.svg",
         }
         .into()
     }
