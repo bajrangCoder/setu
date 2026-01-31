@@ -45,29 +45,6 @@ impl HistoryEntry {
         }
     }
 
-    pub fn relative_time(&self) -> String {
-        let now = Utc::now();
-        let duration = now.signed_duration_since(self.timestamp);
-
-        if duration.num_minutes() < 1 {
-            "Just now".to_string()
-        } else if duration.num_minutes() < 60 {
-            let mins = duration.num_minutes();
-            format!("{} min{} ago", mins, if mins == 1 { "" } else { "s" })
-        } else if duration.num_hours() < 24 {
-            let hours = duration.num_hours();
-            format!("{} hour{} ago", hours, if hours == 1 { "" } else { "s" })
-        } else if duration.num_days() < 7 {
-            let days = duration.num_days();
-            format!("{} day{} ago", days, if days == 1 { "" } else { "s" })
-        } else if duration.num_weeks() < 4 {
-            let weeks = duration.num_weeks();
-            format!("{} week{} ago", weeks, if weeks == 1 { "" } else { "s" })
-        } else {
-            self.timestamp.format("%b %d, %Y").to_string()
-        }
-    }
-
     pub fn time_group(&self) -> TimeGroup {
         let now = Utc::now();
         let duration = now.signed_duration_since(self.timestamp);
@@ -107,6 +84,7 @@ impl TimeGroup {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum HistoryEvent {
     EntryAdded(Uuid),
@@ -269,10 +247,35 @@ impl HistoryEntity {
             .collect()
     }
 
+    pub fn grouped_by_url(&self) -> Vec<(String, Vec<&HistoryEntry>)> {
+        use std::collections::HashMap;
+
+        let mut groups: HashMap<String, Vec<&HistoryEntry>> = HashMap::new();
+
+        for entry in &self.entries {
+            let domain = Self::extract_domain(&entry.request.url);
+            groups.entry(domain).or_default().push(entry);
+        }
+
+        let mut sorted_groups: Vec<_> = groups.into_iter().collect();
+        sorted_groups.sort_by(|(a, _), (b, _)| a.cmp(b));
+        sorted_groups
+    }
+
+    fn extract_domain(url: &str) -> String {
+        let url = url
+            .trim_start_matches("https://")
+            .trim_start_matches("http://");
+
+        url.split('/').next().unwrap_or("Unknown").to_string()
+    }
+
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.entries.len()
     }

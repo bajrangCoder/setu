@@ -37,6 +37,8 @@ pub struct AppSidebar {
     on_delete_collection_item: Option<Rc<dyn Fn(Uuid, Uuid, &mut Window, &mut App) + 'static>>,
     on_new_collection: Option<Rc<dyn Fn(&mut Window, &mut App) + 'static>>,
     on_toggle_collection_expand: Option<Rc<dyn Fn(Uuid, &mut Window, &mut App) + 'static>>,
+    on_filter_change: Option<Rc<dyn Fn(HistoryFilter, &mut Window, &mut App) + 'static>>,
+    on_group_by_change: Option<Rc<dyn Fn(HistoryGroupBy, &mut Window, &mut App) + 'static>>,
 }
 
 impl AppSidebar {
@@ -64,6 +66,8 @@ impl AppSidebar {
             on_delete_collection_item: None,
             on_new_collection: None,
             on_toggle_collection_expand: None,
+            on_filter_change: None,
+            on_group_by_change: None,
         }
     }
 
@@ -143,6 +147,32 @@ impl AppSidebar {
         self
     }
 
+    pub fn history_filter(mut self, filter: HistoryFilter) -> Self {
+        self.history_filter = filter;
+        self
+    }
+
+    pub fn history_group_by(mut self, group_by: HistoryGroupBy) -> Self {
+        self.history_group_by = group_by;
+        self
+    }
+
+    pub fn on_filter_change(
+        mut self,
+        f: impl Fn(HistoryFilter, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_filter_change = Some(Rc::new(f));
+        self
+    }
+
+    pub fn on_group_by_change(
+        mut self,
+        f: impl Fn(HistoryGroupBy, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_group_by_change = Some(Rc::new(f));
+        self
+    }
+
     fn build_history_panel(&self) -> HistoryPanel {
         let mut panel = HistoryPanel::new(self.history.clone(), self.history_search.clone())
             .filter(self.history_filter)
@@ -166,6 +196,16 @@ impl AppSidebar {
         if let Some(ref f) = self.on_clear_history {
             let f = Rc::clone(f);
             panel = panel.on_clear(move |window, cx| f(window, cx));
+        }
+
+        if let Some(ref f) = self.on_filter_change {
+            let f = Rc::clone(f);
+            panel = panel.on_filter_change(move |filter, window, cx| f(filter, window, cx));
+        }
+
+        if let Some(ref f) = self.on_group_by_change {
+            let f = Rc::clone(f);
+            panel = panel.on_group_by_change(move |group_by, window, cx| f(group_by, window, cx));
         }
 
         panel

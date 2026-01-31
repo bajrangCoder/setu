@@ -19,7 +19,6 @@ pub mod url_bar;
 pub use app_sidebar::*;
 pub use auth_editor::*;
 pub use body_type_selector::*;
-pub use collections_panel::*;
 pub use custom_dropdown::*;
 pub use form_data_editor::*;
 pub use header_editor::*;

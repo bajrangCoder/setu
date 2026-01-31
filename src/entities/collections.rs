@@ -12,6 +12,7 @@ pub struct CollectionItem {
     pub request: RequestData,
 }
 
+#[allow(dead_code)]
 impl CollectionItem {
     pub fn new(request: RequestData) -> Self {
         Self {
@@ -46,6 +47,7 @@ pub struct Collection {
     pub expanded: bool,
 }
 
+#[allow(dead_code)]
 impl Collection {
     pub fn new(name: &str) -> Self {
         Self {
@@ -81,6 +83,7 @@ impl Collection {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum CollectionsEvent {
     CollectionAdded(Uuid),
@@ -95,6 +98,7 @@ pub struct CollectionsEntity {
     storage_path: Option<PathBuf>,
 }
 
+#[allow(dead_code)]
 impl CollectionsEntity {
     pub fn new() -> Self {
         let storage_path = Self::get_storage_path();

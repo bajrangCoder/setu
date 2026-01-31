@@ -12,8 +12,8 @@ use uuid::Uuid;
 
 use crate::actions::*;
 use crate::components::{
-    AppSidebar, BodyType, MethodDropdownState, ProtocolSelector, ProtocolType, SidebarTab, TabBar,
-    TabInfo, UrlBar,
+    AppSidebar, BodyType, HistoryFilter, HistoryGroupBy, MethodDropdownState, ProtocolSelector,
+    ProtocolType, SidebarTab, TabBar, TabInfo, UrlBar,
 };
 use crate::entities::{
     CollectionsEntity, Header, HistoryEntity, HttpMethod, RequestBody, RequestData, RequestEntity,
@@ -57,6 +57,8 @@ pub struct MainView {
     sidebar_tab: SidebarTab,
     history_search: Option<Entity<InputState>>,
     collections_search: Option<Entity<InputState>>,
+    history_filter: HistoryFilter,
+    history_group_by: HistoryGroupBy,
     focus_handle: FocusHandle,
 }
 
@@ -105,6 +107,8 @@ impl MainView {
             sidebar_tab: SidebarTab::History,
             history_search: None,
             collections_search: None,
+            history_filter: HistoryFilter::All,
+            history_group_by: HistoryGroupBy::Time,
             focus_handle: cx.focus_handle(),
         }
     }
@@ -135,6 +139,16 @@ impl MainView {
     /// Set sidebar tab
     pub fn set_sidebar_tab(&mut self, tab: SidebarTab, cx: &mut Context<Self>) {
         self.sidebar_tab = tab;
+        cx.notify();
+    }
+
+    pub fn set_history_filter(&mut self, filter: HistoryFilter, cx: &mut Context<Self>) {
+        self.history_filter = filter;
+        cx.notify();
+    }
+
+    pub fn set_history_group_by(&mut self, group_by: HistoryGroupBy, cx: &mut Context<Self>) {
+        self.history_group_by = group_by;
         cx.notify();
     }
 
@@ -224,6 +238,7 @@ impl MainView {
         });
     }
 
+    #[allow(dead_code)]
     /// Add current request to history
     pub fn add_to_history(
         &mut self,
@@ -328,6 +343,7 @@ impl MainView {
         });
     }
 
+    #[allow(dead_code)]
     /// Save current request to a collection
     pub fn save_to_collection(&mut self, collection_id: Uuid, cx: &mut Context<Self>) {
         if let Some(tab) = self.active_tab() {
@@ -1041,6 +1057,8 @@ impl Render for MainView {
                     .clone()
                     .expect("collections_search should be initialized");
                 let sidebar_tab = self.sidebar_tab;
+                let history_filter = self.history_filter;
+                let history_group_by = self.history_group_by;
 
                 let this_for_tab = this.clone();
                 let this_for_load_history = this.clone();
@@ -1052,14 +1070,28 @@ impl Render for MainView {
                 let this_for_delete_item = this.clone();
                 let this_for_new_collection = this.clone();
                 let this_for_toggle_expand = this.clone();
+                let this_for_filter_change = this.clone();
+                let this_for_group_by_change = this.clone();
 
                 el.child(
                     div().w(px(300.0)).h_full().flex_shrink_0().child(
                         AppSidebar::new(history, collections, history_search, collections_search)
                             .active_tab(sidebar_tab)
+                            .history_filter(history_filter)
+                            .history_group_by(history_group_by)
                             .on_tab_change(move |tab, _window, cx| {
                                 this_for_tab.update(cx, |view, cx| {
                                     view.set_sidebar_tab(tab, cx);
+                                });
+                            })
+                            .on_filter_change(move |filter, _window, cx| {
+                                this_for_filter_change.update(cx, |view, cx| {
+                                    view.set_history_filter(filter, cx);
+                                });
+                            })
+                            .on_group_by_change(move |group_by, _window, cx| {
+                                this_for_group_by_change.update(cx, |view, cx| {
+                                    view.set_history_group_by(group_by, cx);
                                 });
                             })
                             .on_load_history_request(move |entry_id, window, cx| {

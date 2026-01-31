@@ -5,5 +5,3 @@ mod response_view;
 
 pub use command_palette::*;
 pub use main_view::*;
-pub use request_view::*;
-pub use response_view::*;

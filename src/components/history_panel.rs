@@ -2,8 +2,9 @@ use gpui::prelude::*;
 use gpui::{div, px, AnyElement, App, Entity, Hsla, IntoElement, Styled, Window};
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputState};
+use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::tooltip::Tooltip;
-use gpui_component::{ActiveTheme, Icon, Sizable};
+use gpui_component::{ActiveTheme, Icon, Selectable, Sizable};
 use std::rc::Rc;
 use uuid::Uuid;
 
@@ -35,6 +36,8 @@ pub struct HistoryPanel {
     on_delete_entry: Option<Rc<dyn Fn(Uuid, &mut Window, &mut App) + 'static>>,
     on_toggle_star: Option<Rc<dyn Fn(Uuid, &mut Window, &mut App) + 'static>>,
     on_clear: Option<Rc<dyn Fn(&mut Window, &mut App) + 'static>>,
+    on_filter_change: Option<Rc<dyn Fn(HistoryFilter, &mut Window, &mut App) + 'static>>,
+    on_group_by_change: Option<Rc<dyn Fn(HistoryGroupBy, &mut Window, &mut App) + 'static>>,
 }
 
 impl HistoryPanel {
@@ -48,6 +51,8 @@ impl HistoryPanel {
             on_delete_entry: None,
             on_toggle_star: None,
             on_clear: None,
+            on_filter_change: None,
+            on_group_by_change: None,
         }
     }
 
@@ -78,6 +83,22 @@ impl HistoryPanel {
 
     pub fn on_clear(mut self, f: impl Fn(&mut Window, &mut App) + 'static) -> Self {
         self.on_clear = Some(Rc::new(f));
+        self
+    }
+
+    pub fn on_filter_change(
+        mut self,
+        f: impl Fn(HistoryFilter, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_filter_change = Some(Rc::new(f));
+        self
+    }
+
+    pub fn on_group_by_change(
+        mut self,
+        f: impl Fn(HistoryGroupBy, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_group_by_change = Some(Rc::new(f));
         self
     }
 
@@ -165,6 +186,61 @@ impl HistoryPanel {
                     h.toggle_group_collapsed(group, cx);
                 });
             })
+            .into_any_element()
+    }
+
+    fn render_url_group_header(
+        domain: &str,
+        is_collapsed: bool,
+        count: usize,
+        theme: &gpui_component::theme::ThemeColor,
+    ) -> AnyElement {
+        let chevron_icon = if is_collapsed {
+            IconName::ChevronRight
+        } else {
+            IconName::ChevronDown
+        };
+
+        let list_hover = theme.list_hover;
+
+        div()
+            .id(gpui::SharedString::from(format!("url-group-{}", domain)))
+            .flex()
+            .flex_row()
+            .items_center()
+            .w_full()
+            .gap(px(6.0))
+            .mt(px(8.0))
+            .px(px(12.0))
+            .py(px(8.0))
+            .cursor_pointer()
+            .rounded(px(6.0))
+            .hover(move |s| s.bg(list_hover))
+            .child(
+                Icon::new(chevron_icon)
+                    .size(px(14.0))
+                    .text_color(theme.muted_foreground),
+            )
+            .child(
+                Icon::new(IconName::Link)
+                    .size(px(12.0))
+                    .text_color(theme.muted_foreground),
+            )
+            .child(
+                div()
+                    .text_color(theme.muted_foreground)
+                    .text_size(px(12.0))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .child(domain.to_string()),
+            )
+            .child(
+                div()
+                    .text_color(theme.muted_foreground.opacity(0.5))
+                    .text_size(px(11.0))
+                    .child(format!("({})", count)),
+            )
             .into_any_element()
     }
 
@@ -332,8 +408,6 @@ impl RenderOnce for HistoryPanel {
         let is_empty = filtered_entries.is_empty();
         let has_query = !search_query.is_empty();
 
-        let grouped = history.grouped_entries();
-
         let entry_colors: Vec<(Uuid, Hsla)> = filtered_entries
             .iter()
             .map(|e| (e.id, method_color(&e.request.method, cx)))
@@ -345,47 +419,93 @@ impl RenderOnce for HistoryPanel {
         let on_delete = self.on_delete_entry.clone();
         let on_star = self.on_toggle_star.clone();
 
+        let current_filter = self.filter;
+        let current_group_by = self.group_by;
+
         let content = if is_empty {
             Self::render_empty_state(&theme, has_query)
         } else {
             let mut items: Vec<AnyElement> = Vec::new();
 
-            for (group, group_entries) in grouped {
-                let matching_entries: Vec<_> = group_entries
-                    .iter()
-                    .filter(|e| filtered_entries.iter().any(|fe| fe.id == e.id))
-                    .collect();
-
-                if matching_entries.is_empty() {
-                    continue;
-                }
-
-                let is_collapsed = history.is_group_collapsed(&group);
-                items.push(Self::render_group_header(
-                    group,
-                    is_collapsed,
-                    matching_entries.len(),
-                    &theme,
-                    self.history.clone(),
-                ));
-
-                if !is_collapsed {
-                    for (idx, entry) in matching_entries.iter().enumerate() {
-                        let m_color = entry_colors
+            match self.group_by {
+                HistoryGroupBy::Time => {
+                    let grouped = history.grouped_entries();
+                    for (group, group_entries) in grouped {
+                        let matching_entries: Vec<_> = group_entries
                             .iter()
-                            .find(|(id, _)| *id == entry.id)
-                            .map(|(_, c)| *c)
-                            .unwrap_or(theme.foreground);
+                            .filter(|e| filtered_entries.iter().any(|fe| fe.id == e.id))
+                            .collect();
 
-                        items.push(Self::render_history_item(
-                            idx,
-                            entry,
+                        if matching_entries.is_empty() {
+                            continue;
+                        }
+
+                        let is_collapsed = history.is_group_collapsed(&group);
+                        items.push(Self::render_group_header(
+                            group,
+                            is_collapsed,
+                            matching_entries.len(),
                             &theme,
-                            m_color,
-                            on_load.clone(),
-                            on_delete.clone(),
-                            on_star.clone(),
+                            self.history.clone(),
                         ));
+
+                        if !is_collapsed {
+                            for (idx, entry) in matching_entries.iter().enumerate() {
+                                let m_color = entry_colors
+                                    .iter()
+                                    .find(|(id, _)| *id == entry.id)
+                                    .map(|(_, c)| *c)
+                                    .unwrap_or(theme.foreground);
+
+                                items.push(Self::render_history_item(
+                                    idx,
+                                    entry,
+                                    &theme,
+                                    m_color,
+                                    on_load.clone(),
+                                    on_delete.clone(),
+                                    on_star.clone(),
+                                ));
+                            }
+                        }
+                    }
+                }
+                HistoryGroupBy::Url => {
+                    let grouped = history.grouped_by_url();
+                    for (domain, group_entries) in grouped {
+                        let matching_entries: Vec<_> = group_entries
+                            .iter()
+                            .filter(|e| filtered_entries.iter().any(|fe| fe.id == e.id))
+                            .collect();
+
+                        if matching_entries.is_empty() {
+                            continue;
+                        }
+
+                        items.push(Self::render_url_group_header(
+                            &domain,
+                            false,
+                            matching_entries.len(),
+                            &theme,
+                        ));
+
+                        for (idx, entry) in matching_entries.iter().enumerate() {
+                            let m_color = entry_colors
+                                .iter()
+                                .find(|(id, _)| *id == entry.id)
+                                .map(|(_, c)| *c)
+                                .unwrap_or(theme.foreground);
+
+                            items.push(Self::render_history_item(
+                                idx,
+                                entry,
+                                &theme,
+                                m_color,
+                                on_load.clone(),
+                                on_delete.clone(),
+                                on_star.clone(),
+                            ));
+                        }
                     }
                 }
             }
@@ -404,6 +524,84 @@ impl RenderOnce for HistoryPanel {
                     .on_click(move |_, window, cx| on_clear(window, cx)),
             );
         }
+
+        let filter_active =
+            current_filter != HistoryFilter::All || current_group_by != HistoryGroupBy::Time;
+
+        let on_filter_change = self.on_filter_change.clone();
+        let on_group_by_change = self.on_group_by_change.clone();
+
+        let filter_button = {
+            let on_filter_all = on_filter_change.clone();
+            let on_filter_starred = on_filter_change.clone();
+            let on_group_time = on_group_by_change.clone();
+            let on_group_url = on_group_by_change.clone();
+
+            Button::new("filter-funnel")
+                .ghost()
+                .xsmall()
+                .icon(Icon::new(IconName::Funnel).size(px(14.0)))
+                .tooltip("Filter & Group")
+                .when(filter_active, |btn| btn.selected(true))
+                .dropdown_menu(move |menu, _window, _cx| {
+                    let on_filter_all = on_filter_all.clone();
+                    let on_filter_starred = on_filter_starred.clone();
+                    let on_group_time = on_group_time.clone();
+                    let on_group_url = on_group_url.clone();
+
+                    menu.label("Filter")
+                        .item({
+                            let handler = on_filter_all.clone();
+                            let mut item = PopupMenuItem::new("All");
+                            if current_filter == HistoryFilter::All {
+                                item = item.icon(IconName::Check);
+                            }
+                            item.on_click(move |_event, window, cx| {
+                                if let Some(ref f) = handler {
+                                    f(HistoryFilter::All, window, cx);
+                                }
+                            })
+                        })
+                        .item({
+                            let handler = on_filter_starred.clone();
+                            let mut item = PopupMenuItem::new("Starred");
+                            if current_filter == HistoryFilter::Starred {
+                                item = PopupMenuItem::new("Starred").icon(IconName::Check);
+                            }
+                            item.on_click(move |_event, window, cx| {
+                                if let Some(ref f) = handler {
+                                    f(HistoryFilter::Starred, window, cx);
+                                }
+                            })
+                        })
+                        .separator()
+                        .label("Group by")
+                        .item({
+                            let handler = on_group_time.clone();
+                            let mut item = PopupMenuItem::new("Time");
+                            if current_group_by == HistoryGroupBy::Time {
+                                item = item.icon(IconName::Check);
+                            }
+                            item.on_click(move |_event, window, cx| {
+                                if let Some(ref f) = handler {
+                                    f(HistoryGroupBy::Time, window, cx);
+                                }
+                            })
+                        })
+                        .item({
+                            let handler = on_group_url.clone();
+                            let mut item = PopupMenuItem::new("URL");
+                            if current_group_by == HistoryGroupBy::Url {
+                                item = item.icon(IconName::Check);
+                            }
+                            item.on_click(move |_event, window, cx| {
+                                if let Some(ref f) = handler {
+                                    f(HistoryGroupBy::Url, window, cx);
+                                }
+                            })
+                        })
+                })
+        };
 
         div()
             .flex()
@@ -438,7 +636,15 @@ impl RenderOnce for HistoryPanel {
                                     .child("History"),
                             ),
                     )
-                    .child(clear_btn),
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(2.0))
+                            .child(filter_button)
+                            .child(clear_btn),
+                    ),
             )
             .child(
                 div().px(px(12.0)).pb(px(8.0)).child(
