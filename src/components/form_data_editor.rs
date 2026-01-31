@@ -162,6 +162,36 @@ impl FormDataEditor {
 
         cx.notify();
     }
+
+    pub fn set_from_hashmap(
+        &mut self,
+        data: &std::collections::HashMap<String, String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.rows.clear();
+
+        for (key, value) in data {
+            let key_input = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("Key")
+                    .default_value(key)
+            });
+            let value_input = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("Value")
+                    .default_value(value)
+            });
+
+            self.rows.push(FormDataRow {
+                key_input,
+                value_input,
+                enabled: true,
+            });
+        }
+
+        cx.notify();
+    }
 }
 
 impl Focusable for FormDataEditor {

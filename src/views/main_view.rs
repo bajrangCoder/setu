@@ -175,11 +175,41 @@ impl MainView {
             return;
         };
 
+        // Derive body type from the stored request body
+        let body_type = BodyType::from_request_body(&request_data.body);
+
+        // Extract body content for text-based body types
+        let body_content: Option<String> = match &request_data.body {
+            RequestBody::Json(content) | RequestBody::Text(content) => {
+                if content.is_empty() {
+                    None
+                } else {
+                    Some(content.clone())
+                }
+            }
+            RequestBody::None | RequestBody::FormData(_) | RequestBody::MultipartFormData(_) => {
+                None
+            }
+        };
+
+        // Extract form data for FormUrlEncoded
+        let form_data = match &request_data.body {
+            RequestBody::FormData(data) => Some(data.clone()),
+            _ => None,
+        };
+
+        // Extract multipart data for FormData
+        let multipart_data = match &request_data.body {
+            RequestBody::MultipartFormData(fields) => Some(fields.clone()),
+            _ => None,
+        };
+
         // Now we can use cx freely
         let request = cx.new(|cx| {
             let mut req = RequestEntity::new();
             req.set_url(request_data.url.clone(), cx);
             req.set_method(request_data.method, cx);
+            req.set_body(request_data.body.clone(), cx);
             req
         });
 
@@ -192,7 +222,12 @@ impl MainView {
         });
 
         let method_dropdown = cx.new(|_| MethodDropdownState::new(request_data.method));
-        let request_view = cx.new(|cx| RequestView::new(request.clone(), BodyType::Json, cx));
+        let request_view = cx.new(|cx| {
+            RequestView::new(request.clone(), body_type, cx)
+                .with_initial_body_content(body_content)
+                .with_initial_form_data(form_data)
+                .with_initial_multipart_data(multipart_data)
+        });
         let response_view = cx.new(|cx| ResponseView::new(response.clone(), cx));
         let url_input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -275,17 +310,52 @@ impl MainView {
             return;
         };
 
+        // Derive body type from the stored request body
+        let body_type = BodyType::from_request_body(&request_data.body);
+
+        // Extract body content for text-based body types
+        let body_content: Option<String> = match &request_data.body {
+            RequestBody::Json(content) | RequestBody::Text(content) => {
+                if content.is_empty() {
+                    None
+                } else {
+                    Some(content.clone())
+                }
+            }
+            RequestBody::None | RequestBody::FormData(_) | RequestBody::MultipartFormData(_) => {
+                None
+            }
+        };
+
+        // Extract form data for FormUrlEncoded
+        let form_data = match &request_data.body {
+            RequestBody::FormData(data) => Some(data.clone()),
+            _ => None,
+        };
+
+        // Extract multipart data for FormData
+        let multipart_data = match &request_data.body {
+            RequestBody::MultipartFormData(fields) => Some(fields.clone()),
+            _ => None,
+        };
+
         // Now we can use cx freely
         let request = cx.new(|cx| {
             let mut req = RequestEntity::new();
             req.set_url(request_data.url.clone(), cx);
             req.set_method(request_data.method, cx);
+            req.set_body(request_data.body.clone(), cx);
             req
         });
 
         let response = cx.new(|_| ResponseEntity::new());
         let method_dropdown = cx.new(|_| MethodDropdownState::new(request_data.method));
-        let request_view = cx.new(|cx| RequestView::new(request.clone(), BodyType::Json, cx));
+        let request_view = cx.new(|cx| {
+            RequestView::new(request.clone(), body_type, cx)
+                .with_initial_body_content(body_content)
+                .with_initial_form_data(form_data)
+                .with_initial_multipart_data(multipart_data)
+        });
         let response_view = cx.new(|cx| ResponseView::new(response.clone(), cx));
         let url_input = cx.new(|cx| {
             InputState::new(window, cx)

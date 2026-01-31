@@ -159,6 +159,39 @@ impl MultipartFormDataEditor {
             .collect()
     }
 
+    pub fn set_from_multipart_fields(
+        &mut self,
+        fields: &[crate::entities::MultipartField],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.rows.clear();
+
+        for field in fields {
+            let key_input = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("Key")
+                    .default_value(&field.key)
+            });
+            let value_input = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("Value")
+                    .default_value(&field.value)
+            });
+
+            let file_path = field.file_path.as_ref().map(PathBuf::from);
+
+            self.rows.push(MultipartFormRow {
+                key_input,
+                value_input,
+                file_path,
+                enabled: true,
+            });
+        }
+
+        cx.notify();
+    }
+
     fn pick_file_for_row(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let this = cx.entity().clone();
 

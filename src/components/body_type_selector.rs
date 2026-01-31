@@ -7,6 +7,7 @@ use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::select::{Select, SelectEvent, SelectItem, SelectState};
 use gpui_component::{ActiveTheme, Selectable, Sizable};
 
+use crate::entities::RequestBody;
 use crate::icons::IconName;
 
 /// Body content type
@@ -66,6 +67,16 @@ impl BodyType {
             BodyType::Xml,
             BodyType::Html,
         ]
+    }
+
+    pub fn from_request_body(body: &RequestBody) -> Self {
+        match body {
+            RequestBody::None => BodyType::None,
+            RequestBody::Json(_) => BodyType::Json,
+            RequestBody::Text(_) => BodyType::Text,
+            RequestBody::FormData(_) => BodyType::FormUrlEncoded,
+            RequestBody::MultipartFormData(_) => BodyType::FormData,
+        }
     }
 }
 

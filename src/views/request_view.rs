@@ -11,9 +11,10 @@ use crate::components::{
     AuthEditor, BodyType, BodyTypeSelector, BodyTypeSelectorEvent, FormDataEditor, HeaderEditor,
     MultipartFormDataEditor, ParamsEditor,
 };
-use crate::entities::{Header, RequestBody, RequestEntity, RequestEvent};
+use crate::entities::{Header, MultipartField, RequestBody, RequestEntity, RequestEvent};
 use crate::icons::IconName;
 use gpui_component::{ActiveTheme, Icon};
+use std::collections::HashMap;
 
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
@@ -46,6 +47,9 @@ pub struct RequestView {
     auth_editor: Option<Entity<AuthEditor>>,
     focus_handle: FocusHandle,
     wrap_lines: bool,
+    initial_body_content: Option<String>,
+    initial_form_data: Option<HashMap<String, String>>,
+    initial_multipart_data: Option<Vec<MultipartField>>,
 }
 
 impl RequestView {
@@ -73,7 +77,25 @@ impl RequestView {
             auth_editor: None,
             focus_handle: cx.focus_handle(),
             wrap_lines: true,
+            initial_body_content: None,
+            initial_form_data: None,
+            initial_multipart_data: None,
         }
+    }
+
+    pub fn with_initial_body_content(mut self, content: Option<String>) -> Self {
+        self.initial_body_content = content;
+        self
+    }
+
+    pub fn with_initial_form_data(mut self, data: Option<HashMap<String, String>>) -> Self {
+        self.initial_form_data = data;
+        self
+    }
+
+    pub fn with_initial_multipart_data(mut self, data: Option<Vec<MultipartField>>) -> Self {
+        self.initial_multipart_data = data;
+        self
     }
 
     /// Get the current body type
@@ -86,11 +108,13 @@ impl RequestView {
         let syntax_lang = self.body_type.syntax_language();
 
         if self.body_editor.is_none() {
-            // Create code editor with current body type syntax highlighting
-            let initial_content = r#"{
+            let initial_content = self.initial_body_content.take().unwrap_or_else(|| {
+                r#"{
   "name": "example",
   "value": 123
-}"#;
+}"#
+                .to_string()
+            });
 
             let wrap_lines = self.wrap_lines;
             let body_editor = cx.new(|cx| {
@@ -99,7 +123,7 @@ impl RequestView {
                     .line_number(true)
                     .searchable(true)
                     .soft_wrap(wrap_lines)
-                    .default_value(initial_content)
+                    .default_value(&initial_content)
             });
 
             self.body_editor = Some(body_editor);
@@ -146,7 +170,14 @@ impl RequestView {
         self.ensure_body_editor(window, cx);
 
         if self.body_type_selector.is_none() {
-            let selector = cx.new(|cx| BodyTypeSelector::new(window, cx));
+            let initial_body_type = self.body_type;
+            let selector = cx.new(|cx| {
+                let mut s = BodyTypeSelector::new(window, cx);
+                if initial_body_type != BodyType::None {
+                    s.set_type(initial_body_type, window, cx);
+                }
+                s
+            });
 
             // Subscribe to body type selector events
             cx.subscribe_in(
@@ -191,11 +222,25 @@ impl RequestView {
         }
 
         if self.form_data_editor.is_none() {
-            self.form_data_editor = Some(cx.new(|cx| FormDataEditor::new(cx)));
+            let initial_data = self.initial_form_data.take();
+            self.form_data_editor = Some(cx.new(|cx| {
+                let mut editor = FormDataEditor::new(cx);
+                if let Some(data) = initial_data {
+                    editor.set_from_hashmap(&data, window, cx);
+                }
+                editor
+            }));
         }
 
         if self.multipart_form_data_editor.is_none() {
-            self.multipart_form_data_editor = Some(cx.new(|cx| MultipartFormDataEditor::new(cx)));
+            let initial_data = self.initial_multipart_data.take();
+            self.multipart_form_data_editor = Some(cx.new(|cx| {
+                let mut editor = MultipartFormDataEditor::new(cx);
+                if let Some(data) = initial_data {
+                    editor.set_from_multipart_fields(&data, window, cx);
+                }
+                editor
+            }));
         }
 
         if self.auth_editor.is_none() {
