@@ -1,9 +1,32 @@
+use base64::{engine::general_purpose::STANDARD, Engine};
 use gpui::{Context, EventEmitter};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
+
+fn serialize_bytes_as_base64<S>(bytes: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    if bytes.is_empty() {
+        serializer.serialize_none()
+    } else {
+        serializer.serialize_some(&STANDARD.encode(bytes))
+    }
+}
+
+fn deserialize_bytes_from_base64<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let opt: Option<String> = Option::deserialize(deserializer)?;
+    match opt {
+        Some(s) => STANDARD.decode(&s).map_err(serde::de::Error::custom),
+        None => Ok(Vec::new()),
+    }
+}
 
 /// Response state machine
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -72,7 +95,11 @@ pub struct ResponseData {
     /// Text body (for text-based responses)
     pub body: String,
     /// Raw bytes body (for binary responses like images)
-    #[serde(skip)]
+    #[serde(
+        serialize_with = "serialize_bytes_as_base64",
+        deserialize_with = "deserialize_bytes_from_base64",
+        default
+    )]
     pub body_bytes: Vec<u8>,
     pub body_size_bytes: usize,
     pub duration_ms: u64,
