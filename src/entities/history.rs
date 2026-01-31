@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use gpui::{Context, EventEmitter};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 use uuid::Uuid;
@@ -118,6 +119,7 @@ pub struct HistoryEntity {
     pub entries: Vec<HistoryEntry>,
     pub max_entries: usize,
     storage_path: Option<PathBuf>,
+    collapsed_groups: HashSet<TimeGroup>,
 }
 
 impl HistoryEntity {
@@ -127,6 +129,7 @@ impl HistoryEntity {
             entries: Vec::new(),
             max_entries: 500,
             storage_path: storage_path.clone(),
+            collapsed_groups: HashSet::new(),
         };
 
         if let Some(ref path) = storage_path {
@@ -272,6 +275,19 @@ impl HistoryEntity {
 
     pub fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    pub fn toggle_group_collapsed(&mut self, group: TimeGroup, cx: &mut Context<Self>) {
+        if self.collapsed_groups.contains(&group) {
+            self.collapsed_groups.remove(&group);
+        } else {
+            self.collapsed_groups.insert(group);
+        }
+        cx.notify();
+    }
+
+    pub fn is_group_collapsed(&self, group: &TimeGroup) -> bool {
+        self.collapsed_groups.contains(group)
     }
 }
 

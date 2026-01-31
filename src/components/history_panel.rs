@@ -7,7 +7,7 @@ use gpui_component::{ActiveTheme, Icon, Sizable};
 use std::rc::Rc;
 use uuid::Uuid;
 
-use crate::entities::{HistoryEntity, HistoryEntry};
+use crate::entities::{HistoryEntity, HistoryEntry, TimeGroup};
 use crate::icons::IconName;
 use crate::theme::method_color;
 
@@ -111,18 +111,60 @@ impl HistoryPanel {
             .into_any_element()
     }
 
-    fn render_group_header(label: &str, theme: &gpui_component::theme::ThemeColor) -> AnyElement {
+    fn render_group_header(
+        group: TimeGroup,
+        is_collapsed: bool,
+        count: usize,
+        theme: &gpui_component::theme::ThemeColor,
+        history: Entity<HistoryEntity>,
+    ) -> AnyElement {
+        let chevron_icon = if is_collapsed {
+            IconName::ChevronRight
+        } else {
+            IconName::ChevronDown
+        };
+
+        let list_hover = theme.list_hover;
+
         div()
-            .pt(px(16.0))
-            .pb(px(6.0))
+            .id(gpui::SharedString::from(format!(
+                "history-group-{}",
+                group.label()
+            )))
+            .flex()
+            .flex_row()
+            .items_center()
+            .w_full()
+            .gap(px(6.0))
+            .mt(px(8.0))
             .px(px(12.0))
+            .py(px(8.0))
+            .cursor_pointer()
+            .rounded(px(6.0))
+            .hover(move |s| s.bg(list_hover))
+            .child(
+                Icon::new(chevron_icon)
+                    .size(px(14.0))
+                    .text_color(theme.muted_foreground),
+            )
             .child(
                 div()
                     .text_color(theme.muted_foreground)
-                    .text_size(px(11.0))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .child(label.to_string()),
+                    .text_size(px(12.0))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child(group.label().to_string()),
             )
+            .child(
+                div()
+                    .text_color(theme.muted_foreground.opacity(0.5))
+                    .text_size(px(11.0))
+                    .child(format!("({})", count)),
+            )
+            .on_click(move |_, _window, cx| {
+                history.update(cx, |h, cx| {
+                    h.toggle_group_collapsed(group, cx);
+                });
+            })
             .into_any_element()
     }
 
@@ -318,24 +360,33 @@ impl RenderOnce for HistoryPanel {
                     continue;
                 }
 
-                items.push(Self::render_group_header(group.label(), &theme));
+                let is_collapsed = history.is_group_collapsed(&group);
+                items.push(Self::render_group_header(
+                    group,
+                    is_collapsed,
+                    matching_entries.len(),
+                    &theme,
+                    self.history.clone(),
+                ));
 
-                for (idx, entry) in matching_entries.iter().enumerate() {
-                    let m_color = entry_colors
-                        .iter()
-                        .find(|(id, _)| *id == entry.id)
-                        .map(|(_, c)| *c)
-                        .unwrap_or(theme.foreground);
+                if !is_collapsed {
+                    for (idx, entry) in matching_entries.iter().enumerate() {
+                        let m_color = entry_colors
+                            .iter()
+                            .find(|(id, _)| *id == entry.id)
+                            .map(|(_, c)| *c)
+                            .unwrap_or(theme.foreground);
 
-                    items.push(Self::render_history_item(
-                        idx,
-                        entry,
-                        &theme,
-                        m_color,
-                        on_load.clone(),
-                        on_delete.clone(),
-                        on_star.clone(),
-                    ));
+                        items.push(Self::render_history_item(
+                            idx,
+                            entry,
+                            &theme,
+                            m_color,
+                            on_load.clone(),
+                            on_delete.clone(),
+                            on_star.clone(),
+                        ));
+                    }
                 }
             }
 

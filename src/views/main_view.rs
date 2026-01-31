@@ -4,7 +4,7 @@ use gpui::{
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputState};
-use gpui_component::resizable::{h_resizable, resizable_panel, v_resizable};
+use gpui_component::resizable::{resizable_panel, v_resizable};
 use gpui_component::v_flex;
 use gpui_component::Root;
 use gpui_component::WindowExt;
@@ -1028,172 +1028,155 @@ impl Render for MainView {
             .on_action(cx.listener(|this, _: &SetMethodOptions, _window, cx| {
                 this.set_method(HttpMethod::Options, cx);
             }))
-            .child(
-                h_resizable("sidebar-main-split")
-                    .when(self.sidebar_visible, |group| {
-                        let history = self.history.clone();
-                        let collections = self.collections.clone();
-                        let history_search = self
-                            .history_search
-                            .clone()
-                            .expect("history_search should be initialized");
-                        let collections_search = self
-                            .collections_search
-                            .clone()
-                            .expect("collections_search should be initialized");
-                        let sidebar_tab = self.sidebar_tab;
+            // Sidebar
+            .when(self.sidebar_visible, |el| {
+                let history = self.history.clone();
+                let collections = self.collections.clone();
+                let history_search = self
+                    .history_search
+                    .clone()
+                    .expect("history_search should be initialized");
+                let collections_search = self
+                    .collections_search
+                    .clone()
+                    .expect("collections_search should be initialized");
+                let sidebar_tab = self.sidebar_tab;
 
-                        let this_for_tab = this.clone();
-                        let this_for_load_history = this.clone();
-                        let this_for_delete_history = this.clone();
-                        let this_for_toggle_star = this.clone();
-                        let this_for_clear_history = this.clone();
-                        let this_for_load_collection = this.clone();
-                        let this_for_delete_collection = this.clone();
-                        let this_for_delete_item = this.clone();
-                        let this_for_new_collection = this.clone();
-                        let this_for_toggle_expand = this.clone();
+                let this_for_tab = this.clone();
+                let this_for_load_history = this.clone();
+                let this_for_delete_history = this.clone();
+                let this_for_toggle_star = this.clone();
+                let this_for_clear_history = this.clone();
+                let this_for_load_collection = this.clone();
+                let this_for_delete_collection = this.clone();
+                let this_for_delete_item = this.clone();
+                let this_for_new_collection = this.clone();
+                let this_for_toggle_expand = this.clone();
 
-                        group.child(
-                            resizable_panel()
-                                .size(px(300.0))
-                                .size_range(px(200.0)..px(600.0))
-                                .child(
-                                    AppSidebar::new(
-                                        history,
-                                        collections,
-                                        history_search,
-                                        collections_search,
-                                    )
-                                    .active_tab(sidebar_tab)
-                                    .on_tab_change(move |tab, _window, cx| {
-                                        this_for_tab.update(cx, |view, cx| {
-                                            view.set_sidebar_tab(tab, cx);
-                                        });
-                                    })
-                                    .on_load_history_request(move |entry_id, window, cx| {
-                                        this_for_load_history.update(cx, |view, cx| {
-                                            view.load_history_entry(entry_id, window, cx);
-                                        });
-                                    })
-                                    .on_delete_history_entry(move |entry_id, _window, cx| {
-                                        this_for_delete_history.update(cx, |view, cx| {
-                                            view.delete_history_entry(entry_id, cx);
-                                        });
-                                    })
-                                    .on_toggle_star(move |entry_id, _window, cx| {
-                                        this_for_toggle_star.update(cx, |view, cx| {
-                                            view.toggle_history_star(entry_id, cx);
-                                        });
-                                    })
-                                    .on_clear_history(move |_window, cx| {
-                                        this_for_clear_history.update(cx, |view, cx| {
-                                            view.clear_history(cx);
-                                        });
-                                    })
-                                    .on_load_collection_request(
-                                        move |collection_id, item_id, window, cx| {
-                                            this_for_load_collection.update(cx, |view, cx| {
-                                                view.load_collection_item(
-                                                    collection_id,
-                                                    item_id,
-                                                    window,
-                                                    cx,
-                                                );
-                                            });
-                                        },
-                                    )
-                                    .on_delete_collection(move |collection_id, _window, cx| {
-                                        this_for_delete_collection.update(cx, |view, cx| {
-                                            view.delete_collection(collection_id, cx);
-                                        });
-                                    })
-                                    .on_delete_collection_item(
-                                        move |collection_id, item_id, _window, cx| {
-                                            this_for_delete_item.update(cx, |view, cx| {
-                                                view.delete_collection_item(
-                                                    collection_id,
-                                                    item_id,
-                                                    cx,
-                                                );
-                                            });
-                                        },
-                                    )
-                                    .on_new_collection(move |_window, cx| {
-                                        this_for_new_collection.update(cx, |view, cx| {
-                                            view.create_new_collection(cx);
-                                        });
-                                    })
-                                    .on_toggle_collection_expand(
-                                        move |collection_id, _window, cx| {
-                                            this_for_toggle_expand.update(cx, |view, cx| {
-                                                view.toggle_collection_expand(collection_id, cx);
-                                            });
-                                        },
-                                    ),
-                                ),
-                        )
-                    })
-                    .child(
-                        resizable_panel().child(
-                            div()
-                                .flex_1()
-                                .flex()
-                                .flex_col()
-                                .h_full()
-                                .overflow_hidden()
-                                // Header with protocol selector
-                                .child(self.render_header(&theme))
-                                // Tab bar - pass this entity directly with scroll handle
-                                .child(TabBar::new(
-                                    tab_infos,
-                                    this.clone(),
-                                    self.tab_scroll_handle.clone(),
-                                ))
-                                // Content - vertical resizable split between request and response panels
-                                .child(
-                                    div().flex_1().flex().flex_col().overflow_hidden().child(
-                                        v_resizable("request-response-split")
-                                            // Request panel with URL bar
-                                            .child(
-                                                resizable_panel()
-                                                    .size(px(400.0))
-                                                    .size_range(px(150.0)..px(600.0))
-                                                    .child(
-                                                        div()
-                                                            .flex()
-                                                            .flex_col()
-                                                            .size_full()
-                                                            .overflow_hidden()
-                                                            .child(self.render_request_panel(
-                                                                url_input,
-                                                                method_dropdown,
-                                                                request_entity,
-                                                                is_loading,
-                                                                this_for_send,
-                                                                request_view,
-                                                            )),
-                                                    ),
-                                            )
-                                            // Response panel
-                                            .child(
-                                                resizable_panel()
-                                                    .size_range(px(150.0)..gpui::Pixels::MAX)
-                                                    .child(
-                                                        div()
-                                                            .flex()
-                                                            .flex_col()
-                                                            .size_full()
-                                                            .overflow_hidden()
-                                                            .child(response_view.clone()),
-                                                    ),
-                                            ),
-                                    ),
-                                )
-                                // Bottom shortcuts bar
-                                .child(self.render_shortcuts(&theme)),
-                        ),
+                el.child(
+                    div().w(px(300.0)).h_full().flex_shrink_0().child(
+                        AppSidebar::new(history, collections, history_search, collections_search)
+                            .active_tab(sidebar_tab)
+                            .on_tab_change(move |tab, _window, cx| {
+                                this_for_tab.update(cx, |view, cx| {
+                                    view.set_sidebar_tab(tab, cx);
+                                });
+                            })
+                            .on_load_history_request(move |entry_id, window, cx| {
+                                this_for_load_history.update(cx, |view, cx| {
+                                    view.load_history_entry(entry_id, window, cx);
+                                });
+                            })
+                            .on_delete_history_entry(move |entry_id, _window, cx| {
+                                this_for_delete_history.update(cx, |view, cx| {
+                                    view.delete_history_entry(entry_id, cx);
+                                });
+                            })
+                            .on_toggle_star(move |entry_id, _window, cx| {
+                                this_for_toggle_star.update(cx, |view, cx| {
+                                    view.toggle_history_star(entry_id, cx);
+                                });
+                            })
+                            .on_clear_history(move |_window, cx| {
+                                this_for_clear_history.update(cx, |view, cx| {
+                                    view.clear_history(cx);
+                                });
+                            })
+                            .on_load_collection_request(
+                                move |collection_id, item_id, window, cx| {
+                                    this_for_load_collection.update(cx, |view, cx| {
+                                        view.load_collection_item(
+                                            collection_id,
+                                            item_id,
+                                            window,
+                                            cx,
+                                        );
+                                    });
+                                },
+                            )
+                            .on_delete_collection(move |collection_id, _window, cx| {
+                                this_for_delete_collection.update(cx, |view, cx| {
+                                    view.delete_collection(collection_id, cx);
+                                });
+                            })
+                            .on_delete_collection_item(
+                                move |collection_id, item_id, _window, cx| {
+                                    this_for_delete_item.update(cx, |view, cx| {
+                                        view.delete_collection_item(collection_id, item_id, cx);
+                                    });
+                                },
+                            )
+                            .on_new_collection(move |_window, cx| {
+                                this_for_new_collection.update(cx, |view, cx| {
+                                    view.create_new_collection(cx);
+                                });
+                            })
+                            .on_toggle_collection_expand(move |collection_id, _window, cx| {
+                                this_for_toggle_expand.update(cx, |view, cx| {
+                                    view.toggle_collection_expand(collection_id, cx);
+                                });
+                            }),
                     ),
+                )
+            })
+            // Main content area
+            .child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .h_full()
+                    .overflow_hidden()
+                    // Header with protocol selector
+                    .child(self.render_header(&theme))
+                    // Tab bar - pass this entity directly with scroll handle
+                    .child(TabBar::new(
+                        tab_infos,
+                        this.clone(),
+                        self.tab_scroll_handle.clone(),
+                    ))
+                    // Content - vertical resizable split between request and response panels
+                    .child(
+                        div().flex_1().flex().flex_col().overflow_hidden().child(
+                            v_resizable("request-response-split")
+                                // Request panel with URL bar
+                                .child(
+                                    resizable_panel()
+                                        .size(px(400.0))
+                                        .size_range(px(150.0)..px(600.0))
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .size_full()
+                                                .overflow_hidden()
+                                                .child(self.render_request_panel(
+                                                    url_input,
+                                                    method_dropdown,
+                                                    request_entity,
+                                                    is_loading,
+                                                    this_for_send,
+                                                    request_view,
+                                                )),
+                                        ),
+                                )
+                                // Response panel
+                                .child(
+                                    resizable_panel()
+                                        .size_range(px(150.0)..gpui::Pixels::MAX)
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .size_full()
+                                                .overflow_hidden()
+                                                .child(response_view.clone()),
+                                        ),
+                                ),
+                        ),
+                    )
+                    // Bottom shortcuts bar
+                    .child(self.render_shortcuts(&theme)),
             )
             // Command palette overlay
             .child(self.command_palette.clone())
