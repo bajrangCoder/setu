@@ -690,27 +690,32 @@ impl ResponseView {
                     .flex_col()
                     .flex_1()
                     .w_full()
-                    .h_full()
-                    .items_center()
-                    .justify_center()
+                    .overflow_y_scroll()
+                    .overflow_x_hidden()
                     .bg(theme.muted)
-                    .p(px(16.0))
-                    .child(
-                        img(image)
-                            .max_w_full()
-                            .max_h_full()
-                            .object_fit(gpui::ObjectFit::Contain),
-                    )
                     .child(
                         div()
-                            .pt(px(8.0))
-                            .text_color(theme.muted_foreground)
-                            .text_size(px(11.0))
-                            .child(format!(
-                                "{} • {} bytes",
-                                data.content_type.as_deref().unwrap_or("image"),
-                                data.body_size_bytes
-                            )),
+                            .w_full()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .p(px(16.0))
+                            .child(
+                                img(image)
+                                    .max_w_full()
+                                    .object_fit(gpui::ObjectFit::Contain),
+                            )
+                            .child(
+                                div()
+                                    .pt(px(8.0))
+                                    .text_color(theme.muted_foreground)
+                                    .text_size(px(11.0))
+                                    .child(format!(
+                                        "{} • {} bytes",
+                                        data.content_type.as_deref().unwrap_or("image"),
+                                        data.body_size_bytes
+                                    )),
+                            ),
                     )
                     .into_any_element();
             } else {
