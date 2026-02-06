@@ -355,6 +355,17 @@ impl RenderOnce for CollectionsPanel {
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_size(px(14.0))
                                     .child("Collections"),
+                            )
+                            .child(
+                                div()
+                                    .px(px(6.0))
+                                    .py(px(2.0))
+                                    .rounded(px(4.0))
+                                    .bg(theme.warning.opacity(0.15))
+                                    .text_color(theme.warning)
+                                    .text_size(px(9.0))
+                                    .font_weight(gpui::FontWeight::BOLD)
+                                    .child("WIP"),
                             ),
                     )
                     .child(new_btn_wrapper),
