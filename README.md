@@ -33,9 +33,6 @@ Setu is designed for keyboard-first interactivity. Here are the available shortc
 | `⌘↵` / `⌃↵` | Send Request      |
 | `⌘N`        | New Tab/Request   |
 | `⌘D`        | Duplicate Request |
-| `⌘S`        | Save Request      |
-| `⌘O`        | Open Request      |
-| `Esc`       | Cancel Request    |
 
 ### Tab Navigation
 
@@ -48,7 +45,6 @@ Setu is designed for keyboard-first interactivity. Here are the available shortc
 | `⌘W`          | Close Tab         |
 | `⌘⇧W`         | Close All Tabs    |
 | `⌘⌥W`         | Close Other Tabs  |
-| `⌘⇧T`         | Reopen Closed Tab |
 | `⌘1` - `⌘8`   | Go to Tab 1-8     |
 | `⌘9`          | Go to Last Tab    |
 
@@ -70,10 +66,6 @@ Setu is designed for keyboard-first interactivity. Here are the available shortc
 | ----------- | ----------------- |
 | `⌘K` / `⌘P` | Command Palette   |
 | `⌘B` / `⌘\` | Toggle Sidebar    |
-| `⌘=` / `⌘+` | Zoom In           |
-| `⌘-`        | Zoom Out          |
-| `⌘0`        | Reset Zoom        |
-| `⌃⌘F`       | Toggle Fullscreen |
 
 ### HTTP Method Shortcuts
 
@@ -89,11 +81,9 @@ Setu is designed for keyboard-first interactivity. Here are the available shortc
 
 ### Application
 
-| Shortcut    | Action   |
-| ----------- | -------- |
-| `⌘Q`        | Quit     |
-| `⌘,`        | Settings |
-| `F1` / `⌘?` | Help     |
+| Shortcut | Action |
+| -------- | ------ |
+| `⌘Q`     | Quit   |
 
 ### Symbol Legend
 
