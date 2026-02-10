@@ -220,6 +220,17 @@ impl RequestEntity {
         cx.notify();
     }
 
+    pub fn set_headers(&mut self, headers: Vec<Header>, cx: &mut Context<Self>) {
+        self.data.headers = headers;
+        cx.emit(RequestEvent::HeadersChanged);
+        cx.notify();
+    }
+
+    pub fn with_headers(mut self, headers: Vec<Header>) -> Self {
+        self.data.headers = headers;
+        self
+    }
+
     pub fn set_sending(&mut self, sending: bool, cx: &mut Context<Self>) {
         self.data.is_sending = sending;
         if sending {

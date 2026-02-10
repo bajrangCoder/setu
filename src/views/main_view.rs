@@ -206,7 +206,7 @@ impl MainView {
 
         // Now we can use cx freely
         let request = cx.new(|cx| {
-            let mut req = RequestEntity::new();
+            let mut req = RequestEntity::new().with_headers(request_data.headers.clone());
             req.set_url(request_data.url.clone(), cx);
             req.set_method(request_data.method, cx);
             req.set_body(request_data.body.clone(), cx);
@@ -341,7 +341,7 @@ impl MainView {
 
         // Now we can use cx freely
         let request = cx.new(|cx| {
-            let mut req = RequestEntity::new();
+            let mut req = RequestEntity::new().with_headers(request_data.headers.clone());
             req.set_url(request_data.url.clone(), cx);
             req.set_method(request_data.method, cx);
             req.set_body(request_data.body.clone(), cx);
@@ -424,7 +424,7 @@ impl MainView {
                 url: request.url().to_string(),
                 method: request.method(),
                 headers: request.headers().to_vec(),
-                body: RequestBody::None,
+                body: request.body().clone(),
                 is_sending: false,
             };
 

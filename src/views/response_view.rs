@@ -700,11 +700,7 @@ impl ResponseView {
                             .flex_col()
                             .items_center()
                             .p(px(16.0))
-                            .child(
-                                img(image)
-                                    .max_w_full()
-                                    .object_fit(gpui::ObjectFit::Contain),
-                            )
+                            .child(img(image).max_w_full().object_fit(gpui::ObjectFit::Contain))
                             .child(
                                 div()
                                     .pt(px(8.0))

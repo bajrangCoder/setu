@@ -109,11 +109,15 @@ impl RequestView {
 
         if self.body_editor.is_none() {
             let initial_content = self.initial_body_content.take().unwrap_or_else(|| {
-                r#"{
+                if self.body_type == BodyType::Json {
+                    r#"{
   "name": "example",
   "value": 123
 }"#
-                .to_string()
+                    .to_string()
+                } else {
+                    String::new()
+                }
             });
 
             let wrap_lines = self.wrap_lines;

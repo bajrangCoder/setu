@@ -30,6 +30,7 @@ struct DraggedHeader {
 pub struct HeaderEditor {
     request: Entity<RequestEntity>,
     header_rows: Vec<HeaderRow>,
+    pending_initial_headers: Option<Vec<(String, String, bool)>>,
     focus_handle: FocusHandle,
 }
 
@@ -44,6 +45,7 @@ impl HeaderEditor {
         let mut editor = Self {
             request,
             header_rows: Vec::new(),
+            pending_initial_headers: None,
             focus_handle: cx.focus_handle(),
         };
 
@@ -53,10 +55,53 @@ impl HeaderEditor {
     }
 
     fn sync_headers_from_request(&mut self, cx: &mut Context<Self>) {
-        let request_headers = self.request.read(cx).headers();
-        if request_headers.len() == self.header_rows.len() {
+        if !self.header_rows.is_empty() {
             return;
         }
+
+        let headers: Vec<(String, String, bool)> = self
+            .request
+            .read(cx)
+            .headers()
+            .iter()
+            .map(|h| (h.key.clone(), h.value.clone(), h.enabled))
+            .collect();
+
+        if headers.is_empty() {
+            return;
+        }
+
+        self.pending_initial_headers = Some(headers);
+    }
+
+    pub fn populate_pending_headers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(headers) = self.pending_initial_headers.take() else {
+            return;
+        };
+
+        for (key, value, enabled) in headers {
+            let key_input = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("Header name")
+                    .default_value(&key)
+            });
+            let value_input = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("Value")
+                    .default_value(&value)
+            });
+            let description_input =
+                cx.new(|cx| InputState::new(window, cx).placeholder("Description"));
+
+            self.header_rows.push(HeaderRow {
+                key_input,
+                value_input,
+                description_input,
+                enabled,
+            });
+        }
+
+        cx.notify();
     }
 
     /// Add a new empty header row
@@ -206,7 +251,9 @@ impl Focusable for HeaderEditor {
 }
 
 impl Render for HeaderEditor {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.populate_pending_headers(window, cx);
+
         let theme = cx.theme();
         let this = cx.entity().clone();
 
