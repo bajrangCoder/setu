@@ -1,5 +1,6 @@
 - ~~Add support for saving history~~ ✅
 - support other HTTP response content types
+- ~~fix persistent issue~~ ✅
 - ~~command palette~~ ✅
 - ~~keyboard shortcuts~~ ✅
 - some ui updates for smooth experience
