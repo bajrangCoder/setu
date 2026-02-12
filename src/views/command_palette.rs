@@ -12,6 +12,7 @@ use crate::icons::IconName;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandId {
     SendRequest,
+    CancelRequest,
     NewRequest,
     DuplicateRequest,
     ToggleSidebar,
@@ -65,6 +66,7 @@ impl Command {
 pub fn default_commands() -> Vec<Command> {
     vec![
         Command::new(CommandId::SendRequest, "Send Request", IconName::Send).with_shortcut("⌘↵"),
+        Command::new(CommandId::CancelRequest, "Cancel Request", IconName::Ban).with_shortcut("⌘."),
         Command::new(CommandId::NewRequest, "New Request", IconName::CopyPlus).with_shortcut("⌘N"),
         Command::new(
             CommandId::DuplicateRequest,

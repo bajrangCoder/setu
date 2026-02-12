@@ -8,6 +8,7 @@ use gpui_component::ActiveTheme;
 
 /// Callback type for Send button
 pub type OnSendCallback = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
+pub type OnCancelCallback = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
 /// URL Bar component
 #[derive(IntoElement)]
@@ -17,6 +18,7 @@ pub struct UrlBar {
     request: Option<Entity<RequestEntity>>,
     is_loading: bool,
     on_send: Option<OnSendCallback>,
+    on_cancel: Option<OnCancelCallback>,
 }
 
 impl UrlBar {
@@ -27,6 +29,7 @@ impl UrlBar {
             request: None,
             is_loading: false,
             on_send: None,
+            on_cancel: None,
         }
     }
 
@@ -52,12 +55,32 @@ impl UrlBar {
         self.on_send = Some(Box::new(callback));
         self
     }
+
+    pub fn on_cancel(
+        mut self,
+        callback: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_cancel = Some(Box::new(callback));
+        self
+    }
 }
 
 impl RenderOnce for UrlBar {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.theme();
         let is_loading = self.is_loading;
+        let on_send = self.on_send;
+        let on_cancel = self.on_cancel;
+        let button_bg = if is_loading {
+            theme.danger
+        } else {
+            theme.primary
+        };
+        let button_hover_bg = if is_loading {
+            theme.danger_hover
+        } else {
+            theme.primary_hover
+        };
 
         div()
             .flex()
@@ -106,21 +129,23 @@ impl RenderOnce for UrlBar {
                     .h(px(32.0))
                     .mr(px(4.0))
                     .rounded(px(4.0))
-                    .bg(theme.primary)
+                    .bg(button_bg)
                     .text_color(theme.background)
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_size(px(12.0))
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme.primary_hover))
+                    .hover(move |s| s.bg(button_hover_bg))
                     .when(is_loading, |s| s.opacity(0.7))
-                    .when_some(self.on_send, |el, callback| {
-                        el.on_click(move |event, window, cx| {
-                            if !is_loading {
+                    .on_click(move |event, window, cx| {
+                        if is_loading {
+                            if let Some(ref callback) = on_cancel {
                                 callback(event, window, cx);
                             }
-                        })
+                        } else if let Some(ref callback) = on_send {
+                            callback(event, window, cx);
+                        }
                     })
-                    .child(if is_loading { "Sending..." } else { "Send" }),
+                    .child(if is_loading { "Cancel" } else { "Send" }),
             )
     }
 }

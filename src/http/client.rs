@@ -6,12 +6,29 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
 
 /// HTTP Client wrapper for making requests
 #[derive(Clone)]
 pub struct HttpClient {
     client: Client,
     runtime: Arc<Runtime>,
+}
+
+/// Handle for canceling an in-flight HTTP request.
+pub struct InFlightRequest {
+    task: Option<JoinHandle<()>>,
+}
+
+impl InFlightRequest {
+    pub fn cancel(&mut self) -> bool {
+        if let Some(task) = self.task.take() {
+            task.abort();
+            true
+        } else {
+            false
+        }
+    }
 }
 
 impl HttpClient {
@@ -35,16 +52,16 @@ impl HttpClient {
         url: String,
         headers: Vec<Header>,
         body: RequestBody,
-    ) -> oneshot::Receiver<Result<ResponseData>> {
+    ) -> (oneshot::Receiver<Result<ResponseData>>, InFlightRequest) {
         let (tx, rx) = oneshot::channel();
         let client = self.client.clone();
 
-        self.runtime.spawn(async move {
+        let task = self.runtime.spawn(async move {
             let result = execute_request(client, method, url, headers, body).await;
             let _ = tx.send(result);
         });
 
-        rx
+        (rx, InFlightRequest { task: Some(task) })
     }
 }
 

@@ -19,7 +19,7 @@ use crate::entities::{
     CollectionsEntity, Header, HistoryEntity, HttpMethod, RequestBody, RequestData, RequestEntity,
     ResponseData, ResponseEntity,
 };
-use crate::http::HttpClient;
+use crate::http::{HttpClient, InFlightRequest};
 use crate::views::request_view::RequestView;
 use crate::views::response_view::ResponseView;
 use crate::views::{CommandId, CommandPaletteEvent, CommandPaletteView};
@@ -34,6 +34,7 @@ pub struct TabState {
     pub method_dropdown: Entity<MethodDropdownState>,
     pub request_view: Entity<RequestView>,
     pub response_view: Entity<ResponseView>,
+    pub in_flight_request: Option<InFlightRequest>,
 }
 
 /// Main application view
@@ -80,6 +81,7 @@ impl MainView {
             method_dropdown,
             request_view,
             response_view,
+            in_flight_request: None,
         };
 
         let command_palette = cx.new(|cx| CommandPaletteView::new(cx));
@@ -244,6 +246,7 @@ impl MainView {
             method_dropdown,
             request_view,
             response_view,
+            in_flight_request: None,
         };
 
         self.tabs.push(tab);
@@ -372,6 +375,7 @@ impl MainView {
             method_dropdown,
             request_view,
             response_view,
+            in_flight_request: None,
         };
 
         self.tabs.push(tab);
@@ -439,6 +443,22 @@ impl MainView {
         self.tabs.get(self.active_tab_index)
     }
 
+    fn cancel_in_flight_for_tab(&mut self, index: usize) {
+        if let Some(tab) = self.tabs.get_mut(index) {
+            if let Some(mut in_flight) = tab.in_flight_request.take() {
+                let _ = in_flight.cancel();
+            }
+        }
+    }
+
+    fn cancel_in_flight_for_all_tabs(&mut self) {
+        for tab in &mut self.tabs {
+            if let Some(mut in_flight) = tab.in_flight_request.take() {
+                let _ = in_flight.cancel();
+            }
+        }
+    }
+
     /// Add a new tab
     pub fn new_tab(&mut self, cx: &mut Context<Self>) {
         let request = cx.new(|_| RequestEntity::new());
@@ -457,6 +477,7 @@ impl MainView {
             method_dropdown,
             request_view,
             response_view,
+            in_flight_request: None,
         };
 
         self.tabs.push(tab);
@@ -489,6 +510,7 @@ impl MainView {
     /// Close a tab
     pub fn close_tab(&mut self, index: usize, cx: &mut Context<Self>) {
         if self.tabs.len() > 1 && index < self.tabs.len() {
+            self.cancel_in_flight_for_tab(index);
             self.tabs.remove(index);
 
             // Adjust active index
@@ -584,6 +606,12 @@ impl MainView {
     /// Close all tabs except the one at the given index
     pub fn close_other_tabs(&mut self, index: usize, cx: &mut Context<Self>) {
         if index < self.tabs.len() {
+            for i in 0..self.tabs.len() {
+                if i != index {
+                    self.cancel_in_flight_for_tab(i);
+                }
+            }
+
             // Keep only the tab at the given index
             let tab_to_keep = self.tabs.remove(index);
             self.tabs.clear();
@@ -596,13 +624,23 @@ impl MainView {
 
     /// Send the current request
     pub fn send_request(&mut self, cx: &mut Context<Self>) {
-        let Some(tab) = self.active_tab() else { return };
+        let tab_index = self.active_tab_index;
+        let Some(tab) = self.tabs.get(tab_index) else {
+            return;
+        };
 
         let request_entity = tab.request.clone();
         let response_entity = tab.response.clone();
         let request_view = tab.request_view.clone();
+        let tab_name = tab.name.clone();
 
-        // Get URL from input state
+        // Toggle behavior: send when idle, cancel when already sending.
+        if request_entity.read(cx).is_sending() {
+            self.cancel_request(cx);
+            return;
+        }
+
+        // Get URL from input state.
         let base_url = if let Some(ref url_input) = tab.url_input {
             url_input.read(cx).text().to_string()
         } else {
@@ -665,7 +703,7 @@ impl MainView {
         // Create request data for history before sending
         let history_request_data = RequestData {
             id: Uuid::new_v4(),
-            name: tab.name.clone(),
+            name: tab_name,
             url: url.clone(),
             method,
             headers: headers.clone(),
@@ -675,8 +713,12 @@ impl MainView {
 
         let history_entity = self.history.clone();
 
-        // Spawn HTTP request on Tokio runtime
-        let result_rx = self.http_client.spawn_request(method, url, headers, body);
+        // Spawn HTTP request on Tokio runtime and keep a cancel handle on the tab.
+        let (result_rx, in_flight_request) =
+            self.http_client.spawn_request(method, url, headers, body);
+        if let Some(tab) = self.tabs.get_mut(tab_index) {
+            tab.in_flight_request = Some(in_flight_request);
+        }
 
         // Spawn foreground task to await result and update UI
         cx.spawn(async move |_view, cx| {
@@ -730,7 +772,7 @@ impl MainView {
                         });
                     }
                     Err(_) => {
-                        log::error!("Request channel closed unexpectedly");
+                        log::info!("Request was cancelled");
                         response_entity.update(app, |resp, cx| {
                             resp.set_error("Request was cancelled".to_string(), cx);
                         });
@@ -739,6 +781,22 @@ impl MainView {
             })
         })
         .detach_and_log_err(cx);
+    }
+
+    pub fn cancel_request(&mut self, cx: &mut Context<Self>) {
+        let tab_index = self.active_tab_index;
+        let Some(tab) = self.tabs.get_mut(tab_index) else {
+            return;
+        };
+
+        let is_sending = tab.request.read(cx).is_sending();
+        if !is_sending {
+            return;
+        }
+
+        if let Some(mut in_flight) = tab.in_flight_request.take() {
+            let _ = in_flight.cancel();
+        }
     }
 
     pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
@@ -755,6 +813,7 @@ impl MainView {
     pub fn execute_command(&mut self, cmd_id: CommandId, cx: &mut Context<Self>) {
         match cmd_id {
             CommandId::SendRequest => self.send_request(cx),
+            CommandId::CancelRequest => self.cancel_request(cx),
             CommandId::NewRequest => self.new_tab(cx),
             CommandId::CloseTab => self.close_current_tab(cx),
             CommandId::CloseAllTabs => self.close_all_tabs(cx),
@@ -827,6 +886,7 @@ impl MainView {
     }
 
     pub fn close_all_tabs(&mut self, cx: &mut Context<Self>) {
+        self.cancel_in_flight_for_all_tabs();
         while self.tabs.len() > 1 {
             self.tabs.pop();
         }
@@ -888,6 +948,7 @@ impl MainView {
                 method_dropdown: new_method_dropdown,
                 request_view: new_request_view,
                 response_view: new_response_view,
+                in_flight_request: None,
             };
 
             self.tabs.push(new_tab);
@@ -1005,6 +1066,9 @@ impl Render for MainView {
             // Request actions
             .on_action(cx.listener(|this, _: &SendRequest, _window, cx| {
                 this.send_request(cx);
+            }))
+            .on_action(cx.listener(|this, _: &CancelRequest, _window, cx| {
+                this.cancel_request(cx);
             }))
             .on_action(cx.listener(|this, _: &NewRequest, _window, cx| {
                 this.new_tab(cx);
@@ -1311,13 +1375,20 @@ impl MainView {
                     .px(px(16.0))
                     .py(px(12.0))
                     .when_some(url_input, |el, input| {
+                        let this_for_send = this.clone();
+                        let this_for_cancel = this.clone();
                         el.child(
                             UrlBar::new(input)
                                 .method_dropdown(method_dropdown, request)
                                 .loading(is_loading)
                                 .on_send(move |_, _, cx| {
-                                    this.update(cx, |view, cx| {
+                                    this_for_send.update(cx, |view, cx| {
                                         view.send_request(cx);
+                                    });
+                                })
+                                .on_cancel(move |_, _, cx| {
+                                    this_for_cancel.update(cx, |view, cx| {
+                                        view.cancel_request(cx);
                                     });
                                 }),
                         )

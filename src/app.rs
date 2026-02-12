@@ -49,6 +49,7 @@ impl SetuApp {
             // ============ Request Actions ============
             KeyBinding::new("cmd-enter", SendRequest, None),
             KeyBinding::new("ctrl-enter", SendRequest, None),
+            KeyBinding::new("cmd-.", CancelRequest, None),
             KeyBinding::new("cmd-n", NewRequest, None),
             KeyBinding::new("cmd-d", DuplicateRequest, None),
             // ============ Tab Navigation ============
