@@ -214,50 +214,69 @@ impl ResponseView {
     }
 
     fn save_to_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let content = self
-            .response
-            .read(cx)
-            .data
-            .as_ref()
-            .map(|d| match self.active_tab {
-                ResponseTab::Body => d.formatted_body_ref().to_string(),
-                ResponseTab::Raw => d.body.clone(),
-                ResponseTab::Headers => {
-                    let headers_json: Vec<serde_json::Value> = d
-                        .headers
-                        .iter()
-                        .map(|(k, v)| {
-                            serde_json::json!({
-                                "key": k,
-                                "value": v
-                            })
-                        })
-                        .collect();
-                    serde_json::to_string_pretty(&headers_json).unwrap_or_else(|_| "[]".to_string())
-                }
-            });
+        enum SaveContent {
+            Text(String),
+            Bytes(Vec<u8>),
+        }
 
-        let Some(content) = content else { return };
+        let resp_data = self.response.read(cx).data.as_ref();
+        let Some(data) = resp_data else { return };
+
+        let content_category = data.content_category();
+        let is_binary = matches!(
+            content_category,
+            ContentCategory::Image | ContentCategory::Binary
+        );
+
+        let save_content = match self.active_tab {
+            ResponseTab::Headers => {
+                let headers_json: Vec<serde_json::Value> = data
+                    .headers
+                    .iter()
+                    .map(|(k, v)| {
+                        serde_json::json!({
+                            "key": k,
+                            "value": v
+                        })
+                    })
+                    .collect();
+                SaveContent::Text(
+                    serde_json::to_string_pretty(&headers_json)
+                        .unwrap_or_else(|_| "[]".to_string()),
+                )
+            }
+            _ if is_binary && !data.body_bytes.is_empty() => {
+                SaveContent::Bytes(data.body_bytes.clone())
+            }
+            ResponseTab::Body => SaveContent::Text(data.formatted_body_ref().to_string()),
+            ResponseTab::Raw => SaveContent::Text(data.body.clone()),
+        };
 
         let default_extension = match self.active_tab {
             ResponseTab::Headers => "json",
-            _ => {
-                let content_category = self
-                    .response
-                    .read(cx)
-                    .data
-                    .as_ref()
-                    .map(|d| d.content_category())
-                    .unwrap_or(ContentCategory::Text);
-
-                match content_category {
-                    ContentCategory::Json => "json",
-                    ContentCategory::Xml => "xml",
-                    ContentCategory::Html => "html",
-                    ContentCategory::Image => "png",
-                    _ => "txt",
+            _ => match content_category {
+                ContentCategory::Json => "json",
+                ContentCategory::Xml => "xml",
+                ContentCategory::Html => "html",
+                ContentCategory::Image => {
+                    let ct = data.content_type.as_deref().unwrap_or("");
+                    if ct.contains("jpeg") || ct.contains("jpg") {
+                        "jpg"
+                    } else if ct.contains("gif") {
+                        "gif"
+                    } else if ct.contains("webp") {
+                        "webp"
+                    } else if ct.contains("bmp") {
+                        "bmp"
+                    } else if ct.contains("svg") {
+                        "svg"
+                    } else {
+                        "png"
+                    }
                 }
-            }
+                ContentCategory::Binary => "bin",
+                _ => "txt",
+            },
         };
 
         let default_name = format!("response.{}", default_extension);
@@ -295,7 +314,12 @@ impl ResponseView {
 
             let file_path = dir_path.join(&default_name);
 
-            if let Err(e) = std::fs::write(&file_path, &content) {
+            let write_result = match &save_content {
+                SaveContent::Text(text) => std::fs::write(&file_path, text),
+                SaveContent::Bytes(bytes) => std::fs::write(&file_path, bytes),
+            };
+
+            if let Err(e) = write_result {
                 log::error!("Failed to save response: {}", e);
                 let _ = cx.update(|window, app| {
                     window.push_notification(
