@@ -245,7 +245,7 @@ impl HistoryPanel {
     }
 
     fn render_history_item(
-        ix: usize,
+        entry_key: usize,
         entry: &HistoryEntry,
         theme: &gpui_component::theme::ThemeColor,
         m_color: Hsla,
@@ -279,7 +279,7 @@ impl HistoryPanel {
         let list_hover = theme.list_hover;
 
         div()
-            .id(("history-item", ix))
+            .id(("history-item", entry_key))
             .group("history-item")
             .relative()
             .flex()
@@ -308,7 +308,7 @@ impl HistoryPanel {
             )
             .child(
                 div()
-                    .id(("url-tooltip", ix))
+                    .id(("url-tooltip", entry_key))
                     .flex_1()
                     .overflow_hidden()
                     .tooltip(move |window, cx| {
@@ -338,7 +338,7 @@ impl HistoryPanel {
                     .group_hover("history-item", |s| s.opacity(1.0).bg(list_hover))
                     .child({
                         let handler = on_star_clone.clone();
-                        let mut btn = Button::new(("star", ix))
+                        let mut btn = Button::new(("star", entry_key))
                             .ghost()
                             .xsmall()
                             .icon(Icon::new(star_icon).size(px(14.0)))
@@ -360,7 +360,7 @@ impl HistoryPanel {
                     })
                     .child({
                         let handler = on_delete_clone.clone();
-                        let mut btn = Button::new(("delete", ix))
+                        let mut btn = Button::new(("delete", entry_key))
                             .ghost()
                             .xsmall()
                             .icon(
@@ -412,6 +412,11 @@ impl RenderOnce for HistoryPanel {
             .iter()
             .map(|e| (e.id, method_color(&e.request.method, cx)))
             .collect();
+        let entry_indices: std::collections::HashMap<Uuid, usize> = filtered_entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (e.id, i))
+            .collect();
 
         let theme = cx.theme();
 
@@ -450,15 +455,16 @@ impl RenderOnce for HistoryPanel {
                         ));
 
                         if !is_collapsed {
-                            for (idx, entry) in matching_entries.iter().enumerate() {
+                            for entry in matching_entries.iter() {
                                 let m_color = entry_colors
                                     .iter()
                                     .find(|(id, _)| *id == entry.id)
                                     .map(|(_, c)| *c)
                                     .unwrap_or(theme.foreground);
+                                let entry_key = *entry_indices.get(&entry.id).unwrap_or(&0);
 
                                 items.push(Self::render_history_item(
-                                    idx,
+                                    entry_key,
                                     entry,
                                     &theme,
                                     m_color,
@@ -489,15 +495,16 @@ impl RenderOnce for HistoryPanel {
                             &theme,
                         ));
 
-                        for (idx, entry) in matching_entries.iter().enumerate() {
+                        for entry in matching_entries.iter() {
                             let m_color = entry_colors
                                 .iter()
                                 .find(|(id, _)| *id == entry.id)
                                 .map(|(_, c)| *c)
                                 .unwrap_or(theme.foreground);
+                            let entry_key = *entry_indices.get(&entry.id).unwrap_or(&0);
 
                             items.push(Self::render_history_item(
-                                idx,
+                                entry_key,
                                 entry,
                                 &theme,
                                 m_color,
