@@ -1,4 +1,5 @@
 pub mod app_sidebar;
+pub mod audio_player;
 pub mod auth_editor;
 pub mod body_type_selector;
 pub mod collections_panel;

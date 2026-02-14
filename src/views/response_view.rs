@@ -18,6 +18,7 @@ use gpui_component::Sizable;
 use gpui_component::VirtualListScrollHandle;
 use gpui_component::WindowExt;
 
+use crate::components::audio_player::AudioPlayer;
 use crate::components::StatusBadge;
 use crate::entities::{
     ContentCategory, ResponseData, ResponseEntity, ResponseEvent, ResponseState,
@@ -55,6 +56,7 @@ pub struct ResponseView {
     headers_scroll_handle: VirtualListScrollHandle,
     /// Whether to wrap lines in the editor
     wrap_lines: bool,
+    audio_player: Option<Entity<AudioPlayer>>,
 }
 
 impl ResponseView {
@@ -75,6 +77,7 @@ impl ResponseView {
             focus_handle: cx.focus_handle(),
             headers_scroll_handle: VirtualListScrollHandle::new(),
             wrap_lines: true,
+            audio_player: None,
         }
     }
 
@@ -92,6 +95,39 @@ impl ResponseView {
 
         let needs_update =
             current_hash != self.last_body_hash || content_category != self.last_content_category;
+
+        if content_category == ContentCategory::Audio {
+            if self.audio_player.is_none() || needs_update {
+                let audio_bytes = self
+                    .response
+                    .read(cx)
+                    .data
+                    .as_ref()
+                    .map(|d| d.body_bytes.clone())
+                    .unwrap_or_default();
+                let content_type_str = self
+                    .response
+                    .read(cx)
+                    .data
+                    .as_ref()
+                    .and_then(|d| d.content_type.clone())
+                    .unwrap_or_default();
+
+                if !audio_bytes.is_empty() {
+                    let player = cx.new(|cx| AudioPlayer::new(audio_bytes, content_type_str, cx));
+                    self.audio_player = Some(player);
+                }
+
+                self.last_body_hash = current_hash;
+                self.last_content_category = content_category;
+            }
+            return;
+        }
+
+        // Clear audio player if switching away from audio
+        if self.audio_player.is_some() && content_category != ContentCategory::Audio {
+            self.audio_player = None;
+        }
 
         if self.body_display.is_none() || needs_update {
             let lang = content_category.language();
@@ -225,7 +261,7 @@ impl ResponseView {
         let content_category = data.content_category();
         let is_binary = matches!(
             content_category,
-            ContentCategory::Image | ContentCategory::Binary
+            ContentCategory::Image | ContentCategory::Binary | ContentCategory::Audio
         );
 
         let save_content = match self.active_tab {
@@ -272,6 +308,24 @@ impl ResponseView {
                         "svg"
                     } else {
                         "png"
+                    }
+                }
+                ContentCategory::Audio => {
+                    let ct = data.content_type.as_deref().unwrap_or("");
+                    if ct.contains("mp3") || ct.contains("mpeg") {
+                        "mp3"
+                    } else if ct.contains("wav") {
+                        "wav"
+                    } else if ct.contains("ogg") {
+                        "ogg"
+                    } else if ct.contains("flac") {
+                        "flac"
+                    } else if ct.contains("aac") {
+                        "aac"
+                    } else if ct.contains("webm") {
+                        "webm"
+                    } else {
+                        "mp3"
                     }
                 }
                 ContentCategory::Binary => "bin",
@@ -678,7 +732,7 @@ impl ResponseView {
                     ),
             )
             .child(match self.active_tab {
-                ResponseTab::Body => self.render_body_tab(theme, data).into_any_element(),
+                ResponseTab::Body => self.render_body_tab(theme, data, cx).into_any_element(),
                 ResponseTab::Raw => self.render_raw_tab(theme).into_any_element(),
                 ResponseTab::Headers => self.render_headers_tab(theme, data, cx).into_any_element(),
             })
@@ -689,6 +743,7 @@ impl ResponseView {
         &self,
         theme: &gpui_component::theme::ThemeColor,
         data: &ResponseData,
+        _cx: &Context<Self>,
     ) -> impl IntoElement {
         let content_type = data.content_category();
 
@@ -762,6 +817,44 @@ impl ResponseView {
                     )
                     .into_any_element();
             }
+        }
+
+        if content_type == ContentCategory::Audio {
+            if !data.body_bytes.is_empty() {
+                if let Some(ref player) = self.audio_player {
+                    return div()
+                        .id("body-audio-container")
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .w_full()
+                        .overflow_hidden()
+                        .child(player.clone())
+                        .into_any_element();
+                }
+            }
+
+            return div()
+                .id("body-audio-placeholder")
+                .flex()
+                .flex_col()
+                .flex_1()
+                .w_full()
+                .h_full()
+                .items_center()
+                .justify_center()
+                .bg(theme.muted)
+                .child(
+                    div()
+                        .text_color(theme.muted_foreground)
+                        .text_size(px(12.0))
+                        .child(format!(
+                            "Audio ({}) - {} bytes",
+                            data.content_type.as_deref().unwrap_or("unknown"),
+                            data.body_size_bytes
+                        )),
+                )
+                .into_any_element();
         }
 
         // For text/JSON/HTML/XML, show the pretty-formatted editor

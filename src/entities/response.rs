@@ -45,6 +45,7 @@ pub enum ContentCategory {
     Html,
     Xml,
     Image,
+    Audio,
     #[default]
     Text,
     Binary,
@@ -58,6 +59,7 @@ impl ContentCategory {
             ContentCategory::Html => "html",
             ContentCategory::Xml => "xml",
             ContentCategory::Image => "text",
+            ContentCategory::Audio => "text",
             ContentCategory::Text => "text",
             ContentCategory::Binary => "text",
         }
@@ -70,6 +72,7 @@ impl ContentCategory {
             ContentCategory::Html => "HTML",
             ContentCategory::Xml => "XML",
             ContentCategory::Image => "Image",
+            ContentCategory::Audio => "Audio",
             ContentCategory::Text => "Text",
             ContentCategory::Binary => "Binary",
         }
@@ -131,6 +134,72 @@ impl Default for ResponseData {
 
 #[allow(dead_code)]
 impl ResponseData {
+    fn looks_like_audio(bytes: &[u8]) -> bool {
+        // MP3 with ID3 tag
+        if bytes.starts_with(b"ID3") {
+            return true;
+        }
+
+        // MP3/AAC ADTS frame sync
+        if bytes.len() > 1 && bytes[0] == 0xFF && (bytes[1] & 0xF0) == 0xF0 {
+            return true;
+        }
+
+        // WAV
+        if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WAVE" {
+            return true;
+        }
+
+        // OGG container (often Vorbis/Opus audio)
+        if bytes.starts_with(b"OggS") {
+            return true;
+        }
+
+        // FLAC
+        if bytes.starts_with(b"fLaC") {
+            return true;
+        }
+
+        // MP4/M4A family
+        if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
+            let brand = &bytes[8..12];
+            if brand == b"M4A " || brand == b"M4B " || brand == b"isom" || brand == b"mp42" {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    fn looks_like_image(bytes: &[u8]) -> bool {
+        bytes.starts_with(b"\x89PNG\r\n\x1A\n")
+            || bytes.starts_with(b"\xFF\xD8\xFF")
+            || bytes.starts_with(b"GIF87a")
+            || bytes.starts_with(b"GIF89a")
+            || bytes.starts_with(b"RIFF") && bytes.len() >= 12 && &bytes[8..12] == b"WEBP"
+            || bytes.starts_with(b"BM")
+    }
+
+    fn looks_like_text(bytes: &[u8]) -> bool {
+        if bytes.is_empty() {
+            return true;
+        }
+
+        let sample_len = bytes.len().min(512);
+        let sample = &bytes[..sample_len];
+
+        if std::str::from_utf8(sample).is_ok() {
+            return true;
+        }
+
+        let printable = sample
+            .iter()
+            .filter(|&&b| b == b'\n' || b == b'\r' || b == b'\t' || (0x20..=0x7E).contains(&b))
+            .count();
+
+        printable * 100 / sample_len >= 90
+    }
+
     /// Create a new ResponseData with computed hash
     pub fn new(
         status_code: u16,
@@ -171,22 +240,44 @@ impl ResponseData {
 
     /// Detect content category from content-type header
     pub fn content_category(&self) -> ContentCategory {
-        let ct = self.content_type.as_deref().unwrap_or("").to_lowercase();
+        let ct = self
+            .content_type
+            .as_deref()
+            .unwrap_or("")
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
 
-        if ct.contains("application/json") || ct.contains("text/json") {
+        if ct.contains("application/json") || ct.contains("text/json") || ct.ends_with("+json") {
             ContentCategory::Json
         } else if ct.contains("text/html") {
             ContentCategory::Html
-        } else if ct.contains("application/xml") || ct.contains("text/xml") {
+        } else if ct.contains("application/xml") || ct.contains("text/xml") || ct.ends_with("+xml")
+        {
             ContentCategory::Xml
         } else if ct.starts_with("image/") {
+            ContentCategory::Image
+        } else if ct.starts_with("audio/") {
+            ContentCategory::Audio
+        } else if Self::looks_like_audio(&self.body_bytes) {
+            ContentCategory::Audio
+        } else if Self::looks_like_image(&self.body_bytes) {
             ContentCategory::Image
         } else if ct.starts_with("text/")
             || ct.contains("javascript")
             || ct.contains("css")
             || ct.is_empty()
         {
-            ContentCategory::Text
+            if ct.is_empty()
+                && !self.body_bytes.is_empty()
+                && !Self::looks_like_text(&self.body_bytes)
+            {
+                ContentCategory::Binary
+            } else {
+                ContentCategory::Text
+            }
         } else {
             ContentCategory::Binary
         }
@@ -341,3 +432,44 @@ impl ResponseEntity {
 }
 
 impl EventEmitter<ResponseEvent> for ResponseEntity {}
+
+#[cfg(test)]
+mod tests {
+    use super::{ContentCategory, ResponseData};
+    use std::collections::HashMap;
+
+    fn response_with(content_type: Option<&str>, body_bytes: Vec<u8>) -> ResponseData {
+        let body = String::from_utf8_lossy(&body_bytes).to_string();
+        ResponseData::new(
+            200,
+            "OK".to_string(),
+            HashMap::new(),
+            body,
+            body_bytes,
+            0,
+            0,
+            content_type.map(str::to_string),
+        )
+    }
+
+    #[test]
+    fn classifies_audio_from_content_type() {
+        let data = response_with(Some("audio/mpeg"), b"not-important".to_vec());
+        assert_eq!(data.content_category(), ContentCategory::Audio);
+    }
+
+    #[test]
+    fn classifies_audio_from_magic_bytes_when_header_is_generic() {
+        let data = response_with(
+            Some("application/octet-stream"),
+            b"ID3\x04\x00\x00\x00\x00\x00\x21".to_vec(),
+        );
+        assert_eq!(data.content_category(), ContentCategory::Audio);
+    }
+
+    #[test]
+    fn classifies_unknown_non_text_without_header_as_binary() {
+        let data = response_with(None, vec![0x00, 0x9F, 0x92, 0x00, 0xFF]);
+        assert_eq!(data.content_category(), ContentCategory::Binary);
+    }
+}

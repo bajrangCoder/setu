@@ -46,6 +46,11 @@ pub enum IconName {
     FolderPlus,
     Star,
     StarFilled,
+    Play,
+    Pause,
+    Square,
+    Volume2,
+    VolumeX,
 }
 
 impl IconNamed for IconName {
@@ -90,6 +95,11 @@ impl IconNamed for IconName {
             Self::FolderPlus => "icons/folder-plus.svg",
             Self::Star => "icons/star.svg",
             Self::StarFilled => "icons/star-filled.svg",
+            Self::Play => "icons/play.svg",
+            Self::Pause => "icons/pause.svg",
+            Self::Square => "icons/square.svg",
+            Self::Volume2 => "icons/volume-2.svg",
+            Self::VolumeX => "icons/volume-x.svg",
         }
         .into()
     }
