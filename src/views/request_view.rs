@@ -68,7 +68,7 @@ impl RequestView {
             active_tab: RequestTab::Body,
             body_editor: None,
             body_type: initial_body_type,
-            last_applied_body_type: BodyType::None,
+            last_applied_body_type: initial_body_type,
             body_type_selector: None,
             form_data_editor: None,
             multipart_form_data_editor: None,

@@ -902,40 +902,69 @@ impl MainView {
         if let Some(current_tab) = self.active_tab() {
             let old_request = current_tab.request.clone();
             let old_url_input = current_tab.url_input.clone();
-            let old_method_dropdown = current_tab.method_dropdown.clone();
             let old_name = current_tab.name.clone();
             let old_request_view = current_tab.request_view.clone();
 
-            let new_method = old_method_dropdown.read(cx).method();
             let old_body_type = old_request_view.read(cx).get_body_type();
-
+            let old_method = old_request.read(cx).method();
             let old_headers: Vec<_> = old_request.read(cx).headers().to_vec();
             let old_body = old_request.read(cx).body().clone();
-
-            let new_request = cx.new(|_| RequestEntity::new());
             let new_response = cx.new(|_| ResponseEntity::new());
-            let new_method_dropdown = cx.new(|_| MethodDropdownState::new(new_method));
 
-            let new_url_input = if let Some(old_url) = old_url_input {
-                let url_text = old_url.read(cx).text().to_string();
+            let url_text = if let Some(ref old_url) = old_url_input {
+                old_url.read(cx).text().to_string()
+            } else {
+                old_request.read(cx).url().to_string()
+            };
+            let duplicated_url = url_text.clone();
+
+            let body_content: Option<String> = match &old_body {
+                RequestBody::Json(content) | RequestBody::Text(content) => {
+                    if content.is_empty() {
+                        None
+                    } else {
+                        Some(content.clone())
+                    }
+                }
+                RequestBody::None | RequestBody::FormData(_) | RequestBody::MultipartFormData(_) => {
+                    None
+                }
+            };
+
+            let form_data = match &old_body {
+                RequestBody::FormData(data) => Some(data.clone()),
+                _ => None,
+            };
+
+            let multipart_data = match &old_body {
+                RequestBody::MultipartFormData(fields) => Some(fields.clone()),
+                _ => None,
+            };
+
+            let new_request = cx.new(|_| {
+                let mut req = RequestEntity::new().with_method(old_method).with_headers(old_headers);
+                req.data.url = url_text;
+                req.data.body = old_body;
+                req
+            });
+            let new_method_dropdown = cx.new(|_| MethodDropdownState::new(old_method));
+
+            let new_url_input = if old_url_input.is_some() {
                 Some(cx.new(|cx| {
                     InputState::new(window, cx)
                         .placeholder("Enter request URL...")
-                        .default_value(&url_text)
+                        .default_value(&duplicated_url)
                 }))
             } else {
                 None
             };
 
-            new_request.update(cx, |new_req, cx| {
-                for header in old_headers {
-                    new_req.add_header(header, cx);
-                }
-                new_req.set_body(old_body, cx);
+            let new_request_view = cx.new(|cx| {
+                RequestView::new(new_request.clone(), old_body_type, cx)
+                    .with_initial_body_content(body_content)
+                    .with_initial_form_data(form_data)
+                    .with_initial_multipart_data(multipart_data)
             });
-
-            let new_request_view =
-                cx.new(|cx| RequestView::new(new_request.clone(), old_body_type, cx));
             let new_response_view = cx.new(|cx| ResponseView::new(new_response.clone(), cx));
 
             self.next_tab_id += 1;
