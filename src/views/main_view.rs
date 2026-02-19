@@ -61,6 +61,7 @@ pub struct MainView {
     history_filter: HistoryFilter,
     history_group_by: HistoryGroupBy,
     focus_handle: FocusHandle,
+    pending_window_command: Option<CommandId>,
 }
 
 impl MainView {
@@ -112,6 +113,7 @@ impl MainView {
             history_filter: HistoryFilter::All,
             history_group_by: HistoryGroupBy::Time,
             focus_handle: cx.focus_handle(),
+            pending_window_command: None,
         }
     }
 
@@ -820,6 +822,14 @@ impl MainView {
             CommandId::CloseOtherTabs => self.close_current_other_tabs(cx),
             CommandId::NextTab => self.next_tab(cx),
             CommandId::PreviousTab => self.previous_tab(cx),
+            CommandId::GoToTab1 => self.go_to_tab(0, cx),
+            CommandId::GoToTab2 => self.go_to_tab(1, cx),
+            CommandId::GoToTab3 => self.go_to_tab(2, cx),
+            CommandId::GoToTab4 => self.go_to_tab(3, cx),
+            CommandId::GoToTab5 => self.go_to_tab(4, cx),
+            CommandId::GoToTab6 => self.go_to_tab(5, cx),
+            CommandId::GoToTab7 => self.go_to_tab(6, cx),
+            CommandId::GoToTab8 => self.go_to_tab(7, cx),
             CommandId::GoToLastTab => self.go_to_last_tab(cx),
             CommandId::ToggleSidebar => self.toggle_sidebar(cx),
             CommandId::SetMethodGet => self.set_method(HttpMethod::Get, cx),
@@ -851,7 +861,8 @@ impl MainView {
                 self.switch_to_response_tab(crate::views::response_view::ResponseTab::Headers, cx);
             }
             CommandId::DuplicateRequest | CommandId::FocusUrlBar => {
-                // These need window access, handled separately
+                self.pending_window_command = Some(cmd_id);
+                cx.notify();
             }
         }
     }
@@ -926,9 +937,9 @@ impl MainView {
                         Some(content.clone())
                     }
                 }
-                RequestBody::None | RequestBody::FormData(_) | RequestBody::MultipartFormData(_) => {
-                    None
-                }
+                RequestBody::None
+                | RequestBody::FormData(_)
+                | RequestBody::MultipartFormData(_) => None,
             };
 
             let form_data = match &old_body {
@@ -942,7 +953,9 @@ impl MainView {
             };
 
             let new_request = cx.new(|_| {
-                let mut req = RequestEntity::new().with_method(old_method).with_headers(old_headers);
+                let mut req = RequestEntity::new()
+                    .with_method(old_method)
+                    .with_headers(old_headers);
                 req.data.url = url_text;
                 req.data.body = old_body;
                 req
@@ -1041,6 +1054,14 @@ impl Focusable for MainView {
 
 impl Render for MainView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(cmd_id) = self.pending_window_command.take() {
+            match cmd_id {
+                CommandId::DuplicateRequest => self.duplicate_request(window, cx),
+                CommandId::FocusUrlBar => self.focus_url_bar(window, cx),
+                _ => {}
+            }
+        }
+
         // Ensure URL input is initialized for the active tab
         self.ensure_url_input(self.active_tab_index, window, cx);
         // Ensure sidebar search inputs are initialized

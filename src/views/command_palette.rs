@@ -30,6 +30,14 @@ pub enum CommandId {
     CloseOtherTabs,
     NextTab,
     PreviousTab,
+    GoToTab1,
+    GoToTab2,
+    GoToTab3,
+    GoToTab4,
+    GoToTab5,
+    GoToTab6,
+    GoToTab7,
+    GoToTab8,
     GoToLastTab,
     SwitchToBodyTab,
     SwitchToParamsTab,
@@ -86,6 +94,14 @@ pub fn default_commands() -> Vec<Command> {
         Command::new(CommandId::NextTab, "Next Tab", IconName::ChevronDown).with_shortcut("⌃⇥"),
         Command::new(CommandId::PreviousTab, "Previous Tab", IconName::ChevronUp)
             .with_shortcut("⌃⇧⇥"),
+        Command::new(CommandId::GoToTab1, "Go to Tab 1", IconName::CircleDot).with_shortcut("⌘1"),
+        Command::new(CommandId::GoToTab2, "Go to Tab 2", IconName::CircleDot).with_shortcut("⌘2"),
+        Command::new(CommandId::GoToTab3, "Go to Tab 3", IconName::CircleDot).with_shortcut("⌘3"),
+        Command::new(CommandId::GoToTab4, "Go to Tab 4", IconName::CircleDot).with_shortcut("⌘4"),
+        Command::new(CommandId::GoToTab5, "Go to Tab 5", IconName::CircleDot).with_shortcut("⌘5"),
+        Command::new(CommandId::GoToTab6, "Go to Tab 6", IconName::CircleDot).with_shortcut("⌘6"),
+        Command::new(CommandId::GoToTab7, "Go to Tab 7", IconName::CircleDot).with_shortcut("⌘7"),
+        Command::new(CommandId::GoToTab8, "Go to Tab 8", IconName::CircleDot).with_shortcut("⌘8"),
         Command::new(
             CommandId::GoToLastTab,
             "Go to Last Tab",
@@ -190,6 +206,8 @@ pub enum CommandPaletteEvent {
 pub struct CommandPaletteView {
     is_open: bool,
     commands: Vec<Command>,
+    command_labels_lower: Vec<String>,
+    filtered_indices: Vec<usize>,
     selected_index: usize,
     focus_handle: FocusHandle,
     input_state: Option<Entity<InputState>>,
@@ -199,9 +217,18 @@ pub struct CommandPaletteView {
 
 impl CommandPaletteView {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let commands = default_commands();
+        let command_labels_lower = commands
+            .iter()
+            .map(|command| command.label.to_ascii_lowercase())
+            .collect::<Vec<_>>();
+        let filtered_indices = (0..commands.len()).collect::<Vec<_>>();
+
         Self {
             is_open: false,
-            commands: default_commands(),
+            commands,
+            command_labels_lower,
+            filtered_indices,
             selected_index: 0,
             focus_handle: cx.focus_handle(),
             input_state: None,
@@ -219,6 +246,7 @@ impl CommandPaletteView {
                 if matches!(event, InputEvent::Change) {
                     this.query = state.read(cx).text().to_string();
                     this.selected_index = 0;
+                    this.refresh_filtered_indices();
                     cx.notify();
                 }
             })
@@ -233,11 +261,12 @@ impl CommandPaletteView {
         if self.is_open {
             self.query.clear();
             self.selected_index = 0;
+            self.refresh_filtered_indices();
             self.scroll_handle = ScrollHandle::new();
-            self.input_state = None;
             self.ensure_input_state(window, cx);
             if let Some(ref input) = self.input_state {
                 input.update(cx, |state, cx| {
+                    state.set_value(String::new(), window, cx);
                     state.focus(window, cx);
                 });
             }
@@ -250,22 +279,31 @@ impl CommandPaletteView {
         cx.notify();
     }
 
-    fn filtered_commands(&self) -> Vec<&Command> {
-        if self.query.is_empty() {
-            self.commands.iter().collect()
-        } else {
-            let query_lower = self.query.to_lowercase();
-            self.commands
-                .iter()
-                .filter(|cmd| cmd.label.to_lowercase().contains(&query_lower))
-                .collect()
+    fn refresh_filtered_indices(&mut self) {
+        let query = self.query.trim();
+        self.filtered_indices.clear();
+
+        if query.is_empty() {
+            self.filtered_indices.extend(0..self.commands.len());
+            return;
         }
+
+        let query_lower = query.to_ascii_lowercase();
+        self.filtered_indices
+            .extend(self.command_labels_lower.iter().enumerate().filter_map(
+                |(index, label_lower)| {
+                    if label_lower.contains(&query_lower) {
+                        Some(index)
+                    } else {
+                        None
+                    }
+                },
+            ));
     }
 
     pub fn select_next(&mut self) -> bool {
-        let filtered = self.filtered_commands();
-        if !filtered.is_empty() {
-            self.selected_index = (self.selected_index + 1) % filtered.len();
+        if !self.filtered_indices.is_empty() {
+            self.selected_index = (self.selected_index + 1) % self.filtered_indices.len();
             self.scroll_handle.scroll_to_item(self.selected_index);
             return true;
         }
@@ -273,10 +311,9 @@ impl CommandPaletteView {
     }
 
     pub fn select_prev(&mut self) -> bool {
-        let filtered = self.filtered_commands();
-        if !filtered.is_empty() {
+        if !self.filtered_indices.is_empty() {
             self.selected_index = if self.selected_index == 0 {
-                filtered.len() - 1
+                self.filtered_indices.len() - 1
             } else {
                 self.selected_index - 1
             };
@@ -287,9 +324,8 @@ impl CommandPaletteView {
     }
 
     fn execute_selected(&mut self, cx: &mut Context<Self>) {
-        let filtered = self.filtered_commands();
-        if let Some(cmd) = filtered.get(self.selected_index) {
-            let cmd_id = cmd.id;
+        if let Some(command_index) = self.filtered_indices.get(self.selected_index) {
+            let cmd_id = self.commands[*command_index].id;
             self.is_open = false;
             cx.emit(CommandPaletteEvent::ExecuteCommand(cmd_id));
             cx.notify();
@@ -321,8 +357,9 @@ impl Render for CommandPaletteView {
 
         let theme = cx.theme();
 
-        let filtered = self.filtered_commands();
-        let selected_index = self.selected_index.min(filtered.len().saturating_sub(1));
+        let selected_index = self
+            .selected_index
+            .min(self.filtered_indices.len().saturating_sub(1));
 
         let input_element = self
             .input_state
@@ -407,63 +444,66 @@ impl Render for CommandPaletteView {
                             .track_scroll(&self.scroll_handle)
                             .py(px(6.0))
                             .max_h(px(350.0))
-                            .children(filtered.into_iter().enumerate().map(|(i, cmd)| {
-                                let is_selected = i == selected_index;
-                                let cmd_id = cmd.id;
-                                let item_id: ElementId =
-                                    SharedString::from(format!("cmd-{}", i)).into();
+                            .children(self.filtered_indices.iter().enumerate().map(
+                                |(i, cmd_index)| {
+                                    let cmd = &self.commands[*cmd_index];
+                                    let is_selected = i == selected_index;
+                                    let cmd_id = cmd.id;
+                                    let item_id: ElementId =
+                                        SharedString::from(format!("cmd-{}", i)).into();
 
-                                div()
-                                    .id(item_id)
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(12.0))
-                                    .px(px(14.0))
-                                    .py(px(10.0))
-                                    .mx(px(6.0))
-                                    .rounded(px(8.0))
-                                    .cursor_pointer()
-                                    .when(is_selected, |s| s.bg(item_bg))
-                                    .hover(|s| s.bg(item_bg))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.execute_command(cmd_id, cx);
-                                    }))
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .w(px(28.0))
-                                            .h(px(28.0))
-                                            .rounded(px(6.0))
-                                            .bg(theme.secondary.opacity(0.5))
-                                            .child(
-                                                Icon::new(cmd.icon)
-                                                    .xsmall()
-                                                    .text_color(theme.primary),
-                                            ),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .text_color(theme.foreground)
-                                            .text_size(px(14.0))
-                                            .child(cmd.label),
-                                    )
-                                    .when_some(cmd.shortcut, |el, shortcut| {
-                                        el.child(
+                                    div()
+                                        .id(item_id)
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(12.0))
+                                        .px(px(14.0))
+                                        .py(px(10.0))
+                                        .mx(px(6.0))
+                                        .rounded(px(8.0))
+                                        .cursor_pointer()
+                                        .when(is_selected, |s| s.bg(item_bg))
+                                        .hover(|s| s.bg(item_bg))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.execute_command(cmd_id, cx);
+                                        }))
+                                        .child(
                                             div()
-                                                .px(px(8.0))
-                                                .py(px(4.0))
-                                                .bg(theme.secondary)
-                                                .rounded(px(5.0))
-                                                .text_color(theme.muted_foreground)
-                                                .text_size(px(11.0))
-                                                .font_weight(gpui::FontWeight::MEDIUM)
-                                                .child(shortcut),
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .w(px(28.0))
+                                                .h(px(28.0))
+                                                .rounded(px(6.0))
+                                                .bg(theme.secondary.opacity(0.5))
+                                                .child(
+                                                    Icon::new(cmd.icon)
+                                                        .xsmall()
+                                                        .text_color(theme.primary),
+                                                ),
                                         )
-                                    })
-                            })),
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .text_color(theme.foreground)
+                                                .text_size(px(14.0))
+                                                .child(cmd.label),
+                                        )
+                                        .when_some(cmd.shortcut, |el, shortcut| {
+                                            el.child(
+                                                div()
+                                                    .px(px(8.0))
+                                                    .py(px(4.0))
+                                                    .bg(theme.secondary)
+                                                    .rounded(px(5.0))
+                                                    .text_color(theme.muted_foreground)
+                                                    .text_size(px(11.0))
+                                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                                    .child(shortcut),
+                                            )
+                                        })
+                                },
+                            )),
                     )
                     .child(
                         div()
