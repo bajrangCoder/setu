@@ -4,9 +4,11 @@ use gpui::{
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputState};
-use gpui_component::resizable::{resizable_panel, v_resizable};
+use gpui_component::resizable::{h_resizable, resizable_panel, v_resizable};
 use gpui_component::v_flex;
+use gpui_component::Icon;
 use gpui_component::Root;
+use gpui_component::Sizable;
 use gpui_component::WindowExt;
 use uuid::Uuid;
 
@@ -20,6 +22,7 @@ use crate::entities::{
     ResponseData, ResponseEntity,
 };
 use crate::http::{HttpClient, InFlightRequest};
+use crate::icons::IconName;
 use crate::views::request_view::RequestView;
 use crate::views::response_view::ResponseView;
 use crate::views::{CommandId, CommandPaletteEvent, CommandPaletteView};
@@ -35,6 +38,12 @@ pub struct TabState {
     pub request_view: Entity<RequestView>,
     pub response_view: Entity<ResponseView>,
     pub in_flight_request: Option<InFlightRequest>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RequestResponseLayout {
+    Stacked,
+    SideBySide,
 }
 
 /// Main application view
@@ -60,6 +69,7 @@ pub struct MainView {
     collections_search: Option<Entity<InputState>>,
     history_filter: HistoryFilter,
     history_group_by: HistoryGroupBy,
+    request_response_layout: RequestResponseLayout,
     focus_handle: FocusHandle,
     pending_window_command: Option<CommandId>,
 }
@@ -112,6 +122,7 @@ impl MainView {
             collections_search: None,
             history_filter: HistoryFilter::All,
             history_group_by: HistoryGroupBy::Time,
+            request_response_layout: RequestResponseLayout::Stacked,
             focus_handle: cx.focus_handle(),
             pending_window_command: None,
         }
@@ -806,6 +817,25 @@ impl MainView {
         cx.notify();
     }
 
+    fn toggle_request_response_layout(&mut self, cx: &mut Context<Self>) {
+        let next_layout = match self.request_response_layout {
+            RequestResponseLayout::Stacked => RequestResponseLayout::SideBySide,
+            RequestResponseLayout::SideBySide => RequestResponseLayout::Stacked,
+        };
+        self.set_request_response_layout(next_layout, cx);
+    }
+
+    fn set_request_response_layout(
+        &mut self,
+        layout: RequestResponseLayout,
+        cx: &mut Context<Self>,
+    ) {
+        if self.request_response_layout != layout {
+            self.request_response_layout = layout;
+            cx.notify();
+        }
+    }
+
     pub fn toggle_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.command_palette.update(cx, |palette, cx| {
             palette.toggle(window, cx);
@@ -832,6 +862,7 @@ impl MainView {
             CommandId::GoToTab8 => self.go_to_tab(7, cx),
             CommandId::GoToLastTab => self.go_to_last_tab(cx),
             CommandId::ToggleSidebar => self.toggle_sidebar(cx),
+            CommandId::ToggleRequestResponseLayout => self.toggle_request_response_layout(cx),
             CommandId::SetMethodGet => self.set_method(HttpMethod::Get, cx),
             CommandId::SetMethodPost => self.set_method(HttpMethod::Post, cx),
             CommandId::SetMethodPut => self.set_method(HttpMethod::Put, cx),
@@ -1174,6 +1205,11 @@ impl Render for MainView {
             .on_action(cx.listener(|this, _: &ToggleSidebar, _window, cx| {
                 this.toggle_sidebar(cx);
             }))
+            .on_action(
+                cx.listener(|this, _: &ToggleRequestResponseLayout, _window, cx| {
+                    this.toggle_request_response_layout(cx);
+                }),
+            )
             .on_action(cx.listener(|this, _: &ToggleCommandPalette, window, cx| {
                 this.toggle_command_palette(window, cx);
             }))
@@ -1352,47 +1388,19 @@ impl Render for MainView {
                         self.tab_scroll_handle.clone(),
                     ))
                     // Content - vertical resizable split between request and response panels
-                    .child(
-                        div().flex_1().flex().flex_col().overflow_hidden().child(
-                            v_resizable("request-response-split")
-                                // Request panel with URL bar
-                                .child(
-                                    resizable_panel()
-                                        .size(px(400.0))
-                                        .size_range(px(150.0)..px(600.0))
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .flex_col()
-                                                .size_full()
-                                                .overflow_hidden()
-                                                .child(self.render_request_panel(
-                                                    url_input,
-                                                    method_dropdown,
-                                                    request_entity,
-                                                    is_loading,
-                                                    this_for_send,
-                                                    request_view,
-                                                )),
-                                        ),
-                                )
-                                // Response panel
-                                .child(
-                                    resizable_panel()
-                                        .size_range(px(150.0)..gpui::Pixels::MAX)
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .flex_col()
-                                                .size_full()
-                                                .overflow_hidden()
-                                                .child(response_view.clone()),
-                                        ),
-                                ),
+                    .child(div().flex_1().flex().flex_col().overflow_hidden().child(
+                        self.render_request_response_split(
+                            url_input,
+                            method_dropdown,
+                            request_entity,
+                            is_loading,
+                            this_for_send,
+                            request_view,
+                            response_view,
                         ),
-                    )
+                    ))
                     // Bottom shortcuts bar
-                    .child(self.render_shortcuts(&theme)),
+                    .child(self.render_shortcuts(&theme, this.clone())),
             )
             // Command palette overlay
             .child(self.command_palette.clone())
@@ -1448,6 +1456,61 @@ impl MainView {
             .child(request_view.clone())
     }
 
+    fn render_request_response_split(
+        &self,
+        url_input: Option<Entity<InputState>>,
+        method_dropdown: Entity<MethodDropdownState>,
+        request: Entity<RequestEntity>,
+        is_loading: bool,
+        this: Entity<MainView>,
+        request_view: Entity<RequestView>,
+        response_view: Entity<ResponseView>,
+    ) -> impl IntoElement {
+        let request_panel = resizable_panel()
+            .size(match self.request_response_layout {
+                RequestResponseLayout::Stacked => px(400.0),
+                RequestResponseLayout::SideBySide => px(520.0),
+            })
+            .size_range(
+                px(150.0)..match self.request_response_layout {
+                    RequestResponseLayout::Stacked => px(600.0),
+                    RequestResponseLayout::SideBySide => px(900.0),
+                },
+            )
+            .child(div().flex().flex_col().size_full().overflow_hidden().child(
+                self.render_request_panel(
+                    url_input,
+                    method_dropdown,
+                    request,
+                    is_loading,
+                    this,
+                    request_view,
+                ),
+            ));
+
+        let response_panel = resizable_panel()
+            .size_range(px(150.0)..gpui::Pixels::MAX)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .size_full()
+                    .overflow_hidden()
+                    .child(response_view),
+            );
+
+        match self.request_response_layout {
+            RequestResponseLayout::Stacked => v_resizable("request-response-split-stacked")
+                .child(request_panel)
+                .child(response_panel)
+                .into_any_element(),
+            RequestResponseLayout::SideBySide => h_resizable("request-response-split-side-by-side")
+                .child(request_panel)
+                .child(response_panel)
+                .into_any_element(),
+        }
+    }
+
     fn render_header(&self, theme: &gpui_component::theme::ThemeColor) -> impl IntoElement {
         div()
             .flex()
@@ -1475,50 +1538,82 @@ impl MainView {
             )
     }
 
-    fn render_shortcuts(&self, theme: &gpui_component::theme::ThemeColor) -> impl IntoElement {
+    fn render_shortcuts(
+        &self,
+        theme: &gpui_component::theme::ThemeColor,
+        this: Entity<MainView>,
+    ) -> impl IntoElement {
+        let (button_id, button_icon, tooltip) = match self.request_response_layout {
+            RequestResponseLayout::Stacked => (
+                "footer-layout-side-by-side",
+                IconName::LayoutSplit,
+                "Switch to side by side layout",
+            ),
+            RequestResponseLayout::SideBySide => (
+                "footer-layout-stacked",
+                IconName::LayoutStacked,
+                "Switch to stacked layout",
+            ),
+        };
+
         div()
             .flex()
             .flex_row()
             .items_center()
-            .justify_center()
-            .gap(px(16.0))
-            .h(px(32.0))
+            .justify_between()
+            .gap(px(12.0))
+            .h(px(36.0))
+            .px(px(12.0))
             .border_t_1()
             .border_color(theme.border)
             .bg(theme.secondary)
-            .children(
-                [
-                    ("Send", "⌘↵"),
-                    ("New", "⌘N"),
-                    ("Close", "⌘W"),
-                    ("Next Tab", "⌃⇥"),
-                    ("URL", "⌘L"),
-                    ("Sidebar", "⌘B"),
-                    ("Commands", "⌘K"),
-                ]
-                .into_iter()
-                .map(|(label, shortcut)| {
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(4.0))
-                        .child(
-                            div()
-                                .text_color(theme.muted_foreground)
-                                .text_size(px(10.0))
-                                .child(label),
-                        )
-                        .child(
-                            div()
-                                .px(px(4.0))
-                                .py(px(1.0))
-                                .bg(theme.muted)
-                                .rounded(px(2.0))
-                                .text_color(theme.muted_foreground)
-                                .text_size(px(9.0))
-                                .child(shortcut),
-                        )
-                }),
+            .child(
+                div().flex().items_center().gap(px(12.0)).children(
+                    [
+                        ("Send", "⌘↵"),
+                        ("URL", "⌘L"),
+                        ("Tabs", "⌃⇥"),
+                        ("Sidebar", "⌘B"),
+                        ("Commands", "⌘K"),
+                    ]
+                    .into_iter()
+                    .map(|(label, shortcut)| {
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.0))
+                            .child(
+                                div()
+                                    .text_color(theme.muted_foreground)
+                                    .text_size(px(10.0))
+                                    .child(label),
+                            )
+                            .child(
+                                div()
+                                    .px(px(4.0))
+                                    .py(px(1.0))
+                                    .bg(theme.muted)
+                                    .rounded(px(2.0))
+                                    .text_color(theme.muted_foreground)
+                                    .text_size(px(9.0))
+                                    .child(shortcut),
+                            )
+                    }),
+                ),
+            )
+            .child(
+                div().flex().items_center().child(
+                    Button::new(button_id)
+                        .icon(Icon::new(button_icon).size(px(14.0)))
+                        .ghost()
+                        .xsmall()
+                        .tooltip(tooltip)
+                        .on_click(move |_, _, cx| {
+                            this.update(cx, |view, cx| {
+                                view.toggle_request_response_layout(cx);
+                            });
+                        }),
+                ),
             )
     }
 }

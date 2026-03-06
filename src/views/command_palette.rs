@@ -16,6 +16,7 @@ pub enum CommandId {
     NewRequest,
     DuplicateRequest,
     ToggleSidebar,
+    ToggleRequestResponseLayout,
     FocusUrlBar,
     ClearHistory,
     SetMethodGet,
@@ -114,6 +115,11 @@ pub fn default_commands() -> Vec<Command> {
             IconName::PanelLeft,
         )
         .with_shortcut("⌘B"),
+        Command::new(
+            CommandId::ToggleRequestResponseLayout,
+            "Toggle Request/Response Layout",
+            IconName::LayoutSplit,
+        ),
         Command::new(CommandId::FocusUrlBar, "Focus URL Bar", IconName::Link).with_shortcut("⌘L"),
         Command::new(
             CommandId::SwitchToBodyTab,

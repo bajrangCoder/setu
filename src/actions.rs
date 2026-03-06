@@ -47,6 +47,7 @@ actions!(
         // UI actions
         ToggleCommandPalette,
         ToggleSidebar,
+        ToggleRequestResponseLayout,
         ZoomIn,
         ZoomOut,
         ResetZoom,
