@@ -1568,6 +1568,25 @@ impl MainView {
             .border_color(theme.border)
             .bg(theme.secondary)
             .child(
+                Button::new("footer-toggle-sidebar")
+                    .icon(Icon::new(IconName::PanelLeft).size(px(14.0)))
+                    .ghost()
+                    .xsmall()
+                    .tooltip(if self.sidebar_visible {
+                        "Hide sidebar"
+                    } else {
+                        "Show sidebar"
+                    })
+                    .on_click({
+                        let this = this.clone();
+                        move |_, _, cx| {
+                            this.update(cx, |view, cx| {
+                                view.toggle_sidebar(cx);
+                            });
+                        }
+                    }),
+            )
+            .child(
                 div().flex().items_center().gap(px(12.0)).children(
                     [
                         ("Send", "⌘↵"),
