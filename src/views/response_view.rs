@@ -85,8 +85,15 @@ impl ResponseView {
         let (current_hash, content_category, formatted_content) = {
             self.response.update(cx, |resp, _cx| {
                 if let Some(ref mut data) = resp.data {
-                    let formatted = data.formatted_body();
-                    (data.body_hash(), data.content_category(), Some(formatted))
+                    let category = data.content_category();
+                    let formatted = match category {
+                        ContentCategory::Json
+                        | ContentCategory::Html
+                        | ContentCategory::Xml
+                        | ContentCategory::Text => Some(data.formatted_body()),
+                        _ => None,
+                    };
+                    (data.body_hash(), category, formatted)
                 } else {
                     (0, ContentCategory::Text, None)
                 }
@@ -152,12 +159,13 @@ impl ResponseView {
 
     fn ensure_raw_display(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (current_hash, raw_body) = {
-            let resp = self.response.read(cx);
-            if let Some(ref data) = resp.data {
-                (data.body_hash(), Some(data.body.clone()))
-            } else {
-                (0, None)
-            }
+            self.response.update(cx, |resp, _cx| {
+                if let Some(ref mut data) = resp.data {
+                    (data.body_hash(), Some(data.raw_body().to_string()))
+                } else {
+                    (0, None)
+                }
+            })
         };
 
         if self.raw_display.is_none() {
@@ -213,15 +221,12 @@ impl ResponseView {
         crate::utils::trigger_editor_search(editor, window);
     }
 
-    fn copy_response(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let content = self
-            .response
-            .read(cx)
-            .data
-            .as_ref()
-            .map(|d| match self.active_tab {
-                ResponseTab::Body => d.formatted_body_ref().to_string(),
-                ResponseTab::Raw => d.body.clone(),
+    fn copy_response(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let active_tab = self.active_tab;
+        let content = self.response.update(cx, |resp, _cx| {
+            resp.data.as_mut().map(|d| match active_tab {
+                ResponseTab::Body => d.formatted_body().as_ref().clone(),
+                ResponseTab::Raw => d.raw_body().to_string(),
                 ResponseTab::Headers => {
                     let headers_json: Vec<serde_json::Value> = d
                         .headers
@@ -235,7 +240,8 @@ impl ResponseView {
                         .collect();
                     serde_json::to_string(&headers_json).unwrap_or_else(|_| "[]".to_string())
                 }
-            });
+            })
+        });
 
         if let Some(content) = content {
             cx.write_to_clipboard(gpui::ClipboardItem::new_string(content));
@@ -255,82 +261,87 @@ impl ResponseView {
             Bytes(Vec<u8>),
         }
 
-        let resp_data = self.response.read(cx).data.as_ref();
-        let Some(data) = resp_data else { return };
+        let active_tab = self.active_tab;
+        let Some((save_content, default_extension)) = self.response.update(cx, |resp, _cx| {
+            let data = resp.data.as_mut()?;
+            let content_category = data.content_category();
+            let is_binary = matches!(
+                content_category,
+                ContentCategory::Image | ContentCategory::Binary | ContentCategory::Audio
+            );
 
-        let content_category = data.content_category();
-        let is_binary = matches!(
-            content_category,
-            ContentCategory::Image | ContentCategory::Binary | ContentCategory::Audio
-        );
-
-        let save_content = match self.active_tab {
-            ResponseTab::Headers => {
-                let headers_json: Vec<serde_json::Value> = data
-                    .headers
-                    .iter()
-                    .map(|(k, v)| {
-                        serde_json::json!({
-                            "key": k,
-                            "value": v
+            let save_content = match active_tab {
+                ResponseTab::Headers => {
+                    let headers_json: Vec<serde_json::Value> = data
+                        .headers
+                        .iter()
+                        .map(|(k, v)| {
+                            serde_json::json!({
+                                "key": k,
+                                "value": v
+                            })
                         })
-                    })
-                    .collect();
-                SaveContent::Text(
-                    serde_json::to_string_pretty(&headers_json)
-                        .unwrap_or_else(|_| "[]".to_string()),
-                )
-            }
-            _ if is_binary && !data.body_bytes.is_empty() => {
-                SaveContent::Bytes(data.body_bytes.clone())
-            }
-            ResponseTab::Body => SaveContent::Text(data.formatted_body_ref().to_string()),
-            ResponseTab::Raw => SaveContent::Text(data.body.clone()),
-        };
+                        .collect();
+                    SaveContent::Text(
+                        serde_json::to_string_pretty(&headers_json)
+                            .unwrap_or_else(|_| "[]".to_string()),
+                    )
+                }
+                _ if is_binary && !data.body_bytes.is_empty() => {
+                    SaveContent::Bytes(data.body_bytes.clone())
+                }
+                ResponseTab::Body => SaveContent::Text(data.formatted_body().as_ref().clone()),
+                ResponseTab::Raw => SaveContent::Text(data.raw_body().to_string()),
+            };
 
-        let default_extension = match self.active_tab {
-            ResponseTab::Headers => "json",
-            _ => match content_category {
-                ContentCategory::Json => "json",
-                ContentCategory::Xml => "xml",
-                ContentCategory::Html => "html",
-                ContentCategory::Image => {
-                    let ct = data.content_type.as_deref().unwrap_or("");
-                    if ct.contains("jpeg") || ct.contains("jpg") {
-                        "jpg"
-                    } else if ct.contains("gif") {
-                        "gif"
-                    } else if ct.contains("webp") {
-                        "webp"
-                    } else if ct.contains("bmp") {
-                        "bmp"
-                    } else if ct.contains("svg") {
-                        "svg"
-                    } else {
-                        "png"
+            let default_extension = match active_tab {
+                ResponseTab::Headers => "json",
+                _ => match content_category {
+                    ContentCategory::Json => "json",
+                    ContentCategory::Xml => "xml",
+                    ContentCategory::Html => "html",
+                    ContentCategory::Image => {
+                        let ct = data.content_type.as_deref().unwrap_or("");
+                        if ct.contains("jpeg") || ct.contains("jpg") {
+                            "jpg"
+                        } else if ct.contains("gif") {
+                            "gif"
+                        } else if ct.contains("webp") {
+                            "webp"
+                        } else if ct.contains("bmp") {
+                            "bmp"
+                        } else if ct.contains("svg") {
+                            "svg"
+                        } else {
+                            "png"
+                        }
                     }
-                }
-                ContentCategory::Audio => {
-                    let ct = data.content_type.as_deref().unwrap_or("");
-                    if ct.contains("mp3") || ct.contains("mpeg") {
-                        "mp3"
-                    } else if ct.contains("wav") {
-                        "wav"
-                    } else if ct.contains("ogg") {
-                        "ogg"
-                    } else if ct.contains("flac") {
-                        "flac"
-                    } else if ct.contains("aac") {
-                        "aac"
-                    } else if ct.contains("webm") {
-                        "webm"
-                    } else {
-                        "mp3"
+                    ContentCategory::Audio => {
+                        let ct = data.content_type.as_deref().unwrap_or("");
+                        if ct.contains("mp3") || ct.contains("mpeg") {
+                            "mp3"
+                        } else if ct.contains("wav") {
+                            "wav"
+                        } else if ct.contains("ogg") {
+                            "ogg"
+                        } else if ct.contains("flac") {
+                            "flac"
+                        } else if ct.contains("aac") {
+                            "aac"
+                        } else if ct.contains("webm") {
+                            "webm"
+                        } else {
+                            "mp3"
+                        }
                     }
-                }
-                ContentCategory::Binary => "bin",
-                _ => "txt",
-            },
+                    ContentCategory::Binary => "bin",
+                    _ => "txt",
+                },
+            };
+
+            Some((save_content, default_extension))
+        }) else {
+            return;
         };
 
         let default_name = format!("response.{}", default_extension);

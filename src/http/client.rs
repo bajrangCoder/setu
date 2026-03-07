@@ -206,8 +206,11 @@ async fn execute_request(
     let body_bytes = response.bytes().await?.to_vec();
     let body_size_bytes = body_bytes.len();
 
-    // Always convert to string (lossy for binary)
-    let body = String::from_utf8_lossy(&body_bytes).to_string();
+    let body = if ResponseData::should_eagerly_decode_body(content_type.as_deref(), &body_bytes) {
+        String::from_utf8_lossy(&body_bytes).to_string()
+    } else {
+        String::new()
+    };
 
     Ok(ResponseData::new(
         status_code,

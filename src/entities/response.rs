@@ -110,6 +110,9 @@ pub struct ResponseData {
     /// Cached formatted body
     #[serde(skip)]
     cached_formatted_body: Option<Arc<String>>,
+    /// Whether `body` already contains the decoded text representation.
+    #[serde(skip)]
+    body_text_cached: bool,
     /// Hash of body content for efficient change detection
     #[serde(skip)]
     body_hash: u64,
@@ -127,6 +130,7 @@ impl Default for ResponseData {
             duration_ms: 0,
             content_type: None,
             cached_formatted_body: None,
+            body_text_cached: true,
             body_hash: 0,
         }
     }
@@ -211,7 +215,8 @@ impl ResponseData {
         duration_ms: u64,
         content_type: Option<String>,
     ) -> Self {
-        let body_hash = Self::compute_hash(&body);
+        let body_hash = Self::compute_hash(&body_bytes);
+        let body_text_cached = !body.is_empty() || body_bytes.is_empty();
         Self {
             status_code,
             status_text,
@@ -222,27 +227,20 @@ impl ResponseData {
             duration_ms,
             content_type,
             cached_formatted_body: None,
+            body_text_cached,
             body_hash,
         }
     }
 
     /// Compute hash for content change detection
-    fn compute_hash(content: &str) -> u64 {
+    fn compute_hash(content: &[u8]) -> u64 {
         let mut hasher = DefaultHasher::new();
         content.hash(&mut hasher);
         hasher.finish()
     }
 
-    /// Get the body hash for efficient change detection
-    pub fn body_hash(&self) -> u64 {
-        self.body_hash
-    }
-
-    /// Detect content category from content-type header
-    pub fn content_category(&self) -> ContentCategory {
-        let ct = self
-            .content_type
-            .as_deref()
+    fn classify_content(content_type: Option<&str>, body_bytes: &[u8]) -> ContentCategory {
+        let ct = content_type
             .unwrap_or("")
             .split(';')
             .next()
@@ -261,19 +259,16 @@ impl ResponseData {
             ContentCategory::Image
         } else if ct.starts_with("audio/") {
             ContentCategory::Audio
-        } else if Self::looks_like_audio(&self.body_bytes) {
+        } else if Self::looks_like_audio(body_bytes) {
             ContentCategory::Audio
-        } else if Self::looks_like_image(&self.body_bytes) {
+        } else if Self::looks_like_image(body_bytes) {
             ContentCategory::Image
         } else if ct.starts_with("text/")
             || ct.contains("javascript")
             || ct.contains("css")
             || ct.is_empty()
         {
-            if ct.is_empty()
-                && !self.body_bytes.is_empty()
-                && !Self::looks_like_text(&self.body_bytes)
-            {
+            if ct.is_empty() && !body_bytes.is_empty() && !Self::looks_like_text(body_bytes) {
                 ContentCategory::Binary
             } else {
                 ContentCategory::Text
@@ -281,6 +276,41 @@ impl ResponseData {
         } else {
             ContentCategory::Binary
         }
+    }
+
+    pub fn should_eagerly_decode_body(content_type: Option<&str>, body_bytes: &[u8]) -> bool {
+        matches!(
+            Self::classify_content(content_type, body_bytes),
+            ContentCategory::Json
+                | ContentCategory::Html
+                | ContentCategory::Xml
+                | ContentCategory::Text
+        )
+    }
+
+    /// Get the body hash for efficient change detection
+    pub fn body_hash(&self) -> u64 {
+        self.body_hash
+    }
+
+    /// Detect content category from content-type header
+    pub fn content_category(&self) -> ContentCategory {
+        Self::classify_content(self.content_type.as_deref(), &self.body_bytes)
+    }
+
+    fn ensure_body_text(&mut self) -> &str {
+        if self.body_text_cached {
+            return &self.body;
+        }
+
+        if !self.body.is_empty() {
+            self.body_text_cached = true;
+            return &self.body;
+        }
+
+        self.body = String::from_utf8_lossy(&self.body_bytes).to_string();
+        self.body_text_cached = true;
+        &self.body
     }
 
     /// Check if response is JSON based on content-type
@@ -308,16 +338,15 @@ impl ResponseData {
             return cached.clone();
         }
 
+        let body = self.ensure_body_text().to_string();
         let formatted = if self.is_json() {
             // Try to pretty-print JSON
-            match serde_json::from_str::<serde_json::Value>(&self.body) {
-                Ok(value) => {
-                    serde_json::to_string_pretty(&value).unwrap_or_else(|_| self.body.clone())
-                }
-                Err(_) => self.body.clone(),
+            match serde_json::from_str::<serde_json::Value>(&body) {
+                Ok(value) => serde_json::to_string_pretty(&value).unwrap_or(body.clone()),
+                Err(_) => body,
             }
         } else {
-            self.body.clone()
+            body
         };
 
         let arc = Arc::new(formatted);
@@ -325,13 +354,8 @@ impl ResponseData {
         arc
     }
 
-    /// Get formatted body without requiring mutable access (returns cached or raw)
-    pub fn formatted_body_ref(&self) -> &str {
-        if let Some(ref cached) = self.cached_formatted_body {
-            cached.as_str()
-        } else {
-            &self.body
-        }
+    pub fn raw_body(&mut self) -> &str {
+        self.ensure_body_text()
     }
 
     /// Get status category (1xx, 2xx, etc.)
@@ -383,9 +407,7 @@ impl ResponseEntity {
         cx.notify();
     }
 
-    pub fn set_response(&mut self, mut data: ResponseData, cx: &mut Context<Self>) {
-        let _ = data.formatted_body();
-
+    pub fn set_response(&mut self, data: ResponseData, cx: &mut Context<Self>) {
         self.state = ResponseState::Success;
         self.data = Some(data);
         cx.emit(ResponseEvent::Received);
