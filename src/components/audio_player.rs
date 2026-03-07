@@ -4,7 +4,8 @@ use std::time::Duration;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, App, Context, ElementId, FocusHandle, Focusable, IntoElement, Render, Styled, Window,
+    canvas, div, px, App, Bounds, Context, FocusHandle, Focusable, IntoElement, KeyDownEvent,
+    MouseButton, MouseDownEvent, Pixels, Point, Render, Styled, Window,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::ActiveTheme;
@@ -14,11 +15,9 @@ use gpui_component::Sizable;
 
 use crate::icons::IconName;
 
-const WAVEFORM_BARS: usize = 48;
 const VOLUME_STEP: f32 = 0.1;
-const TICKER_INTERVAL_MS: u64 = 100;
+const SEEK_STEP_SECS: f32 = 5.0;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackState {
     Stopped,
@@ -27,13 +26,11 @@ pub enum PlaybackState {
     Error,
 }
 
-#[allow(dead_code)]
 struct AudioBackend {
     sink: rodio::Sink,
     _stream: rodio::OutputStream,
 }
 
-#[allow(dead_code)]
 pub struct AudioPlayer {
     audio_bytes: Arc<Vec<u8>>,
     content_type: String,
@@ -44,15 +41,13 @@ pub struct AudioPlayer {
     total_duration: Option<Duration>,
     focus_handle: FocusHandle,
     backend: Option<Arc<Mutex<AudioBackend>>>,
-    _ticker: Option<gpui::Task<()>>,
-    waveform: Arc<Vec<f32>>,
+    progress_bounds: Bounds<Pixels>,
     error_message: Option<String>,
 }
 
 impl AudioPlayer {
     pub fn new(audio_bytes: Vec<u8>, content_type: String, cx: &mut Context<Self>) -> Self {
         let duration = Self::probe_duration(&audio_bytes, &content_type);
-        let waveform = Arc::new(Self::generate_waveform(&audio_bytes, WAVEFORM_BARS));
 
         Self {
             audio_bytes: Arc::new(audio_bytes),
@@ -64,50 +59,14 @@ impl AudioPlayer {
             total_duration: duration,
             focus_handle: cx.focus_handle(),
             backend: None,
-            _ticker: None,
-            waveform,
+            progress_bounds: Bounds::default(),
             error_message: None,
         }
     }
 
-    fn generate_waveform(bytes: &[u8], num_bars: usize) -> Vec<f32> {
-        if bytes.is_empty() || num_bars == 0 {
-            return vec![0.15; num_bars];
-        }
-
-        let chunk_size = bytes.len() / num_bars;
-        if chunk_size == 0 {
-            return vec![0.15; num_bars];
-        }
-
-        let mut bars: Vec<f32> = Vec::with_capacity(num_bars);
-        for i in 0..num_bars {
-            let start = i * chunk_size;
-            let end = ((i + 1) * chunk_size).min(bytes.len());
-
-            let mut sum: u64 = 0;
-            let mut count = 0u64;
-            for &b in &bytes[start..end] {
-                let centered = (b as i16 - 128).unsigned_abs() as u64;
-                sum += centered;
-                count += 1;
-            }
-
-            let avg = if count > 0 {
-                sum as f32 / count as f32
-            } else {
-                0.0
-            };
-            let normalized = (avg / 128.0).clamp(0.0, 1.0);
-            let scaled = 0.08 + normalized * 0.92;
-            bars.push(scaled);
-        }
-
-        bars
-    }
-
     fn probe_duration(bytes: &[u8], _content_type: &str) -> Option<Duration> {
         use rodio::Source;
+
         let cursor = Cursor::new(bytes.to_vec());
         let source = rodio::Decoder::new(cursor).ok()?;
         source.total_duration()
@@ -125,9 +84,7 @@ impl AudioPlayer {
             return false;
         };
         let sink = rodio::Sink::connect_new(stream.mixer());
-
-        let effective_volume = if self.muted { 0.0 } else { self.volume };
-        sink.set_volume(effective_volume);
+        sink.set_volume(self.effective_volume());
 
         self.backend = Some(Arc::new(Mutex::new(AudioBackend {
             sink,
@@ -136,48 +93,38 @@ impl AudioPlayer {
         true
     }
 
-    fn start_ticker(&mut self, cx: &mut Context<Self>) {
-        let entity = cx.entity().clone();
-        self._ticker = Some(cx.spawn(async move |_this, cx| loop {
-            cx.background_executor()
-                .timer(Duration::from_millis(TICKER_INTERVAL_MS))
-                .await;
-
-            let should_continue = cx.update(|app| entity.update(app, |player, cx| player.tick(cx)));
-
-            match should_continue {
-                Ok(true) => {}
-                _ => break,
-            }
-        }));
+    fn effective_volume(&self) -> f32 {
+        if self.muted {
+            0.0
+        } else {
+            self.volume
+        }
     }
 
-    fn tick(&mut self, cx: &mut Context<Self>) -> bool {
+    fn sync_playback_state(&mut self) {
         if self.playback_state != PlaybackState::Playing {
-            return false;
+            return;
         }
 
-        if let Some(ref backend) = self.backend {
-            if let Ok(backend) = backend.lock() {
-                if backend.sink.empty() {
-                    self.playback_state = PlaybackState::Stopped;
-                    self.current_position = Duration::ZERO;
-                    cx.notify();
-                    return false;
-                }
+        let Some(ref backend) = self.backend else {
+            self.playback_state = PlaybackState::Stopped;
+            return;
+        };
 
-                self.current_position += Duration::from_millis(TICKER_INTERVAL_MS);
+        if let Ok(backend) = backend.lock() {
+            let sink_empty = backend.sink.empty();
+            let sink_position = backend.sink.get_pos();
 
-                if let Some(total) = self.total_duration {
-                    if self.current_position > total {
-                        self.current_position = total;
-                    }
-                }
+            self.current_position = if sink_empty {
+                self.total_duration.unwrap_or(sink_position)
+            } else {
+                self.clamp_to_duration(sink_position)
+            };
+
+            if sink_empty {
+                self.playback_state = PlaybackState::Stopped;
             }
         }
-
-        cx.notify();
-        true
     }
 
     pub fn toggle_playback(&mut self, cx: &mut Context<Self>) {
@@ -190,6 +137,11 @@ impl AudioPlayer {
 
     fn play(&mut self, cx: &mut Context<Self>) {
         self.error_message = None;
+
+        if self.has_reached_end() {
+            self.current_position = Duration::ZERO;
+        }
+
         self.backend = None;
         if !self.ensure_backend() {
             cx.notify();
@@ -197,22 +149,33 @@ impl AudioPlayer {
         }
 
         let cursor = Cursor::new((*self.audio_bytes).clone());
-        if let Ok(source) = rodio::Decoder::new(cursor) {
-            if let Some(ref backend) = self.backend {
-                if let Ok(backend) = backend.lock() {
-                    backend.sink.append(source);
-                }
-            }
-        } else {
+        let Ok(source) = rodio::Decoder::new(cursor) else {
             self.error_message = Some("Failed to decode audio format".to_string());
             self.playback_state = PlaybackState::Error;
             cx.notify();
             return;
+        };
+
+        let start_position = self.current_position;
+
+        if let Some(ref backend) = self.backend {
+            if let Ok(backend) = backend.lock() {
+                backend.sink.append(source);
+
+                if start_position > Duration::ZERO {
+                    if let Err(error) = backend.sink.try_seek(start_position) {
+                        log::warn!("Failed to seek audio on play: {error:?}");
+                        self.error_message =
+                            Some("Seeking is not supported for this audio".to_string());
+                        self.current_position = Duration::ZERO;
+                    } else {
+                        self.current_position = self.clamp_to_duration(backend.sink.get_pos());
+                    }
+                }
+            }
         }
 
         self.playback_state = PlaybackState::Playing;
-        self.current_position = Duration::ZERO;
-        self.start_ticker(cx);
         cx.notify();
     }
 
@@ -220,8 +183,10 @@ impl AudioPlayer {
         if let Some(ref backend) = self.backend {
             if let Ok(backend) = backend.lock() {
                 backend.sink.pause();
+                self.current_position = self.clamp_to_duration(backend.sink.get_pos());
             }
         }
+
         self.playback_state = PlaybackState::Paused;
         cx.notify();
     }
@@ -230,10 +195,11 @@ impl AudioPlayer {
         if let Some(ref backend) = self.backend {
             if let Ok(backend) = backend.lock() {
                 backend.sink.play();
+                self.current_position = self.clamp_to_duration(backend.sink.get_pos());
             }
         }
+
         self.playback_state = PlaybackState::Playing;
-        self.start_ticker(cx);
         cx.notify();
     }
 
@@ -243,10 +209,10 @@ impl AudioPlayer {
                 backend.sink.stop();
             }
         }
+
         self.backend = None;
         self.playback_state = PlaybackState::Stopped;
         self.current_position = Duration::ZERO;
-        self._ticker = None;
         cx.notify();
     }
 
@@ -258,7 +224,7 @@ impl AudioPlayer {
 
     pub fn volume_up(&mut self, cx: &mut Context<Self>) {
         self.volume = (self.volume + VOLUME_STEP).min(1.0);
-        if self.muted {
+        if self.muted && self.volume > 0.0 {
             self.muted = false;
         }
         self.apply_volume();
@@ -272,12 +238,84 @@ impl AudioPlayer {
     }
 
     fn apply_volume(&self) {
-        let effective = if self.muted { 0.0 } else { self.volume };
         if let Some(ref backend) = self.backend {
             if let Ok(backend) = backend.lock() {
-                backend.sink.set_volume(effective);
+                backend.sink.set_volume(self.effective_volume());
             }
         }
+    }
+
+    fn seek_by(&mut self, delta_secs: f32, cx: &mut Context<Self>) {
+        let target = if delta_secs.is_sign_negative() {
+            self.current_position
+                .saturating_sub(Duration::from_secs_f32(delta_secs.abs()))
+        } else {
+            self.current_position + Duration::from_secs_f32(delta_secs)
+        };
+
+        self.seek_to(target, cx);
+    }
+
+    fn seek_to(&mut self, target: Duration, cx: &mut Context<Self>) {
+        let Some(total_duration) = self.total_duration else {
+            return;
+        };
+
+        let clamped = target.min(total_duration);
+
+        if let Some(ref backend) = self.backend {
+            if let Ok(backend) = backend.lock() {
+                if let Err(error) = backend.sink.try_seek(clamped) {
+                    log::warn!("Failed to seek audio: {error:?}");
+                    self.error_message =
+                        Some("Seeking is not supported for this audio".to_string());
+                    cx.notify();
+                    return;
+                }
+
+                self.current_position = self.clamp_to_duration(backend.sink.get_pos());
+                self.error_message = None;
+                cx.notify();
+                return;
+            }
+        }
+
+        self.current_position = clamped;
+        self.error_message = None;
+        cx.notify();
+    }
+
+    fn seek_to_pointer(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(target) = self.pointer_seek_target(position) else {
+            return;
+        };
+        self.seek_to(target, cx);
+    }
+
+    fn pointer_seek_target(&self, position: Point<Pixels>) -> Option<Duration> {
+        let total_duration = self.total_duration?;
+        let width = self.progress_bounds.size.width;
+        if width <= px(0.0) {
+            return None;
+        }
+
+        let inner_pos = position.x - self.progress_bounds.left();
+        let fraction = (inner_pos.clamp(px(0.0), width) / width).clamp(0.0, 1.0);
+        Some(total_duration.mul_f32(fraction))
+    }
+
+    fn clamp_to_duration(&self, position: Duration) -> Duration {
+        if let Some(total_duration) = self.total_duration {
+            position.min(total_duration)
+        } else {
+            position
+        }
+    }
+
+    fn has_reached_end(&self) -> bool {
+        self.total_duration
+            .map(|total| self.current_position >= total)
+            .unwrap_or(false)
     }
 
     fn format_duration(d: Duration) -> String {
@@ -292,7 +330,8 @@ impl AudioPlayer {
             if total.as_millis() == 0 {
                 return 0.0;
             }
-            (self.current_position.as_millis() as f32 / total.as_millis() as f32).min(1.0)
+
+            (self.current_position.as_secs_f32() / total.as_secs_f32()).clamp(0.0, 1.0)
         } else {
             0.0
         }
@@ -330,6 +369,41 @@ impl AudioPlayer {
     fn volume_percent(&self) -> u32 {
         (self.volume * 100.0).round() as u32
     }
+
+    fn status_text(&self) -> &'static str {
+        match self.playback_state {
+            PlaybackState::Stopped => "Ready",
+            PlaybackState::Playing => "Playing",
+            PlaybackState::Paused => "Paused",
+            PlaybackState::Error => "Unavailable",
+        }
+    }
+
+    fn on_progress_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        window.focus(&self.focus_handle);
+        self.seek_to_pointer(event.position, cx);
+    }
+
+    fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        match event.keystroke.key.as_str() {
+            "space" => self.toggle_playback(cx),
+            "left" => self.seek_by(-SEEK_STEP_SECS, cx),
+            "right" => self.seek_by(SEEK_STEP_SECS, cx),
+            "home" => self.seek_to(Duration::ZERO, cx),
+            "end" => {
+                if let Some(total) = self.total_duration {
+                    self.seek_to(total, cx);
+                }
+            }
+            "m" => self.toggle_mute(cx),
+            _ => {}
+        }
+    }
 }
 
 impl Focusable for AudioPlayer {
@@ -339,19 +413,18 @@ impl Focusable for AudioPlayer {
 }
 
 impl Render for AudioPlayer {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_playback_state();
+        if self.playback_state == PlaybackState::Playing {
+            window.request_animation_frame();
+        }
+
         let theme = cx.theme();
-        let this_play = cx.entity().clone();
-        let this_stop = cx.entity().clone();
-        let this_mute = cx.entity().clone();
-        let this_vol_up = cx.entity().clone();
-        let this_vol_down = cx.entity().clone();
+        let entity = cx.entity().clone();
 
         let is_playing = self.playback_state == PlaybackState::Playing;
-        let is_paused = self.playback_state == PlaybackState::Paused;
         let is_stopped = self.playback_state == PlaybackState::Stopped;
         let is_error = self.playback_state == PlaybackState::Error;
-        let is_active = is_playing || is_paused;
         let progress = self.progress_fraction();
         let position_text = Self::format_duration(self.current_position);
         let duration_text = self
@@ -360,240 +433,186 @@ impl Render for AudioPlayer {
             .unwrap_or_else(|| "--:--".to_string());
         let format_label = self.audio_format_label().to_string();
         let size_text = Self::format_size(self.audio_bytes.len());
-        let muted = self.muted;
-        let volume_pct = self.volume_percent();
-
-        let waveform = self.waveform.clone();
+        let volume_text = if self.muted {
+            "Muted".to_string()
+        } else {
+            format!("{}%", self.volume_percent())
+        };
         let error_msg = self.error_message.clone();
-
         div()
             .id("audio-player")
             .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(Self::on_key_down))
             .flex()
             .flex_col()
-            .flex_1()
             .w_full()
+            .h_full()
             .items_center()
-            .justify_center()
+            .justify_start()
             .bg(theme.muted)
+            .px(px(20.0))
+            .py(px(16.0))
             .child(
                 div()
                     .flex()
                     .flex_col()
-                    .w(px(460.0))
-                    .rounded(px(16.0))
+                    .w_full()
+                    .max_w(px(560.0))
+                    .rounded(px(10.0))
                     .bg(theme.background)
                     .border_1()
                     .border_color(theme.border)
                     .overflow_hidden()
-                    // Waveform visualization
-                    .child(
-                        div()
-                            .id("audio-waveform-area")
-                            .w_full()
-                            .h(px(120.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .bg(theme.secondary)
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_end()
-                                    .justify_center()
-                                    .gap(px(2.0))
-                                    .h(px(80.0))
-                                    .px(px(16.0))
-                                    .children(
-                                        waveform
-                                            .iter()
-                                            .enumerate()
-                                            .map(|(i, &height_frac)| {
-                                                let bar_progress = i as f32 / waveform.len() as f32;
-                                                let is_played = bar_progress <= progress;
-                                                let bar_color = if is_played && is_active {
-                                                    theme.accent
-                                                } else {
-                                                    theme.muted_foreground
-                                                };
-                                                let opacity = if is_played && is_active {
-                                                    0.95
-                                                } else if is_active {
-                                                    0.3
-                                                } else {
-                                                    0.25
-                                                };
-                                                let max_h = 80.0_f32;
-                                                let bar_h = max_h * height_frac;
-
-                                                div()
-                                                    .id(ElementId::NamedInteger(
-                                                        "waveform-bar".into(),
-                                                        i as u64,
-                                                    ))
-                                                    .w(px(3.0))
-                                                    .h(px(bar_h))
-                                                    .rounded(px(1.5))
-                                                    .bg(bar_color)
-                                                    .opacity(opacity)
-                                                    .into_any_element()
-                                            })
-                                            .collect::<Vec<_>>(),
-                                    ),
-                            ),
-                    )
-                    // Progress bar
-                    .child(
-                        div()
-                            .id("audio-progress-track")
-                            .w_full()
-                            .h(px(4.0))
-                            .bg(theme.border)
-                            .child(div().h_full().bg(theme.accent).w(gpui::relative(progress))),
-                    )
-                    // Controls area
                     .child(
                         div()
                             .flex()
                             .flex_col()
-                            .gap(px(12.0))
-                            .px(px(24.0))
-                            .py(px(16.0))
-                            // Time row
+                            .gap(px(16.0))
+                            .px(px(20.0))
+                            .py(px(18.0))
                             .child(
                                 div()
                                     .flex()
                                     .flex_row()
                                     .justify_between()
+                                    .items_start()
+                                    .gap(px(16.0))
                                     .child(
                                         div()
-                                            .text_color(if is_active {
-                                                theme.foreground
-                                            } else {
-                                                theme.muted_foreground
-                                            })
-                                            .text_size(px(12.0))
-                                            .child(position_text),
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(4.0))
+                                            .child(
+                                                div()
+                                                    .text_size(px(14.0))
+                                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                                    .text_color(theme.foreground)
+                                                    .child(format_label.clone()),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(px(12.0))
+                                                    .text_color(theme.muted_foreground)
+                                                    .child(format!(
+                                                        "{size_text} • {duration_text}"
+                                                    )),
+                                            ),
                                     )
                                     .child(
                                         div()
-                                            .text_color(theme.muted_foreground)
                                             .text_size(px(12.0))
-                                            .child(duration_text),
+                                            .text_color(if is_error {
+                                                theme.danger
+                                            } else {
+                                                theme.muted_foreground
+                                            })
+                                            .child(self.status_text()),
                                     ),
                             )
-                            // Error message
                             .when_some(error_msg, |el, msg| {
                                 el.child(
                                     div()
                                         .px(px(12.0))
-                                        .py(px(6.0))
-                                        .rounded(px(6.0))
-                                        .bg(theme.danger)
-                                        .text_color(gpui::white())
+                                        .py(px(8.0))
+                                        .rounded(px(8.0))
+                                        .bg(theme.danger.opacity(0.14))
+                                        .border_1()
+                                        .border_color(theme.danger.opacity(0.32))
+                                        .text_color(theme.danger)
                                         .text_size(px(11.0))
                                         .child(msg),
                                 )
                             })
-                            // Playback controls
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(10.0))
+                                    .child(
+                                        div()
+                                            .id("audio-progress-track")
+                                            .relative()
+                                            .w_full()
+                                            .h(px(24.0))
+                                            .flex()
+                                            .items_center()
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                cx.listener(Self::on_progress_mouse_down),
+                                            )
+                                            .child(
+                                                div()
+                                                    .relative()
+                                                    .w_full()
+                                                    .h(px(5.0))
+                                                    .rounded(px(999.0))
+                                                    .bg(theme.border)
+                                                    .child(
+                                                        div()
+                                                            .absolute()
+                                                            .left(px(0.0))
+                                                            .top(px(0.0))
+                                                            .bottom(px(0.0))
+                                                            .rounded(px(999.0))
+                                                            .bg(theme.accent)
+                                                            .w(gpui::relative(progress)),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .absolute()
+                                                            .top(px(-4.0))
+                                                            .left(gpui::relative(progress))
+                                                            .ml(-px(6.0))
+                                                            .size(px(12.0))
+                                                            .rounded(px(999.0))
+                                                            .bg(theme.background)
+                                                            .border_1()
+                                                            .border_color(theme.accent),
+                                                    )
+                                                    .child({
+                                                        let entity = entity.clone();
+                                                        canvas(
+                                                            move |bounds, _, cx| {
+                                                                entity.update(cx, |player, _| {
+                                                                    if player.progress_bounds
+                                                                        != bounds
+                                                                    {
+                                                                        player.progress_bounds =
+                                                                            bounds;
+                                                                    }
+                                                                });
+                                                            },
+                                                            |_, _, _, _| {},
+                                                        )
+                                                        .absolute()
+                                                        .size_full()
+                                                    }),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_row()
+                                            .justify_between()
+                                            .text_size(px(11.0))
+                                            .text_color(theme.muted_foreground)
+                                            .child(position_text)
+                                            .child(duration_text),
+                                    ),
+                            )
                             .child(
                                 div()
                                     .flex()
                                     .flex_row()
                                     .items_center()
                                     .justify_between()
-                                    // Left: Volume controls
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_row()
-                                            .items_center()
-                                            .gap(px(2.0))
-                                            .child(
-                                                Button::new("audio-vol-down")
-                                                    .icon(
-                                                        Icon::new(IconName::ChevronLeft)
-                                                            .size(px(12.0)),
-                                                    )
-                                                    .ghost()
-                                                    .xsmall()
-                                                    .tooltip("Volume Down")
-                                                    .on_click(move |_, _window, cx| {
-                                                        this_vol_down.update(cx, |player, cx| {
-                                                            player.volume_down(cx);
-                                                        });
-                                                    }),
-                                            )
-                                            .child(
-                                                Button::new("audio-mute-toggle")
-                                                    .icon(
-                                                        Icon::new(if muted {
-                                                            IconName::VolumeX
-                                                        } else {
-                                                            IconName::Volume2
-                                                        })
-                                                        .size(px(14.0)),
-                                                    )
-                                                    .ghost()
-                                                    .xsmall()
-                                                    .tooltip(if muted { "Unmute" } else { "Mute" })
-                                                    .on_click(move |_, _window, cx| {
-                                                        this_mute.update(cx, |player, cx| {
-                                                            player.toggle_mute(cx);
-                                                        });
-                                                    }),
-                                            )
-                                            .child(
-                                                Button::new("audio-vol-up")
-                                                    .icon(
-                                                        Icon::new(IconName::ChevronRight)
-                                                            .size(px(12.0)),
-                                                    )
-                                                    .ghost()
-                                                    .xsmall()
-                                                    .tooltip("Volume Up")
-                                                    .on_click(move |_, _window, cx| {
-                                                        this_vol_up.update(cx, |player, cx| {
-                                                            player.volume_up(cx);
-                                                        });
-                                                    }),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_color(theme.muted_foreground)
-                                                    .text_size(px(10.0))
-                                                    .ml(px(4.0))
-                                                    .child(if muted {
-                                                        "Muted".to_string()
-                                                    } else {
-                                                        format!("{}%", volume_pct)
-                                                    }),
-                                            ),
-                                    )
-                                    // Center: Play/Pause & Stop
+                                    .gap(px(16.0))
                                     .child(
                                         div()
                                             .flex()
                                             .flex_row()
                                             .items_center()
                                             .gap(px(8.0))
-                                            .child(
-                                                Button::new("audio-stop")
-                                                    .icon(
-                                                        Icon::new(IconName::Square).size(px(13.0)),
-                                                    )
-                                                    .ghost()
-                                                    .small()
-                                                    .tooltip("Stop")
-                                                    .when(is_stopped || is_error, |btn| {
-                                                        btn.disabled(true)
-                                                    })
-                                                    .on_click(move |_, _window, cx| {
-                                                        this_stop.update(cx, |player, cx| {
-                                                            player.stop(cx);
-                                                        });
-                                                    }),
-                                            )
                                             .child(
                                                 Button::new("audio-play-pause")
                                                     .icon(
@@ -602,57 +621,115 @@ impl Render for AudioPlayer {
                                                         } else {
                                                             IconName::Play
                                                         })
-                                                        .size(px(20.0)),
+                                                        .size(px(16.0)),
                                                     )
                                                     .primary()
+                                                    .small()
                                                     .tooltip(if is_playing {
                                                         "Pause"
                                                     } else {
                                                         "Play"
                                                     })
-                                                    .on_click(move |_, _window, cx| {
-                                                        this_play.update(cx, |player, cx| {
-                                                            player.toggle_playback(cx);
-                                                        });
+                                                    .on_click({
+                                                        let entity = entity.clone();
+                                                        move |_, _window, cx| {
+                                                            entity.update(cx, |player, cx| {
+                                                                player.toggle_playback(cx);
+                                                            });
+                                                        }
+                                                    }),
+                                            )
+                                            .child(
+                                                Button::new("audio-stop")
+                                                    .icon(
+                                                        Icon::new(IconName::Square).size(px(13.0)),
+                                                    )
+                                                    .ghost()
+                                                    .small()
+                                                    .tooltip("Stop")
+                                                    .disabled(is_stopped || is_error)
+                                                    .on_click({
+                                                        let entity = entity.clone();
+                                                        move |_, _window, cx| {
+                                                            entity.update(cx, |player, cx| {
+                                                                player.stop(cx);
+                                                            });
+                                                        }
                                                     }),
                                             ),
                                     )
-                                    // Right: Format badge
                                     .child(
                                         div()
                                             .flex()
                                             .flex_row()
                                             .items_center()
-                                            .gap(px(6.0))
+                                            .gap(px(8.0))
                                             .child(
-                                                div()
-                                                    .px(px(8.0))
-                                                    .py(px(3.0))
-                                                    .rounded(px(4.0))
-                                                    .bg(theme.secondary)
-                                                    .text_color(theme.secondary_foreground)
-                                                    .text_size(px(10.0))
-                                                    .child(format_label),
+                                                Button::new("audio-mute-toggle")
+                                                    .icon(
+                                                        Icon::new(if self.muted {
+                                                            IconName::VolumeX
+                                                        } else {
+                                                            IconName::Volume2
+                                                        })
+                                                        .size(px(14.0)),
+                                                    )
+                                                    .ghost()
+                                                    .small()
+                                                    .tooltip(if self.muted {
+                                                        "Unmute"
+                                                    } else {
+                                                        "Mute"
+                                                    })
+                                                    .on_click({
+                                                        let entity = entity.clone();
+                                                        move |_, _window, cx| {
+                                                            entity.update(cx, |player, cx| {
+                                                                player.toggle_mute(cx);
+                                                            });
+                                                        }
+                                                    }),
+                                            )
+                                            .child(
+                                                Button::new("audio-vol-down")
+                                                    .label("-")
+                                                    .ghost()
+                                                    .small()
+                                                    .tooltip("Volume down")
+                                                    .on_click({
+                                                        let entity = entity.clone();
+                                                        move |_, _window, cx| {
+                                                            entity.update(cx, |player, cx| {
+                                                                player.volume_down(cx);
+                                                            });
+                                                        }
+                                                    }),
                                             )
                                             .child(
                                                 div()
+                                                    .min_w(px(44.0))
+                                                    .text_size(px(11.0))
                                                     .text_color(theme.muted_foreground)
-                                                    .text_size(px(10.0))
-                                                    .child(size_text),
+                                                    .child(volume_text),
+                                            )
+                                            .child(
+                                                Button::new("audio-vol-up")
+                                                    .label("+")
+                                                    .ghost()
+                                                    .small()
+                                                    .tooltip("Volume up")
+                                                    .on_click({
+                                                        let entity = entity.clone();
+                                                        move |_, _window, cx| {
+                                                            entity.update(cx, |player, cx| {
+                                                                player.volume_up(cx);
+                                                            });
+                                                        }
+                                                    }),
                                             ),
                                     ),
                             ),
                     ),
             )
-    }
-}
-
-impl Drop for AudioPlayer {
-    fn drop(&mut self) {
-        if let Some(ref backend) = self.backend {
-            if let Ok(backend) = backend.lock() {
-                backend.sink.stop();
-            }
-        }
     }
 }
