@@ -4,7 +4,7 @@
 - [ ] Add a visible "Save request to collection" flow in UI (collections can be created/loaded/deleted, but saving current request is not exposed).
 - [x] Support canceling in-flight requests
 - [x] Fix "Save response" for binary/image responses to write raw bytes, not text.
-- [ ] Ensure duplicated requests preserve method/body/headers exactly.
+- [x] Ensure duplicated requests preserve method/body/headers exactly.
 
 - [ ] Environment variables and secret variables (`{{base_url}}`, tokens, etc.) with workspace/project scopes.
 - [ ] Import/Export: cURL import, request/collection JSON export, and shareable files.
