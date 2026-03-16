@@ -1,5 +1,5 @@
 # TODO
-- [ ] Apply API Key auth in query params when "Add to: Query Param" is selected (`AuthEditor` supports it, request pipeline does not).
+- [x] Apply API Key auth in query params when "Add to: Query Param" is selected (`AuthEditor` supports it, request pipeline does not).
 - [x] Restore full request state when loading from history/collections (headers are not restored; method/body consistency has edge cases).
 - [ ] Add a visible "Save request to collection" flow in UI (collections can be created/loaded/deleted, but saving current request is not exposed).
 - [x] Support canceling in-flight requests
