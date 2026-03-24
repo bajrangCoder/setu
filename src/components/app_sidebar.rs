@@ -34,9 +34,17 @@ pub struct AppSidebar {
     on_clear_history: Option<Rc<dyn Fn(&mut Window, &mut App) + 'static>>,
     on_load_collection_request: Option<Rc<dyn Fn(Uuid, Uuid, &mut Window, &mut App) + 'static>>,
     on_delete_collection: Option<Rc<dyn Fn(Uuid, &mut Window, &mut App) + 'static>>,
-    on_delete_collection_item: Option<Rc<dyn Fn(Uuid, Uuid, &mut Window, &mut App) + 'static>>,
+    on_delete_collection_node: Option<Rc<dyn Fn(Uuid, Uuid, &mut Window, &mut App) + 'static>>,
+    on_rename_collection: Option<Rc<dyn Fn(Uuid, String, &mut Window, &mut App) + 'static>>,
+    on_rename_collection_node:
+        Option<Rc<dyn Fn(Uuid, Uuid, String, &mut Window, &mut App) + 'static>>,
     on_new_collection: Option<Rc<dyn Fn(&mut Window, &mut App) + 'static>>,
+    on_import_collection: Option<Rc<dyn Fn(&mut Window, &mut App) + 'static>>,
+    on_new_folder: Option<Rc<dyn Fn(Uuid, Option<Uuid>, &mut Window, &mut App) + 'static>>,
+    on_move_collection_node: Option<Rc<dyn Fn(Uuid, Uuid, &mut Window, &mut App) + 'static>>,
     on_toggle_collection_expand: Option<Rc<dyn Fn(Uuid, &mut Window, &mut App) + 'static>>,
+    on_toggle_collection_node_expand:
+        Option<Rc<dyn Fn(Uuid, Uuid, &mut Window, &mut App) + 'static>>,
     on_filter_change: Option<Rc<dyn Fn(HistoryFilter, &mut Window, &mut App) + 'static>>,
     on_group_by_change: Option<Rc<dyn Fn(HistoryGroupBy, &mut Window, &mut App) + 'static>>,
 }
@@ -63,9 +71,15 @@ impl AppSidebar {
             on_clear_history: None,
             on_load_collection_request: None,
             on_delete_collection: None,
-            on_delete_collection_item: None,
+            on_delete_collection_node: None,
+            on_rename_collection: None,
+            on_rename_collection_node: None,
             on_new_collection: None,
+            on_import_collection: None,
+            on_new_folder: None,
+            on_move_collection_node: None,
             on_toggle_collection_expand: None,
+            on_toggle_collection_node_expand: None,
             on_filter_change: None,
             on_group_by_change: None,
         }
@@ -126,11 +140,27 @@ impl AppSidebar {
         self
     }
 
-    pub fn on_delete_collection_item(
+    pub fn on_delete_collection_node(
         mut self,
         f: impl Fn(Uuid, Uuid, &mut Window, &mut App) + 'static,
     ) -> Self {
-        self.on_delete_collection_item = Some(Rc::new(f));
+        self.on_delete_collection_node = Some(Rc::new(f));
+        self
+    }
+
+    pub fn on_rename_collection(
+        mut self,
+        f: impl Fn(Uuid, String, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_rename_collection = Some(Rc::new(f));
+        self
+    }
+
+    pub fn on_rename_collection_node(
+        mut self,
+        f: impl Fn(Uuid, Uuid, String, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_rename_collection_node = Some(Rc::new(f));
         self
     }
 
@@ -139,11 +169,40 @@ impl AppSidebar {
         self
     }
 
+    pub fn on_import_collection(mut self, f: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        self.on_import_collection = Some(Rc::new(f));
+        self
+    }
+
+    pub fn on_new_folder(
+        mut self,
+        f: impl Fn(Uuid, Option<Uuid>, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_new_folder = Some(Rc::new(f));
+        self
+    }
+
+    pub fn on_move_collection_node(
+        mut self,
+        f: impl Fn(Uuid, Uuid, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_move_collection_node = Some(Rc::new(f));
+        self
+    }
+
     pub fn on_toggle_collection_expand(
         mut self,
         f: impl Fn(Uuid, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_toggle_collection_expand = Some(Rc::new(f));
+        self
+    }
+
+    pub fn on_toggle_collection_node_expand(
+        mut self,
+        f: impl Fn(Uuid, Uuid, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_toggle_collection_node_expand = Some(Rc::new(f));
         self
     }
 
@@ -227,11 +286,26 @@ impl AppSidebar {
             panel = panel.on_delete_collection(move |id, window, cx| f(id, window, cx));
         }
 
-        if let Some(ref f) = self.on_delete_collection_item {
+        if let Some(ref f) = self.on_delete_collection_node {
             let f = Rc::clone(f);
-            panel = panel.on_delete_item(move |coll_id, item_id, window, cx| {
+            panel = panel.on_delete_node(move |coll_id, item_id, window, cx| {
                 f(coll_id, item_id, window, cx)
             });
+        }
+
+        if let Some(ref f) = self.on_rename_collection {
+            let f = Rc::clone(f);
+            panel = panel.on_rename_collection(move |collection_id, current_name, window, cx| {
+                f(collection_id, current_name, window, cx)
+            });
+        }
+
+        if let Some(ref f) = self.on_rename_collection_node {
+            let f = Rc::clone(f);
+            panel =
+                panel.on_rename_node(move |collection_id, node_id, current_name, window, cx| {
+                    f(collection_id, node_id, current_name, window, cx)
+                });
         }
 
         if let Some(ref f) = self.on_new_collection {
@@ -239,9 +313,35 @@ impl AppSidebar {
             panel = panel.on_new_collection(move |window, cx| f(window, cx));
         }
 
+        if let Some(ref f) = self.on_import_collection {
+            let f = Rc::clone(f);
+            panel = panel.on_import_collection(move |window, cx| f(window, cx));
+        }
+
+        if let Some(ref f) = self.on_new_folder {
+            let f = Rc::clone(f);
+            panel = panel.on_new_folder(move |collection_id, folder_id, window, cx| {
+                f(collection_id, folder_id, window, cx)
+            });
+        }
+
+        if let Some(ref f) = self.on_move_collection_node {
+            let f = Rc::clone(f);
+            panel = panel.on_move_node(move |collection_id, node_id, window, cx| {
+                f(collection_id, node_id, window, cx)
+            });
+        }
+
         if let Some(ref f) = self.on_toggle_collection_expand {
             let f = Rc::clone(f);
-            panel = panel.on_toggle_expand(move |id, window, cx| f(id, window, cx));
+            panel = panel.on_toggle_collection_expand(move |id, window, cx| f(id, window, cx));
+        }
+
+        if let Some(ref f) = self.on_toggle_collection_node_expand {
+            let f = Rc::clone(f);
+            panel = panel.on_toggle_node_expand(move |collection_id, node_id, window, cx| {
+                f(collection_id, node_id, window, cx)
+            });
         }
 
         panel

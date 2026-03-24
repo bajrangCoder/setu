@@ -19,6 +19,8 @@ pub enum CommandId {
     ToggleRequestResponseLayout,
     FocusUrlBar,
     ClearHistory,
+    SaveToCollection,
+    ImportCollection,
     SetMethodGet,
     SetMethodPost,
     SetMethodPut,
@@ -121,6 +123,16 @@ pub fn default_commands() -> Vec<Command> {
             IconName::LayoutSplit,
         ),
         Command::new(CommandId::FocusUrlBar, "Focus URL Bar", IconName::Link).with_shortcut("⌘L"),
+        Command::new(
+            CommandId::SaveToCollection,
+            "Save to Collection",
+            IconName::FilePlus,
+        ),
+        Command::new(
+            CommandId::ImportCollection,
+            "Import Collection",
+            IconName::FileUp,
+        ),
         Command::new(
             CommandId::SwitchToBodyTab,
             "Switch to Body Tab",
@@ -573,5 +585,21 @@ impl Render for CommandPaletteView {
                     ),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{default_commands, CommandId};
+
+    #[test]
+    fn includes_collection_commands() {
+        let commands = default_commands();
+        assert!(commands
+            .iter()
+            .any(|command| matches!(command.id, CommandId::SaveToCollection)));
+        assert!(commands
+            .iter()
+            .any(|command| matches!(command.id, CommandId::ImportCollection)));
     }
 }

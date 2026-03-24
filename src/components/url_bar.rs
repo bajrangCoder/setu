@@ -1,14 +1,19 @@
 use gpui::prelude::*;
-use gpui::{div, px, App, ClickEvent, Entity, IntoElement, Styled, Window};
+use gpui::{div, hsla, px, App, ClickEvent, Entity, IntoElement, Styled, Window};
+use gpui_component::button::{Button, ButtonCustomVariant, ButtonVariants, DropdownButton};
 use gpui_component::input::{Input, InputState};
+use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use gpui_component::ActiveTheme;
+use std::rc::Rc;
 
 use crate::components::{MethodDropdown, MethodDropdownState};
 use crate::entities::RequestEntity;
-use gpui_component::ActiveTheme;
+use crate::icons::IconName;
 
 /// Callback type for Send button
-pub type OnSendCallback = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
-pub type OnCancelCallback = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
+pub type OnSendCallback = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
+pub type OnCancelCallback = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
+pub type OnSaveToCollectionCallback = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
 /// URL Bar component
 #[derive(IntoElement)]
@@ -19,6 +24,7 @@ pub struct UrlBar {
     is_loading: bool,
     on_send: Option<OnSendCallback>,
     on_cancel: Option<OnCancelCallback>,
+    on_save_to_collection: Option<OnSaveToCollectionCallback>,
 }
 
 impl UrlBar {
@@ -30,6 +36,7 @@ impl UrlBar {
             is_loading: false,
             on_send: None,
             on_cancel: None,
+            on_save_to_collection: None,
         }
     }
 
@@ -52,7 +59,7 @@ impl UrlBar {
         mut self,
         callback: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
-        self.on_send = Some(Box::new(callback));
+        self.on_send = Some(Rc::new(callback));
         self
     }
 
@@ -60,7 +67,15 @@ impl UrlBar {
         mut self,
         callback: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
-        self.on_cancel = Some(Box::new(callback));
+        self.on_cancel = Some(Rc::new(callback));
+        self
+    }
+
+    pub fn on_save_to_collection(
+        mut self,
+        callback: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_save_to_collection = Some(Rc::new(callback));
         self
     }
 }
@@ -71,16 +86,47 @@ impl RenderOnce for UrlBar {
         let is_loading = self.is_loading;
         let on_send = self.on_send;
         let on_cancel = self.on_cancel;
-        let button_bg = if is_loading {
-            theme.danger
+        let on_save_to_collection = self.on_save_to_collection;
+        let send_variant = ButtonCustomVariant::new(cx)
+            .color(hsla(168.0 / 360.0, 0.67, 0.47, 1.0))
+            .foreground(theme.background)
+            .border(hsla(168.0 / 360.0, 0.67, 0.47, 1.0))
+            .hover(hsla(168.0 / 360.0, 0.67, 0.44, 1.0))
+            .active(hsla(168.0 / 360.0, 0.67, 0.41, 1.0));
+
+        let primary_button = Button::new("send-request-primary")
+            .label(if is_loading { "Cancel" } else { "Send" })
+            .compact()
+            .on_click(move |event, window, cx| {
+                if is_loading {
+                    if let Some(ref callback) = on_cancel {
+                        callback(event, window, cx);
+                    }
+                } else if let Some(ref callback) = on_send {
+                    callback(event, window, cx);
+                }
+            });
+
+        let split_button = DropdownButton::new("send-request-split").button(primary_button);
+
+        let split_button = if is_loading {
+            split_button.danger()
         } else {
-            theme.primary
-        };
-        let button_hover_bg = if is_loading {
-            theme.danger_hover
-        } else {
-            theme.primary_hover
-        };
+            split_button.custom(send_variant)
+        }
+        .dropdown_menu(move |menu: PopupMenu, _window, _cx| {
+            let mut menu = menu;
+            if let Some(callback) = on_save_to_collection.clone() {
+                menu = menu.item(
+                    PopupMenuItem::new("Save to Collection")
+                        .icon(IconName::FilePlus)
+                        .on_click(move |event, window, cx| {
+                            callback(event, window, cx);
+                        }),
+                );
+            }
+            menu
+        });
 
         div()
             .flex()
@@ -118,34 +164,6 @@ impl RenderOnce for UrlBar {
                             .size_full(),
                     ),
             )
-            // Send button
-            .child(
-                div()
-                    .id("send-button")
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .px(px(16.0))
-                    .h(px(32.0))
-                    .mr(px(4.0))
-                    .rounded(px(4.0))
-                    .bg(button_bg)
-                    .text_color(theme.background)
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_size(px(12.0))
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(button_hover_bg))
-                    .when(is_loading, |s| s.opacity(0.7))
-                    .on_click(move |event, window, cx| {
-                        if is_loading {
-                            if let Some(ref callback) = on_cancel {
-                                callback(event, window, cx);
-                            }
-                        } else if let Some(ref callback) = on_send {
-                            callback(event, window, cx);
-                        }
-                    })
-                    .child(if is_loading { "Cancel" } else { "Send" }),
-            )
+            .child(div().mr(px(4.0)).child(split_button))
     }
 }

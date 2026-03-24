@@ -53,6 +53,7 @@ pub enum IconName {
     Square,
     Volume2,
     VolumeX,
+    Ellipsis,
 }
 
 impl IconNamed for IconName {
@@ -104,6 +105,7 @@ impl IconNamed for IconName {
             Self::Square => "icons/square.svg",
             Self::Volume2 => "icons/volume-2.svg",
             Self::VolumeX => "icons/volume-x.svg",
+            Self::Ellipsis => "icons/ellipsis.svg",
         }
         .into()
     }

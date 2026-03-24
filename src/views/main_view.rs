@@ -1,15 +1,19 @@
 use gpui::prelude::*;
 use gpui::{
-    div, px, App, Entity, FocusHandle, Focusable, IntoElement, Render, ScrollHandle, Styled, Window,
+    div, px, App, Entity, FocusHandle, Focusable, IntoElement, PathPromptOptions, Render,
+    ScrollHandle, SharedString, Styled, Window,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputState};
+use gpui_component::notification::NotificationType;
 use gpui_component::resizable::{h_resizable, resizable_panel, v_resizable};
+use gpui_component::scroll::ScrollableElement;
+use gpui_component::select::{Select, SelectItem, SelectState};
 use gpui_component::v_flex;
-use gpui_component::Icon;
 use gpui_component::Root;
 use gpui_component::Sizable;
 use gpui_component::WindowExt;
+use gpui_component::{ActiveTheme, Icon};
 use uuid::Uuid;
 
 use crate::actions::*;
@@ -18,15 +22,15 @@ use crate::components::{
     ProtocolType, SidebarTab, TabBar, TabInfo, UrlBar,
 };
 use crate::entities::{
-    CollectionsEntity, Header, HistoryEntity, HttpMethod, RequestBody, RequestData, RequestEntity,
-    ResponseData, ResponseEntity,
+    CollectionDestination, CollectionDestinationEntry, CollectionsEntity, Header, HistoryEntity,
+    HttpMethod, RequestBody, RequestData, RequestEntity, ResponseData, ResponseEntity,
 };
 use crate::http::{HttpClient, InFlightRequest};
 use crate::icons::IconName;
+use crate::importers::{ImportRegistry, ImportWarning};
 use crate::views::request_view::RequestView;
 use crate::views::response_view::ResponseView;
 use crate::views::{CommandId, CommandPaletteEvent, CommandPaletteView};
-use gpui_component::ActiveTheme;
 
 pub struct TabState {
     pub id: usize,
@@ -44,6 +48,39 @@ pub struct TabState {
 enum RequestResponseLayout {
     Stacked,
     SideBySide,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DestinationOption {
+    destination: CollectionDestination,
+    label: String,
+}
+
+impl SelectItem for DestinationOption {
+    type Value = DestinationOption;
+
+    fn title(&self) -> SharedString {
+        self.label.clone().into()
+    }
+
+    fn value(&self) -> &Self::Value {
+        self
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum RenameTarget {
+    Collection(Uuid),
+    Node { collection_id: Uuid, node_id: Uuid },
+}
+
+#[derive(Clone, Debug)]
+struct ImportSummary {
+    provider: &'static str,
+    collection_name: String,
+    folder_count: usize,
+    request_count: usize,
+    warnings: Vec<ImportWarning>,
 }
 
 /// Main application view
@@ -306,7 +343,7 @@ impl MainView {
     pub fn load_collection_item(
         &mut self,
         collection_id: Uuid,
-        item_id: Uuid,
+        node_id: Uuid,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -314,12 +351,8 @@ impl MainView {
         let item_data = {
             let collections = self.collections.read(cx);
             collections
-                .get_collection(collection_id)
-                .and_then(|collection| {
-                    collection
-                        .get_item(item_id)
-                        .map(|item| (item.request.clone(), item.display_name()))
-                })
+                .get_request_node(collection_id, node_id)
+                .map(|node| (node.request.clone(), node.display_name()))
         };
 
         let Some((request_data, tab_name)) = item_data else {
@@ -412,14 +445,14 @@ impl MainView {
     }
 
     /// Delete an item from a collection
-    pub fn delete_collection_item(
+    pub fn delete_collection_node(
         &mut self,
         collection_id: Uuid,
-        item_id: Uuid,
+        node_id: Uuid,
         cx: &mut Context<Self>,
     ) {
         self.collections.update(cx, |collections, cx| {
-            collections.remove_item_from_collection(collection_id, item_id, cx);
+            collections.remove_node(collection_id, node_id, cx);
         });
     }
 
@@ -430,28 +463,118 @@ impl MainView {
         });
     }
 
-    #[allow(dead_code)]
-    /// Save current request to a collection
-    pub fn save_to_collection(&mut self, collection_id: Uuid, cx: &mut Context<Self>) {
-        if let Some(tab) = self.active_tab() {
-            let request = tab.request.read(cx);
-            let request_data = RequestData {
-                id: Uuid::new_v4(),
-                name: tab.name.clone(),
-                url: request.url().to_string(),
-                method: request.method(),
-                headers: request.headers().to_vec(),
-                body: request.body().clone(),
-                is_sending: false,
-            };
+    pub fn toggle_collection_node_expand(
+        &mut self,
+        collection_id: Uuid,
+        node_id: Uuid,
+        cx: &mut Context<Self>,
+    ) {
+        self.collections.update(cx, |collections, cx| {
+            collections.toggle_node_expanded(collection_id, node_id, cx);
+        });
+    }
 
-            self.collections.update(cx, |collections, cx| {
-                collections.add_item_to_collection(collection_id, request_data, cx);
-            });
+    pub fn create_collection_folder(
+        &mut self,
+        collection_id: Uuid,
+        parent_folder_id: Option<Uuid>,
+        name: &str,
+        cx: &mut Context<Self>,
+    ) {
+        self.collections.update(cx, |collections, cx| {
+            collections.create_folder(collection_id, parent_folder_id, name, cx);
+        });
+    }
+
+    pub fn save_request_to_destination(
+        &mut self,
+        destination: CollectionDestination,
+        request_name: String,
+        request_data: RequestData,
+        cx: &mut Context<Self>,
+    ) {
+        let mut request_data = request_data;
+        request_data.name = request_name;
+        self.collections.update(cx, |collections, cx| {
+            collections.add_request_node(
+                destination.collection_id,
+                destination.folder_id,
+                request_data,
+                cx,
+            );
+        });
+    }
+
+    fn build_active_request_snapshot(&mut self, cx: &mut Context<Self>) -> Option<RequestData> {
+        self.build_request_snapshot_for_tab(self.active_tab_index, cx)
+    }
+
+    fn build_request_snapshot_for_tab(
+        &mut self,
+        tab_index: usize,
+        cx: &mut Context<Self>,
+    ) -> Option<RequestData> {
+        let (tab_name, request_entity, request_view, url_input) = {
+            let tab = self.tabs.get(tab_index)?;
+            (
+                tab.name.clone(),
+                tab.request.clone(),
+                tab.request_view.clone(),
+                tab.url_input.clone(),
+            )
+        };
+
+        request_view.update(cx, |view, cx| {
+            view.sync_body_to_request(cx);
+            view.sync_headers_to_request(cx);
+        });
+
+        let query_string = request_view.read(cx).get_query_string(cx);
+        let base_url = if let Some(ref input) = url_input {
+            input.read(cx).text().to_string()
+        } else {
+            request_entity.read(cx).url().to_string()
+        };
+        let final_url = Self::compose_request_url(base_url, query_string);
+
+        request_entity.update(cx, |request, cx| {
+            request.set_url(final_url.clone(), cx);
+        });
+
+        let request = request_entity.read(cx);
+        Some(RequestData {
+            id: Uuid::new_v4(),
+            name: tab_name,
+            url: final_url,
+            method: request.method(),
+            headers: request.headers().to_vec(),
+            body: request.body().clone(),
+            is_sending: false,
+        })
+    }
+
+    fn compose_request_url(base_url: String, query_string: String) -> String {
+        if query_string.is_empty() {
+            return base_url;
+        }
+
+        if base_url.contains('?') {
+            format!("{}&{}", base_url, &query_string[1..])
+        } else {
+            format!("{base_url}{query_string}")
         }
     }
 
-    /// Get the active tab
+    fn destination_options(entries: Vec<CollectionDestinationEntry>) -> Vec<DestinationOption> {
+        entries
+            .into_iter()
+            .map(|entry| DestinationOption {
+                destination: entry.destination,
+                label: entry.label,
+            })
+            .collect()
+    }
+
     fn active_tab(&self) -> Option<&TabState> {
         self.tabs.get(self.active_tab_index)
     }
@@ -612,6 +735,618 @@ impl MainView {
                             ),
                         ]
                     }
+                })
+        });
+    }
+
+    fn rename_collection_target(
+        &mut self,
+        target: RenameTarget,
+        new_name: String,
+        cx: &mut Context<Self>,
+    ) {
+        let new_name = new_name.trim();
+        if new_name.is_empty() {
+            return;
+        }
+
+        match target {
+            RenameTarget::Collection(collection_id) => {
+                self.collections.update(cx, |collections, cx| {
+                    collections.rename_collection(collection_id, new_name, cx);
+                });
+            }
+            RenameTarget::Node {
+                collection_id,
+                node_id,
+            } => {
+                self.collections.update(cx, |collections, cx| {
+                    collections.rename_node(collection_id, node_id, new_name, cx);
+                });
+            }
+        }
+    }
+
+    fn show_collection_rename_dialog_internal(
+        &mut self,
+        target: RenameTarget,
+        title: &'static str,
+        prompt: &'static str,
+        current_name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let this = cx.entity().clone();
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(&current_name));
+
+        cx.subscribe_in(&input, window, move |view, state, event, window, cx| {
+            use gpui_component::input::InputEvent;
+            if let InputEvent::PressEnter { .. } = event {
+                view.rename_collection_target(target, state.read(cx).text().to_string(), cx);
+                window.close_dialog(cx);
+            }
+        })
+        .detach();
+
+        let input_for_footer = input.clone();
+        let this_for_footer = this.clone();
+
+        window.open_dialog(cx, move |dialog, _, _| {
+            let input_for_buttons = input_for_footer.clone();
+            let this_for_buttons = this_for_footer.clone();
+
+            dialog
+                .title(title)
+                .child(v_flex().gap_3().child(prompt).child(Input::new(&input)))
+                .footer({
+                    let input_submit = input_for_buttons.clone();
+                    let this_submit = this_for_buttons.clone();
+
+                    move |_, _, _, _| {
+                        let input_click = input_submit.clone();
+                        let this_click = this_submit.clone();
+
+                        vec![
+                            Button::new("rename-collection-target-submit")
+                                .primary()
+                                .label("Rename")
+                                .on_click(move |_, window, cx| {
+                                    let new_name = input_click.read(cx).text().to_string();
+                                    this_click.update(cx, |view, cx| {
+                                        view.rename_collection_target(target, new_name, cx);
+                                    });
+                                    window.close_dialog(cx);
+                                }),
+                            Button::new("rename-collection-target-cancel")
+                                .label("Cancel")
+                                .on_click(|_, window, cx| {
+                                    window.close_dialog(cx);
+                                }),
+                        ]
+                    }
+                })
+        });
+    }
+
+    pub fn show_rename_collection_dialog(
+        &mut self,
+        collection_id: Uuid,
+        current_name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_collection_rename_dialog_internal(
+            RenameTarget::Collection(collection_id),
+            "Rename Collection",
+            "Enter a new name for this collection:",
+            current_name,
+            window,
+            cx,
+        );
+    }
+
+    pub fn show_rename_collection_node_dialog(
+        &mut self,
+        collection_id: Uuid,
+        node_id: Uuid,
+        current_name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_collection_rename_dialog_internal(
+            RenameTarget::Node {
+                collection_id,
+                node_id,
+            },
+            "Rename Item",
+            "Enter a new name:",
+            current_name,
+            window,
+            cx,
+        );
+    }
+
+    pub fn show_new_folder_dialog(
+        &mut self,
+        collection_id: Uuid,
+        parent_folder_id: Option<Uuid>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let this = cx.entity().clone();
+        let input = cx.new(|cx| InputState::new(window, cx).default_value("New Folder"));
+
+        cx.subscribe_in(&input, window, move |view, state, event, window, cx| {
+            use gpui_component::input::InputEvent;
+            if let InputEvent::PressEnter { .. } = event {
+                let name = state.read(cx).text().to_string().trim().to_string();
+                if !name.is_empty() {
+                    view.create_collection_folder(collection_id, parent_folder_id, &name, cx);
+                }
+                window.close_dialog(cx);
+            }
+        })
+        .detach();
+
+        let input_for_footer = input.clone();
+        let this_for_footer = this.clone();
+
+        window.open_dialog(cx, move |dialog, _, _| {
+            let input_for_buttons = input_for_footer.clone();
+            let this_for_buttons = this_for_footer.clone();
+
+            dialog
+                .title("New Folder")
+                .child(
+                    v_flex()
+                        .gap_3()
+                        .child("Enter a name for the new folder:")
+                        .child(Input::new(&input)),
+                )
+                .footer({
+                    let input_submit = input_for_buttons.clone();
+                    let this_submit = this_for_buttons.clone();
+
+                    move |_, _, _, _| {
+                        let input_click = input_submit.clone();
+                        let this_click = this_submit.clone();
+
+                        vec![
+                            Button::new("new-folder-submit")
+                                .primary()
+                                .label("Create")
+                                .on_click(move |_, window, cx| {
+                                    let name =
+                                        input_click.read(cx).text().to_string().trim().to_string();
+                                    if !name.is_empty() {
+                                        this_click.update(cx, |view, cx| {
+                                            view.create_collection_folder(
+                                                collection_id,
+                                                parent_folder_id,
+                                                &name,
+                                                cx,
+                                            );
+                                        });
+                                    }
+                                    window.close_dialog(cx);
+                                }),
+                            Button::new("new-folder-cancel").label("Cancel").on_click(
+                                |_, window, cx| {
+                                    window.close_dialog(cx);
+                                },
+                            ),
+                        ]
+                    }
+                })
+        });
+    }
+
+    pub fn show_move_collection_node_dialog(
+        &mut self,
+        source_collection_id: Uuid,
+        node_id: Uuid,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let options = {
+            let collections = self.collections.read(cx);
+            Self::destination_options(
+                collections.move_destinations_for_node(source_collection_id, node_id),
+            )
+        };
+
+        if options.is_empty() {
+            window.push_notification(
+                (
+                    NotificationType::Warning,
+                    "No valid destinations are available for this item.",
+                ),
+                cx,
+            );
+            return;
+        }
+
+        let select_state = cx.new(|cx| {
+            SelectState::new(
+                options.clone(),
+                Some(gpui_component::IndexPath::new(0)),
+                window,
+                cx,
+            )
+        });
+        let this = cx.entity().clone();
+
+        window.open_dialog(cx, move |dialog, _, _| {
+            let select_for_footer = select_state.clone();
+            let this_for_footer = this.clone();
+
+            dialog
+                .title("Move Item")
+                .child(
+                    v_flex()
+                        .gap_3()
+                        .child("Choose a new destination:")
+                        .child(Select::new(&select_state).menu_width(px(360.0))),
+                )
+                .footer(move |_, _, _, _| {
+                    let select_click = select_for_footer.clone();
+                    let this_click = this_for_footer.clone();
+
+                    vec![
+                        Button::new("move-node-submit")
+                            .primary()
+                            .label("Move")
+                            .on_click(move |_, window, cx| {
+                                let Some(selection) =
+                                    select_click.read(cx).selected_value().cloned()
+                                else {
+                                    return;
+                                };
+
+                                let result = this_click.update(cx, |view, cx| {
+                                    view.collections.update(cx, |collections, cx| {
+                                        collections.move_node(
+                                            source_collection_id,
+                                            node_id,
+                                            selection.destination.collection_id,
+                                            selection.destination.folder_id,
+                                            cx,
+                                        )
+                                    })
+                                });
+
+                                match result {
+                                    Ok(()) => window.close_dialog(cx),
+                                    Err(error) => window.push_notification(
+                                        (
+                                            NotificationType::Error,
+                                            SharedString::from(error.to_string()),
+                                        ),
+                                        cx,
+                                    ),
+                                }
+                            }),
+                        Button::new("move-node-cancel").label("Cancel").on_click(
+                            |_, window, cx| {
+                                window.close_dialog(cx);
+                            },
+                        ),
+                    ]
+                })
+        });
+    }
+
+    pub fn show_save_to_collection_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(request_data) = self.build_active_request_snapshot(cx) else {
+            window.push_notification(
+                (NotificationType::Warning, "No active request to save."),
+                cx,
+            );
+            return;
+        };
+
+        let destination_options = {
+            let collections = self.collections.read(cx);
+            Self::destination_options(collections.destination_entries())
+        };
+
+        let this = cx.entity().clone();
+        let request_name_input =
+            cx.new(|cx| InputState::new(window, cx).default_value(&request_data.name));
+
+        if destination_options.is_empty() {
+            let collection_name_input =
+                cx.new(|cx| InputState::new(window, cx).default_value("New Collection"));
+            let request_name_for_footer = request_name_input.clone();
+            let collection_name_for_footer = collection_name_input.clone();
+            let this_for_footer = this.clone();
+            let request_for_footer = request_data.clone();
+
+            window.open_dialog(cx, move |dialog, _, _| {
+                let request_name_for_buttons = request_name_for_footer.clone();
+                let collection_name_for_buttons = collection_name_for_footer.clone();
+                let this_for_buttons = this_for_footer.clone();
+                let request_for_buttons = request_for_footer.clone();
+
+                dialog
+                    .title("Save to Collection")
+                    .child(
+                        v_flex()
+                            .gap_3()
+                            .child("No collections exist yet, so a new collection will be created.")
+                            .child("Request name")
+                            .child(Input::new(&request_name_input))
+                            .child("Collection name")
+                            .child(Input::new(&collection_name_input)),
+                    )
+                    .footer(move |_, _, _, _| {
+                        let request_name_click = request_name_for_buttons.clone();
+                        let collection_name_click = collection_name_for_buttons.clone();
+                        let this_click = this_for_buttons.clone();
+                        let request_click = request_for_buttons.clone();
+
+                        vec![
+                            Button::new("save-to-new-collection")
+                                .primary()
+                                .label("Save")
+                                .on_click(move |_, window, cx| {
+                                    let request_name = request_name_click
+                                        .read(cx)
+                                        .text()
+                                        .to_string()
+                                        .trim()
+                                        .to_string();
+                                    let collection_name = collection_name_click
+                                        .read(cx)
+                                        .text()
+                                        .to_string()
+                                        .trim()
+                                        .to_string();
+                                    let request_name = if request_name.is_empty() {
+                                        "Untitled Request".to_string()
+                                    } else {
+                                        request_name
+                                    };
+                                    let collection_name = if collection_name.is_empty() {
+                                        "New Collection".to_string()
+                                    } else {
+                                        collection_name
+                                    };
+
+                                    this_click.update(cx, |view, cx| {
+                                        let collection_id =
+                                            view.collections.update(cx, |collections, cx| {
+                                                collections.create_collection(&collection_name, cx)
+                                            });
+                                        view.save_request_to_destination(
+                                            CollectionDestination {
+                                                collection_id,
+                                                folder_id: None,
+                                            },
+                                            request_name,
+                                            request_click.clone(),
+                                            cx,
+                                        );
+                                    });
+                                    window.close_dialog(cx);
+                                }),
+                            Button::new("save-to-new-collection-cancel")
+                                .label("Cancel")
+                                .on_click(|_, window, cx| {
+                                    window.close_dialog(cx);
+                                }),
+                        ]
+                    })
+            });
+            return;
+        }
+
+        let destination_select = cx.new(|cx| {
+            SelectState::new(
+                destination_options.clone(),
+                Some(gpui_component::IndexPath::new(0)),
+                window,
+                cx,
+            )
+        });
+        let request_name_for_footer = request_name_input.clone();
+        let destination_for_footer = destination_select.clone();
+        let this_for_footer = this.clone();
+        let request_for_footer = request_data.clone();
+
+        window.open_dialog(cx, move |dialog, _, _| {
+            let request_name_for_buttons = request_name_for_footer.clone();
+            let destination_for_buttons = destination_for_footer.clone();
+            let this_for_buttons = this_for_footer.clone();
+            let request_for_buttons = request_for_footer.clone();
+
+            dialog
+                .title("Save to Collection")
+                .child(
+                    v_flex()
+                        .gap_3()
+                        .child("Request name")
+                        .child(Input::new(&request_name_input))
+                        .child("Destination")
+                        .child(Select::new(&destination_select).menu_width(px(360.0))),
+                )
+                .footer(move |_, _, _, _| {
+                    let request_name_click = request_name_for_buttons.clone();
+                    let destination_click = destination_for_buttons.clone();
+                    let this_click = this_for_buttons.clone();
+                    let request_click = request_for_buttons.clone();
+
+                    vec![
+                        Button::new("save-to-collection-submit")
+                            .primary()
+                            .label("Save")
+                            .on_click(move |_, window, cx| {
+                                let Some(selection) =
+                                    destination_click.read(cx).selected_value().cloned()
+                                else {
+                                    return;
+                                };
+
+                                let request_name = request_name_click
+                                    .read(cx)
+                                    .text()
+                                    .to_string()
+                                    .trim()
+                                    .to_string();
+                                let request_name = if request_name.is_empty() {
+                                    "Untitled Request".to_string()
+                                } else {
+                                    request_name
+                                };
+
+                                this_click.update(cx, |view, cx| {
+                                    view.save_request_to_destination(
+                                        selection.destination,
+                                        request_name,
+                                        request_click.clone(),
+                                        cx,
+                                    );
+                                });
+                                window.close_dialog(cx);
+                            }),
+                        Button::new("save-to-collection-cancel")
+                            .label("Cancel")
+                            .on_click(|_, window, cx| {
+                                window.close_dialog(cx);
+                            }),
+                    ]
+                })
+        });
+    }
+
+    pub fn import_collection_from_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let this = cx.entity().clone();
+        let options = PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Select collection file to import".into()),
+        };
+        let paths_receiver = cx.prompt_for_paths(options);
+
+        cx.spawn_in(window, async move |_weak_this, cx| {
+            let Ok(platform_result) = paths_receiver.await else {
+                log::error!("Collection import file picker channel closed unexpectedly");
+                return;
+            };
+
+            let Ok(paths_opt) = platform_result else {
+                let _ = cx.update(|window, app| {
+                    window.push_notification(
+                        (NotificationType::Error, "Failed to open file picker"),
+                        app,
+                    );
+                });
+                return;
+            };
+
+            let Some(paths) = paths_opt else {
+                return;
+            };
+            let Some(path) = paths.first().cloned() else {
+                return;
+            };
+
+            let result = ImportRegistry::default().import_file(&path);
+            let _ = cx.update(|window, app| match result {
+                Ok(result) => {
+                    let summary = ImportSummary {
+                        provider: result.provider,
+                        collection_name: result.collection.name.clone(),
+                        folder_count: result.collection.folder_count(),
+                        request_count: result.collection.request_count(),
+                        warnings: result.warnings.clone(),
+                    };
+
+                    this.update(app, |view, cx| {
+                        view.collections.update(cx, |collections, cx| {
+                            collections.import_collection(result.collection, cx);
+                        });
+                        view.show_import_summary_dialog(summary, window, cx);
+                    });
+                }
+                Err(error) => {
+                    window.push_notification(
+                        (
+                            NotificationType::Error,
+                            SharedString::from(format!("Import failed: {error}")),
+                        ),
+                        app,
+                    );
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn show_import_summary_dialog(
+        &mut self,
+        summary: ImportSummary,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let muted_foreground = cx.theme().muted_foreground;
+        window.open_dialog(cx, move |dialog, _, _| {
+            let warning_count = summary.warnings.len();
+            let warnings = summary.warnings.clone();
+
+            dialog
+                .title("Import Summary")
+                .child(
+                    v_flex()
+                        .gap_3()
+                        .child(format!("Provider: {}", summary.provider))
+                        .child(format!("Collection: {}", summary.collection_name))
+                        .child(format!("Folders imported: {}", summary.folder_count))
+                        .child(format!("Requests imported: {}", summary.request_count))
+                        .child(format!("Warnings: {}", warning_count))
+                        .child(if warnings.is_empty() {
+                            div()
+                                .text_size(px(12.0))
+                                .child("No warnings.")
+                                .into_any_element()
+                        } else {
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(6.0))
+                                .max_h(px(220.0))
+                                .overflow_y_scrollbar()
+                                .children(warnings.into_iter().map(|warning| {
+                                    let location =
+                                        warning.path.unwrap_or_else(|| "Import".to_string());
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(2.0))
+                                        .child(
+                                            div()
+                                                .text_size(px(11.0))
+                                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                                .child(location),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(12.0))
+                                                .text_color(muted_foreground)
+                                                .child(warning.message),
+                                        )
+                                }))
+                                .into_any_element()
+                        }),
+                )
+                .footer(|_, _, _, _| {
+                    vec![Button::new("import-summary-close")
+                        .primary()
+                        .label("Close")
+                        .on_click(|_, window, cx| {
+                            window.close_dialog(cx);
+                        })]
                 })
         });
     }
@@ -863,6 +1598,10 @@ impl MainView {
             CommandId::GoToLastTab => self.go_to_last_tab(cx),
             CommandId::ToggleSidebar => self.toggle_sidebar(cx),
             CommandId::ToggleRequestResponseLayout => self.toggle_request_response_layout(cx),
+            CommandId::SaveToCollection | CommandId::ImportCollection => {
+                self.pending_window_command = Some(cmd_id);
+                cx.notify();
+            }
             CommandId::SetMethodGet => self.set_method(HttpMethod::Get, cx),
             CommandId::SetMethodPost => self.set_method(HttpMethod::Post, cx),
             CommandId::SetMethodPut => self.set_method(HttpMethod::Put, cx),
@@ -1089,6 +1828,8 @@ impl Render for MainView {
             match cmd_id {
                 CommandId::DuplicateRequest => self.duplicate_request(window, cx),
                 CommandId::FocusUrlBar => self.focus_url_bar(window, cx),
+                CommandId::SaveToCollection => self.show_save_to_collection_dialog(window, cx),
+                CommandId::ImportCollection => self.import_collection_from_file(window, cx),
                 _ => {}
             }
         }
@@ -1156,6 +1897,12 @@ impl Render for MainView {
             }))
             .on_action(cx.listener(|this, _: &DuplicateRequest, window, cx| {
                 this.duplicate_request(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &SaveToCollection, window, cx| {
+                this.show_save_to_collection_dialog(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ImportCollection, window, cx| {
+                this.import_collection_from_file(window, cx);
             }))
             // Tab navigation
             .on_action(cx.listener(|this, _: &NextTab, _window, cx| {
@@ -1288,8 +2035,14 @@ impl Render for MainView {
                 let this_for_load_collection = this.clone();
                 let this_for_delete_collection = this.clone();
                 let this_for_delete_item = this.clone();
+                let this_for_rename_collection = this.clone();
+                let this_for_rename_node = this.clone();
                 let this_for_new_collection = this.clone();
+                let this_for_import_collection = this.clone();
+                let this_for_new_folder = this.clone();
+                let this_for_move_node = this.clone();
                 let this_for_toggle_expand = this.clone();
+                let this_for_toggle_node_expand = this.clone();
                 let this_for_filter_change = this.clone();
                 let this_for_group_by_change = this.clone();
 
@@ -1351,10 +2104,33 @@ impl Render for MainView {
                                     view.delete_collection(collection_id, cx);
                                 });
                             })
-                            .on_delete_collection_item(
+                            .on_delete_collection_node(
                                 move |collection_id, item_id, _window, cx| {
                                     this_for_delete_item.update(cx, |view, cx| {
-                                        view.delete_collection_item(collection_id, item_id, cx);
+                                        view.delete_collection_node(collection_id, item_id, cx);
+                                    });
+                                },
+                            )
+                            .on_rename_collection(move |collection_id, current_name, window, cx| {
+                                this_for_rename_collection.update(cx, |view, cx| {
+                                    view.show_rename_collection_dialog(
+                                        collection_id,
+                                        current_name,
+                                        window,
+                                        cx,
+                                    );
+                                });
+                            })
+                            .on_rename_collection_node(
+                                move |collection_id, node_id, current_name, window, cx| {
+                                    this_for_rename_node.update(cx, |view, cx| {
+                                        view.show_rename_collection_node_dialog(
+                                            collection_id,
+                                            node_id,
+                                            current_name,
+                                            window,
+                                            cx,
+                                        );
                                     });
                                 },
                             )
@@ -1363,11 +2139,47 @@ impl Render for MainView {
                                     view.create_new_collection(cx);
                                 });
                             })
+                            .on_import_collection(move |window, cx| {
+                                this_for_import_collection.update(cx, |view, cx| {
+                                    view.import_collection_from_file(window, cx);
+                                });
+                            })
+                            .on_new_folder(move |collection_id, folder_id, window, cx| {
+                                this_for_new_folder.update(cx, |view, cx| {
+                                    view.show_new_folder_dialog(
+                                        collection_id,
+                                        folder_id,
+                                        window,
+                                        cx,
+                                    );
+                                });
+                            })
+                            .on_move_collection_node(move |collection_id, node_id, window, cx| {
+                                this_for_move_node.update(cx, |view, cx| {
+                                    view.show_move_collection_node_dialog(
+                                        collection_id,
+                                        node_id,
+                                        window,
+                                        cx,
+                                    );
+                                });
+                            })
                             .on_toggle_collection_expand(move |collection_id, _window, cx| {
                                 this_for_toggle_expand.update(cx, |view, cx| {
                                     view.toggle_collection_expand(collection_id, cx);
                                 });
-                            }),
+                            })
+                            .on_toggle_collection_node_expand(
+                                move |collection_id, node_id, _window, cx| {
+                                    this_for_toggle_node_expand.update(cx, |view, cx| {
+                                        view.toggle_collection_node_expand(
+                                            collection_id,
+                                            node_id,
+                                            cx,
+                                        );
+                                    });
+                                },
+                            ),
                     ),
                 )
             })
@@ -1448,6 +2260,14 @@ impl MainView {
                                     this_for_cancel.update(cx, |view, cx| {
                                         view.cancel_request(cx);
                                     });
+                                })
+                                .on_save_to_collection({
+                                    let this = this.clone();
+                                    move |_, window, cx| {
+                                        this.update(cx, |view, cx| {
+                                            view.show_save_to_collection_dialog(window, cx);
+                                        });
+                                    }
                                 }),
                         )
                     }),

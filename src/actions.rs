@@ -68,6 +68,8 @@ actions!(
         ShowHelp,
         SaveRequest,
         OpenRequest,
+        SaveToCollection,
+        ImportCollection,
         // Method shortcuts (quick method switching)
         SetMethodGet,
         SetMethodPost,

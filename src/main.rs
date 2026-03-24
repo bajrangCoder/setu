@@ -5,6 +5,7 @@ mod components;
 mod entities;
 mod http;
 mod icons;
+mod importers;
 mod theme;
 mod utils;
 mod views;
