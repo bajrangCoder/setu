@@ -1,10 +1,11 @@
 use gpui::prelude::*;
 use gpui::{
-    div, px, AnyElement, App, Entity, IntoElement, MouseButton, SharedString, Styled, Window,
+    anchored, deferred, div, px, AnyElement, App, Context, Corner, DismissEvent, Entity, Focusable,
+    IntoElement, MouseButton, Point, SharedString, Styled, Subscription, Window,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputState};
-use gpui_component::menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem};
+use gpui_component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
 use gpui_component::{ActiveTheme, Icon, IconName as ComponentIconName, Sizable};
 use std::rc::Rc;
 use uuid::Uuid;
@@ -26,6 +27,14 @@ struct PanelCallbacks {
     on_move_node: Option<Rc<dyn Fn(Uuid, Uuid, &mut Window, &mut App) + 'static>>,
     on_toggle_collection_expand: Option<Rc<dyn Fn(Uuid, &mut Window, &mut App) + 'static>>,
     on_toggle_node_expand: Option<Rc<dyn Fn(Uuid, Uuid, &mut Window, &mut App) + 'static>>,
+}
+
+#[derive(Default)]
+struct RowContextMenuState {
+    menu: Option<Entity<PopupMenu>>,
+    open: bool,
+    position: Point<gpui::Pixels>,
+    subscription: Option<Subscription>,
 }
 
 #[derive(IntoElement)]
@@ -434,7 +443,91 @@ impl CollectionsPanel {
             .into_any_element()
     }
 
+    fn wrap_with_row_context_menu(
+        window: &mut Window,
+        cx: &mut App,
+        id: SharedString,
+        trigger: AnyElement,
+        builder: impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static,
+    ) -> AnyElement {
+        let menu_state =
+            window.use_keyed_state(id.clone(), cx, |_, _| RowContextMenuState::default());
+        let builder = Rc::new(builder);
+        let (open, position, menu) = {
+            let state = menu_state.read(cx);
+            (state.open, state.position, state.menu.clone())
+        };
+
+        let mut wrapper = div()
+            .relative()
+            .child(trigger)
+            .on_mouse_down(MouseButton::Right, {
+                let menu_state = menu_state.clone();
+                let builder = builder.clone();
+                move |event, window, cx| {
+                    let click_position = event.position;
+
+                    menu_state.update(cx, |state, _| {
+                        state.open = true;
+                        state.position = click_position;
+                        state.menu = None;
+                        state.subscription = None;
+                    });
+
+                    window.defer(cx, {
+                        let menu_state = menu_state.clone();
+                        let builder = builder.clone();
+                        move |window, cx| {
+                            let menu = PopupMenu::build(window, cx, move |menu, window, cx| {
+                                builder(menu, window, cx)
+                            });
+
+                            menu.focus_handle(cx).focus(window);
+
+                            let subscription = window.subscribe(&menu, cx, {
+                                let menu_state = menu_state.clone();
+                                move |_, _: &DismissEvent, window, cx| {
+                                    menu_state.update(cx, |state, _| {
+                                        state.open = false;
+                                        state.menu = None;
+                                        state.subscription = None;
+                                    });
+                                    window.refresh();
+                                }
+                            });
+
+                            menu_state.update(cx, |state, _| {
+                                state.menu = Some(menu.clone());
+                                state.subscription = Some(subscription);
+                            });
+
+                            window.refresh();
+                        }
+                    });
+                }
+            });
+
+        if open {
+            if let Some(menu) = menu {
+                wrapper = wrapper.child(
+                    deferred(
+                        anchored()
+                            .position(position)
+                            .snap_to_window_with_margin(px(8.))
+                            .anchor(Corner::TopLeft)
+                            .child(menu),
+                    )
+                    .with_priority(1),
+                );
+            }
+        }
+
+        wrapper.into_any_element()
+    }
+
     fn render_collection_row(
+        window: &mut Window,
+        cx: &mut App,
         collection: &Collection,
         theme: &gpui_component::theme::ThemeColor,
         callbacks: &PanelCallbacks,
@@ -449,12 +542,10 @@ impl CollectionsPanel {
         let action_name = collection.name.clone();
         let action_collection_id = collection.id;
         let is_expanded = collection.expanded;
+        let row_id = SharedString::from(format!("collection-row-{}", collection.id));
 
-        div()
-            .id(SharedString::from(format!(
-                "collection-row-{}",
-                collection.id
-            )))
+        let row = div()
+            .id(row_id.clone())
             .group(group_id.clone())
             .relative()
             .flex()
@@ -470,14 +561,6 @@ impl CollectionsPanel {
                 if let Some(ref handler) = callbacks_for_toggle.on_toggle_collection_expand {
                     handler(collection_id, window, cx);
                 }
-            })
-            .context_menu(move |menu, _window, _cx| {
-                Self::build_collection_popup_menu(
-                    menu,
-                    &callbacks_for_menu,
-                    collection_id,
-                    row_name.clone(),
-                )
             })
             .child(Self::render_chevron(is_expanded, theme))
             .child(
@@ -525,10 +608,21 @@ impl CollectionsPanel {
                     )
                 },
             ))
-            .into_any_element()
+            .into_any_element();
+
+        Self::wrap_with_row_context_menu(window, cx, row_id, row, move |menu, _window, _cx| {
+            Self::build_collection_popup_menu(
+                menu,
+                &callbacks_for_menu,
+                collection_id,
+                row_name.clone(),
+            )
+        })
     }
 
     fn render_folder_row(
+        window: &mut Window,
+        cx: &mut App,
         collection_id: Uuid,
         folder: &crate::entities::CollectionFolderNode,
         theme: &gpui_component::theme::ThemeColor,
@@ -546,12 +640,10 @@ impl CollectionsPanel {
         let action_name = folder.name.clone();
         let action_node_id = folder.id;
         let is_expanded = folder.expanded;
+        let row_id = SharedString::from(format!("folder-row-{}-{}", collection_id, folder.id));
 
-        div()
-            .id(SharedString::from(format!(
-                "folder-row-{}-{}",
-                collection_id, folder.id
-            )))
+        let row = div()
+            .id(row_id.clone())
             .group(group_id.clone())
             .relative()
             .flex()
@@ -567,15 +659,6 @@ impl CollectionsPanel {
                 if let Some(ref handler) = callbacks_for_toggle.on_toggle_node_expand {
                     handler(collection_id, node_id, window, cx);
                 }
-            })
-            .context_menu(move |menu, _window, _cx| {
-                Self::build_folder_popup_menu(
-                    menu,
-                    &callbacks_for_menu,
-                    collection_id,
-                    node_id,
-                    row_name.clone(),
-                )
             })
             .child(Self::render_chevron(has_children && is_expanded, theme))
             .child(
@@ -622,20 +705,31 @@ impl CollectionsPanel {
                     )
                 },
             ))
-            .into_any_element()
+            .into_any_element();
+
+        Self::wrap_with_row_context_menu(window, cx, row_id, row, move |menu, _window, _cx| {
+            Self::build_folder_popup_menu(
+                menu,
+                &callbacks_for_menu,
+                collection_id,
+                node_id,
+                row_name.clone(),
+            )
+        })
     }
 
     fn render_request_row(
+        window: &mut Window,
+        cx: &mut App,
         collection_id: Uuid,
         request: &crate::entities::CollectionRequestNode,
         theme: &gpui_component::theme::ThemeColor,
         callbacks: &PanelCallbacks,
-        app: &App,
     ) -> AnyElement {
         let group_id = SharedString::from(format!("request-row-{}-{}", collection_id, request.id));
         let action_id =
             SharedString::from(format!("request-actions-{}-{}", collection_id, request.id));
-        let m_color = method_color(&request.request.method, app);
+        let m_color = method_color(&request.request.method, cx);
         let request_id = request.id;
         let callbacks_for_load = callbacks.clone();
         let callbacks_for_menu = callbacks.clone();
@@ -643,12 +737,10 @@ impl CollectionsPanel {
         let context_name = request.display_name();
         let action_name = request.display_name();
         let method_str = request.request.method.as_str();
+        let row_id = SharedString::from(format!("request-row-{}-{}", collection_id, request.id));
 
-        div()
-            .id(SharedString::from(format!(
-                "request-row-{}-{}",
-                collection_id, request.id
-            )))
+        let row = div()
+            .id(row_id.clone())
             .group(group_id.clone())
             .relative()
             .flex()
@@ -665,15 +757,6 @@ impl CollectionsPanel {
                 if let Some(ref handler) = callbacks_for_load.on_load_request {
                     handler(collection_id, request_id, window, cx);
                 }
-            })
-            .context_menu(move |menu, _window, _cx| {
-                Self::build_request_popup_menu(
-                    menu,
-                    &callbacks_for_menu,
-                    collection_id,
-                    request_id,
-                    context_name.clone(),
-                )
             })
             .child(Self::render_method_badge(method_str, m_color))
             .child(
@@ -702,15 +785,26 @@ impl CollectionsPanel {
                     )
                 },
             ))
-            .into_any_element()
+            .into_any_element();
+
+        Self::wrap_with_row_context_menu(window, cx, row_id, row, move |menu, _window, _cx| {
+            Self::build_request_popup_menu(
+                menu,
+                &callbacks_for_menu,
+                collection_id,
+                request_id,
+                context_name.clone(),
+            )
+        })
     }
 
     fn render_node_tree(
+        window: &mut Window,
+        cx: &mut App,
         collection_id: Uuid,
         node: &CollectionNode,
         theme: &gpui_component::theme::ThemeColor,
         callbacks: &PanelCallbacks,
-        app: &App,
     ) -> AnyElement {
         match node {
             CollectionNode::Folder(folder) => {
@@ -719,6 +813,8 @@ impl CollectionsPanel {
                     .flex_col()
                     .w_full()
                     .child(Self::render_folder_row(
+                        window,
+                        cx,
                         collection_id,
                         folder,
                         theme,
@@ -736,7 +832,14 @@ impl CollectionsPanel {
                             .flex_col()
                             .overflow_hidden()
                             .children(folder.children.iter().map(|child| {
-                                Self::render_node_tree(collection_id, child, theme, callbacks, app)
+                                Self::render_node_tree(
+                                    window,
+                                    cx,
+                                    collection_id,
+                                    child,
+                                    theme,
+                                    callbacks,
+                                )
                             })),
                     );
                 }
@@ -744,22 +847,25 @@ impl CollectionsPanel {
                 branch.into_any_element()
             }
             CollectionNode::Request(request) => {
-                Self::render_request_row(collection_id, request, theme, callbacks, app)
+                Self::render_request_row(window, cx, collection_id, request, theme, callbacks)
             }
         }
     }
 
     fn render_collection_tree(
+        window: &mut Window,
+        cx: &mut App,
         collection: &Collection,
         theme: &gpui_component::theme::ThemeColor,
         callbacks: &PanelCallbacks,
-        app: &App,
     ) -> AnyElement {
         let mut tree = div()
             .flex()
             .flex_col()
             .w_full()
-            .child(Self::render_collection_row(collection, theme, callbacks));
+            .child(Self::render_collection_row(
+                window, cx, collection, theme, callbacks,
+            ));
 
         if collection.expanded && !collection.nodes.is_empty() {
             tree = tree.child(
@@ -772,7 +878,7 @@ impl CollectionsPanel {
                     .flex_col()
                     .overflow_hidden()
                     .children(collection.nodes.iter().map(|node| {
-                        Self::render_node_tree(collection.id, node, theme, callbacks, app)
+                        Self::render_node_tree(window, cx, collection.id, node, theme, callbacks)
                     })),
             );
         }
@@ -782,7 +888,7 @@ impl CollectionsPanel {
 }
 
 impl RenderOnce for CollectionsPanel {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.theme().clone();
         let search_query = self.search_input.read(cx).text().to_string();
         let collections_data = self.collections.read(cx);
@@ -801,7 +907,9 @@ impl RenderOnce for CollectionsPanel {
         } else {
             let rows = filtered_collections
                 .iter()
-                .map(|collection| Self::render_collection_tree(collection, &theme, &callbacks, cx))
+                .map(|collection| {
+                    Self::render_collection_tree(window, cx, collection, &theme, &callbacks)
+                })
                 .collect::<Vec<_>>();
 
             div()
