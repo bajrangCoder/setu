@@ -301,3 +301,117 @@ impl Default for HistoryEntity {
 }
 
 impl EventEmitter<HistoryEvent> for HistoryEntity {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::entities::{Header, HttpMethod, RequestBody};
+
+    fn sample_request(name: &str, url: &str, method: HttpMethod) -> RequestData {
+        RequestData {
+            id: Uuid::new_v4(),
+            name: name.to_string(),
+            url: url.to_string(),
+            method,
+            headers: vec![Header::new("Accept", "application/json")],
+            body: RequestBody::None,
+            is_sending: false,
+        }
+    }
+
+    fn sample_entry(name: &str, url: &str, method: HttpMethod) -> HistoryEntry {
+        HistoryEntry {
+            id: Uuid::new_v4(),
+            request: sample_request(name, url, method),
+            response: None,
+            timestamp: Utc::now(),
+            starred: false,
+        }
+    }
+
+    #[test]
+    fn display_name_prefers_request_name_and_falls_back_to_trimmed_url() {
+        let named = sample_entry(
+            "List Users",
+            "https://api.example.com/users",
+            HttpMethod::Get,
+        );
+        let unnamed = sample_entry(
+            "New Request",
+            "https://api.example.com/users",
+            HttpMethod::Get,
+        );
+        let empty = sample_entry("New Request", "", HttpMethod::Get);
+
+        assert_eq!(named.display_name(), "List Users");
+        assert_eq!(unnamed.display_name(), "api.example.com/users");
+        assert_eq!(empty.display_name(), "Untitled Request");
+    }
+
+    #[test]
+    fn search_matches_name_url_and_method_case_insensitively() {
+        let history = HistoryEntity {
+            entries: vec![
+                sample_entry(
+                    "List Users",
+                    "https://api.example.com/users",
+                    HttpMethod::Get,
+                ),
+                sample_entry(
+                    "Create Team",
+                    "https://admin.example.com/teams",
+                    HttpMethod::Post,
+                ),
+            ],
+            max_entries: 500,
+            storage_path: None,
+            collapsed_groups: HashSet::new(),
+        };
+
+        assert_eq!(history.search("users").len(), 1);
+        assert_eq!(history.search("ADMIN.EXAMPLE.COM").len(), 1);
+        assert_eq!(history.search("post").len(), 1);
+    }
+
+    #[test]
+    fn grouped_by_url_uses_domain_and_returns_sorted_groups() {
+        let history = HistoryEntity {
+            entries: vec![
+                sample_entry(
+                    "Second",
+                    "https://beta.example.com/projects",
+                    HttpMethod::Get,
+                ),
+                sample_entry("First", "https://alpha.example.com/users", HttpMethod::Get),
+                sample_entry("Third", "https://alpha.example.com/teams", HttpMethod::Post),
+            ],
+            max_entries: 500,
+            storage_path: None,
+            collapsed_groups: HashSet::new(),
+        };
+
+        let grouped = history.grouped_by_url();
+
+        assert_eq!(grouped.len(), 2);
+        assert_eq!(grouped[0].0, "alpha.example.com");
+        assert_eq!(grouped[0].1.len(), 2);
+        assert_eq!(grouped[1].0, "beta.example.com");
+        assert_eq!(grouped[1].1.len(), 1);
+    }
+
+    #[test]
+    fn extract_domain_strips_scheme_and_path() {
+        assert_eq!(
+            HistoryEntity::extract_domain("https://api.example.com/users?page=1"),
+            "api.example.com"
+        );
+        assert_eq!(
+            HistoryEntity::extract_domain("http://localhost:3000/v1/health"),
+            "localhost:3000"
+        );
+        assert_eq!(
+            HistoryEntity::extract_domain("example.com/path"),
+            "example.com"
+        );
+    }
+}

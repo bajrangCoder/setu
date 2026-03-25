@@ -2224,6 +2224,44 @@ impl Render for MainView {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::MainView;
+
+    #[test]
+    fn compose_request_url_appends_query_to_plain_url() {
+        assert_eq!(
+            MainView::compose_request_url(
+                "https://api.example.com/users".to_string(),
+                "?page=1".to_string()
+            ),
+            "https://api.example.com/users?page=1"
+        );
+    }
+
+    #[test]
+    fn compose_request_url_merges_with_existing_query() {
+        assert_eq!(
+            MainView::compose_request_url(
+                "https://api.example.com/users?sort=name".to_string(),
+                "?page=1".to_string()
+            ),
+            "https://api.example.com/users?sort=name&page=1"
+        );
+    }
+
+    #[test]
+    fn compose_request_url_preserves_base_when_query_is_empty() {
+        assert_eq!(
+            MainView::compose_request_url(
+                "https://api.example.com/users?sort=name".to_string(),
+                String::new()
+            ),
+            "https://api.example.com/users?sort=name"
+        );
+    }
+}
+
 impl MainView {
     fn render_request_panel(
         &self,

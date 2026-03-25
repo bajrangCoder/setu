@@ -208,6 +208,80 @@ impl<'a> Drop for Base64Encoder<'a> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{base64_encode, AuthConfig, AuthType};
+
+    #[test]
+    fn basic_auth_generates_expected_header() {
+        let config = AuthConfig {
+            auth_type: AuthType::Basic,
+            username: "raunak".to_string(),
+            password: "secret".to_string(),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            config.to_header(),
+            Some((
+                "Authorization".to_string(),
+                "Basic cmF1bmFrOnNlY3JldA==".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn bearer_auth_omits_empty_token() {
+        let empty = AuthConfig {
+            auth_type: AuthType::Bearer,
+            token: String::new(),
+            ..Default::default()
+        };
+        let filled = AuthConfig {
+            auth_type: AuthType::Bearer,
+            token: "abc123".to_string(),
+            ..Default::default()
+        };
+
+        assert_eq!(empty.to_header(), None);
+        assert_eq!(
+            filled.to_header(),
+            Some(("Authorization".to_string(), "Bearer abc123".to_string()))
+        );
+    }
+
+    #[test]
+    fn api_key_only_generates_header_for_header_mode() {
+        let query_param = AuthConfig {
+            auth_type: AuthType::ApiKey,
+            api_key_name: "X-Api-Key".to_string(),
+            api_key_value: "secret".to_string(),
+            api_key_in_header: false,
+            ..Default::default()
+        };
+        let header = AuthConfig {
+            auth_type: AuthType::ApiKey,
+            api_key_name: "X-Api-Key".to_string(),
+            api_key_value: "secret".to_string(),
+            api_key_in_header: true,
+            ..Default::default()
+        };
+
+        assert_eq!(query_param.to_header(), None);
+        assert_eq!(
+            header.to_header(),
+            Some(("X-Api-Key".to_string(), "secret".to_string()))
+        );
+    }
+
+    #[test]
+    fn base64_encoder_handles_padding_cases() {
+        assert_eq!(base64_encode("f"), "Zg==");
+        assert_eq!(base64_encode("fo"), "Zm8=");
+        assert_eq!(base64_encode("foo"), "Zm9v");
+    }
+}
+
 /// Authentication editor component
 pub struct AuthEditor {
     auth_type: AuthType,
