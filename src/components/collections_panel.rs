@@ -401,9 +401,11 @@ impl CollectionsPanel {
             .top_0()
             .bottom_0()
             .flex()
+            .flex_row()
             .items_center()
+            .px(px(4.0))
             .invisible()
-            .group_hover(group_id, |this| this.visible())
+            .group_hover(group_id, |this| this.visible().bg(theme.list_hover))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
                 Button::new(action_id)
@@ -463,7 +465,7 @@ impl CollectionsPanel {
             .pr(px(8.0))
             .cursor_pointer()
             .rounded(px(6.0))
-            .hover(|this| this.bg(theme.muted.opacity(0.25)))
+            .hover(|this| this.bg(theme.list_hover))
             .on_click(move |_, window, cx| {
                 if let Some(ref handler) = callbacks_for_toggle.on_toggle_collection_expand {
                     handler(collection_id, window, cx);
@@ -561,7 +563,7 @@ impl CollectionsPanel {
             .pr(px(8.0))
             .cursor_pointer()
             .rounded(px(6.0))
-            .hover(|this| this.bg(theme.muted.opacity(0.25)))
+            .hover(|this| this.bg(theme.list_hover))
             .on_click(move |_, window, cx| {
                 if let Some(ref handler) = callbacks_for_toggle.on_toggle_node_expand {
                     handler(collection_id, node_id, window, cx);
@@ -659,7 +661,7 @@ impl CollectionsPanel {
             .pr(px(8.0))
             .cursor_pointer()
             .rounded(px(6.0))
-            .hover(|this| this.bg(theme.muted.opacity(0.18)))
+            .hover(|this| this.bg(theme.list_hover))
             .on_click(move |_, window, cx| {
                 if let Some(ref handler) = callbacks_for_load.on_load_request {
                     handler(collection_id, request_id, window, cx);
