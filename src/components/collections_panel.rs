@@ -353,10 +353,6 @@ impl CollectionsPanel {
         ))
     }
 
-    fn row_height() -> gpui::Pixels {
-        px(32.0)
-    }
-
     fn render_chevron(expanded: bool, theme: &gpui_component::theme::ThemeColor) -> AnyElement {
         div()
             .w(px(16.0))
@@ -424,11 +420,16 @@ impl CollectionsPanel {
 
     fn render_method_badge(method_str: &'static str, method_color: gpui::Hsla) -> AnyElement {
         div()
-            .w(px(32.0))
+            .min_w(px(42.0))
             .flex_shrink_0()
+            .px(px(8.0))
+            .py(px(3.0))
+            .bg(method_color.opacity(0.15))
+            .rounded(px(4.0))
             .text_color(method_color)
             .font_weight(gpui::FontWeight::BOLD)
             .text_size(px(10.0))
+            .text_center()
             .child(method_str)
             .into_any_element()
     }
@@ -459,10 +460,9 @@ impl CollectionsPanel {
             .flex()
             .items_center()
             .w_full()
-            .h(Self::row_height())
-            .gap(px(6.0))
-            .pl(px(8.0))
-            .pr(px(8.0))
+            .gap(px(10.0))
+            .px(px(12.0))
+            .py(px(10.0))
             .cursor_pointer()
             .rounded(px(6.0))
             .hover(|this| this.bg(theme.list_hover))
@@ -515,7 +515,7 @@ impl CollectionsPanel {
                 group_id,
                 action_id,
                 "Collection actions",
-                px(6.0),
+                px(8.0),
                 move |menu, _window, _cx| {
                     Self::build_collection_popup_menu(
                         menu,
@@ -557,10 +557,9 @@ impl CollectionsPanel {
             .flex()
             .items_center()
             .w_full()
-            .h(Self::row_height())
-            .gap(px(6.0))
-            .pl(px(8.0))
-            .pr(px(8.0))
+            .gap(px(10.0))
+            .px(px(12.0))
+            .py(px(10.0))
             .cursor_pointer()
             .rounded(px(6.0))
             .hover(|this| this.bg(theme.list_hover))
@@ -612,7 +611,7 @@ impl CollectionsPanel {
                 group_id,
                 action_id,
                 "Folder actions",
-                px(6.0),
+                px(8.0),
                 move |menu, _window, _cx| {
                     Self::build_folder_popup_menu(
                         menu,
@@ -655,10 +654,10 @@ impl CollectionsPanel {
             .flex()
             .items_center()
             .w_full()
-            .h(Self::row_height())
-            .gap(px(8.0))
-            .pl(px(18.0))
-            .pr(px(8.0))
+            .gap(px(10.0))
+            .pl(px(22.0))
+            .pr(px(12.0))
+            .py(px(10.0))
             .cursor_pointer()
             .rounded(px(6.0))
             .hover(|this| this.bg(theme.list_hover))
@@ -692,7 +691,7 @@ impl CollectionsPanel {
                 group_id,
                 action_id,
                 "Request actions",
-                px(6.0),
+                px(8.0),
                 move |menu, _window, _cx| {
                     Self::build_request_popup_menu(
                         menu,
