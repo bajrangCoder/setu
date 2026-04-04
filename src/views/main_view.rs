@@ -32,6 +32,15 @@ use crate::views::request_view::RequestView;
 use crate::views::response_view::ResponseView;
 use crate::views::{CommandId, CommandPaletteEvent, CommandPaletteView};
 
+#[derive(Clone)]
+struct SidebarResizeDrag;
+
+impl Render for SidebarResizeDrag {
+    fn render(&mut self, _window: &mut Window, _cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        div().w(px(4.0)).h_full()
+    }
+}
+
 pub struct TabState {
     pub id: usize,
     pub name: String,
@@ -101,6 +110,7 @@ pub struct MainView {
 
     // UI state
     sidebar_visible: bool,
+    sidebar_width: f32,
     sidebar_tab: SidebarTab,
     history_search: Option<Entity<InputState>>,
     collections_search: Option<Entity<InputState>>,
@@ -154,6 +164,7 @@ impl MainView {
             collections,
             http_client,
             sidebar_visible: true,
+            sidebar_width: 300.0,
             sidebar_tab: SidebarTab::History,
             history_search: None,
             collections_search: None,
@@ -2047,7 +2058,7 @@ impl Render for MainView {
                 let this_for_group_by_change = this.clone();
 
                 el.child(
-                    div().w(px(300.0)).h_full().flex_shrink_0().child(
+                    div().w(px(self.sidebar_width)).h_full().flex_shrink_0().child(
                         AppSidebar::new(history, collections, history_search, collections_search)
                             .active_tab(sidebar_tab)
                             .history_filter(history_filter)
@@ -2181,6 +2192,31 @@ impl Render for MainView {
                                 },
                             ),
                     ),
+                )
+            })
+            .when(self.sidebar_visible, |el| {
+                let border_color = theme.border;
+                let this_for_resize = this.clone();
+                el.child(
+                    div()
+                        .id("sidebar-resize-handle")
+                        .w(px(5.0))
+                        .h_full()
+                        .cursor_col_resize()
+                        .hover(move |s| s.bg(border_color))
+                        .on_drag(SidebarResizeDrag, |_, _, _, cx| {
+                            cx.new(|_| SidebarResizeDrag)
+                        })
+                        .on_drag_move(
+                            move |event: &gpui::DragMoveEvent<SidebarResizeDrag>, _window, cx| {
+                                let pos: f32 = event.event.position.x.into();
+                                let new_width = pos.clamp(200.0, 500.0);
+                                this_for_resize.update(cx, |view, cx| {
+                                    view.sidebar_width = new_width;
+                                    cx.notify();
+                                });
+                            },
+                        ),
                 )
             })
             // Main content area
