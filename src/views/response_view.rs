@@ -418,17 +418,18 @@ impl Focusable for ResponseView {
 
 impl Render for ResponseView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        match self.active_tab {
-            ResponseTab::Body => self.ensure_body_display(window, cx),
-            ResponseTab::Raw => self.ensure_raw_display(window, cx),
-            ResponseTab::Headers => {}
+        let state = self.response.read(cx).state.clone();
+
+        if matches!(state, ResponseState::Success) {
+            match self.active_tab {
+                ResponseTab::Body => self.ensure_body_display(window, cx),
+                ResponseTab::Raw => self.ensure_raw_display(window, cx),
+                ResponseTab::Headers => {}
+            }
         }
 
         let theme = cx.theme();
-
-        // Clone what we need before borrowing
-        let state = self.response.read(cx).state.clone();
-        let data = self.response.read(cx).data.clone();
+        let response = self.response.read(cx);
 
         div()
             .track_focus(&self.focus_handle)
@@ -436,7 +437,7 @@ impl Render for ResponseView {
             .flex_col()
             .w_full()
             .h_full()
-            .child(self.render_content(&theme, &state, data.as_ref(), cx))
+            .child(self.render_content(&theme, &state, response.data.as_ref(), cx))
     }
 }
 

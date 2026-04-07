@@ -128,13 +128,25 @@ impl HistoryEntity {
     fn load_from_file(&mut self, path: &PathBuf) {
         if path.exists() {
             if let Ok(contents) = fs::read_to_string(path) {
-                if let Ok(entries) = serde_json::from_str::<Vec<HistoryEntry>>(&contents) {
+                if let Ok(mut entries) = serde_json::from_str::<Vec<HistoryEntry>>(&contents) {
+                    let mut compacted = false;
+                    for entry in &mut entries {
+                        if let Some(response) = entry.response.as_mut() {
+                            compacted |= response.compact_storage();
+                        }
+                    }
+
                     self.entries = entries;
                     log::info!(
                         "Loaded {} history entries from {:?}",
                         self.entries.len(),
                         path
                     );
+
+                    if compacted {
+                        self.save_to_file();
+                        log::info!("Compacted duplicate response payloads in history storage");
+                    }
                 }
             }
         }

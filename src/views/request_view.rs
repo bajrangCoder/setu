@@ -147,32 +147,7 @@ impl RequestView {
         }
     }
 
-    /// Ensure editors are initialized
-    fn ensure_editors(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // First, ensure header editor is created
-        if self.header_editor.is_none() {
-            let request = self.request.clone();
-            self.header_editor = Some(cx.new(|cx| HeaderEditor::new(request, cx)));
-        }
-
-        // Check if body type changed BEFORE updating syntax (which updates last_applied_body_type)
-        let body_type_changed = self.body_type != self.last_applied_body_type;
-
-        // Update Content-Type header when body type changes
-        // Skip for FormData (multipart) - reqwest sets this automatically with boundary
-        if body_type_changed && self.body_type != BodyType::FormData {
-            if let Some(content_type) = self.body_type.content_type() {
-                if let Some(ref header_editor) = self.header_editor {
-                    header_editor.update(cx, |editor, cx| {
-                        editor.set_or_update_header("Content-Type", content_type, window, cx);
-                    });
-                }
-            }
-        }
-
-        // Now update body editor (which will update last_applied_body_type)
-        self.ensure_body_editor(window, cx);
-
+    fn ensure_body_type_selector(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.body_type_selector.is_none() {
             let initial_body_type = self.body_type;
             let selector = cx.new(|cx| {
@@ -220,11 +195,15 @@ impl RequestView {
 
             self.body_type_selector = Some(selector);
         }
+    }
 
+    fn ensure_params_editor(&mut self, cx: &mut Context<Self>) {
         if self.params_editor.is_none() {
             self.params_editor = Some(cx.new(|cx| ParamsEditor::new(cx)));
         }
+    }
 
+    fn ensure_form_data_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.form_data_editor.is_none() {
             let initial_data = self.initial_form_data.take();
             self.form_data_editor = Some(cx.new(|cx| {
@@ -235,7 +214,9 @@ impl RequestView {
                 editor
             }));
         }
+    }
 
+    fn ensure_multipart_form_data_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.multipart_form_data_editor.is_none() {
             let initial_data = self.initial_multipart_data.take();
             self.multipart_form_data_editor = Some(cx.new(|cx| {
@@ -246,9 +227,85 @@ impl RequestView {
                 editor
             }));
         }
+    }
 
+    fn ensure_header_editor(&mut self, cx: &mut Context<Self>) {
+        if self.header_editor.is_none() {
+            let request = self.request.clone();
+            self.header_editor = Some(cx.new(|cx| HeaderEditor::new(request, cx)));
+        }
+    }
+
+    fn ensure_auth_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.auth_editor.is_none() {
             self.auth_editor = Some(cx.new(|cx| AuthEditor::new(window, cx)));
+        }
+    }
+
+    fn upsert_request_header(&self, key: &str, value: &str, cx: &mut Context<Self>) {
+        self.request.update(cx, |request, cx| {
+            let mut headers = request.headers().to_vec();
+            if let Some(header) = headers
+                .iter_mut()
+                .find(|header| header.key.eq_ignore_ascii_case(key))
+            {
+                header.value = value.to_string();
+                header.enabled = true;
+            } else {
+                headers.push(Header::new(key, value));
+            }
+
+            request.set_headers(headers, cx);
+        });
+    }
+
+    fn sync_body_type_header(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.body_type == BodyType::FormData {
+            return;
+        }
+
+        if let Some(content_type) = self.body_type.content_type() {
+            if let Some(ref header_editor) = self.header_editor {
+                header_editor.update(cx, |editor, cx| {
+                    editor.set_or_update_header("Content-Type", content_type, window, cx);
+                });
+            } else {
+                self.upsert_request_header("Content-Type", content_type, cx);
+            }
+        }
+    }
+
+    fn ensure_body_tab_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let body_type_changed = self.body_type != self.last_applied_body_type;
+
+        self.ensure_body_type_selector(window, cx);
+
+        if body_type_changed {
+            self.sync_body_type_header(window, cx);
+        }
+
+        match self.body_type {
+            BodyType::None | BodyType::FormUrlEncoded | BodyType::FormData => {
+                self.last_applied_body_type = self.body_type;
+            }
+            BodyType::Json | BodyType::Text | BodyType::Xml | BodyType::Html => {
+                self.ensure_body_editor(window, cx);
+            }
+        }
+
+        match self.body_type {
+            BodyType::FormUrlEncoded => self.ensure_form_data_editor(window, cx),
+            BodyType::FormData => self.ensure_multipart_form_data_editor(window, cx),
+            _ => {}
+        }
+    }
+
+    fn ensure_active_tab_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.active_tab {
+            RequestTab::Body => self.ensure_body_tab_state(window, cx),
+            RequestTab::Headers => self.ensure_header_editor(cx),
+            RequestTab::Params => self.ensure_params_editor(cx),
+            RequestTab::Auth => self.ensure_auth_editor(window, cx),
         }
     }
 
@@ -266,7 +323,15 @@ impl RequestView {
 
     /// Get the request body with proper type
     pub fn get_request_body(&self, cx: &App) -> RequestBody {
-        let content = self.get_body_content(cx).unwrap_or_default();
+        let stored_body = self.request.read(cx).body().clone();
+        let stored_text_body = match &stored_body {
+            RequestBody::Json(content) | RequestBody::Text(content) => Some(content.clone()),
+            _ => None,
+        };
+        let content = self
+            .get_body_content(cx)
+            .or_else(|| stored_text_body.clone())
+            .unwrap_or_default();
 
         match self.body_type {
             BodyType::None => RequestBody::None,
@@ -275,6 +340,8 @@ impl RequestView {
             BodyType::FormUrlEncoded => {
                 if let Some(ref editor) = self.form_data_editor {
                     RequestBody::FormData(editor.read(cx).get_form_data(cx))
+                } else if let RequestBody::FormData(data) = stored_body {
+                    RequestBody::FormData(data)
                 } else {
                     RequestBody::FormData(std::collections::HashMap::new())
                 }
@@ -282,6 +349,8 @@ impl RequestView {
             BodyType::FormData => {
                 if let Some(ref editor) = self.multipart_form_data_editor {
                     RequestBody::MultipartFormData(editor.read(cx).get_multipart_fields(cx))
+                } else if let RequestBody::MultipartFormData(fields) = stored_body {
+                    RequestBody::MultipartFormData(fields)
                 } else {
                     RequestBody::MultipartFormData(Vec::new())
                 }
@@ -291,22 +360,23 @@ impl RequestView {
 
     /// Get all headers including auth headers
     pub fn get_all_headers(&self, cx: &App) -> Vec<Header> {
-        let mut headers = Vec::new();
-
-        // Get headers from header editor
-        if let Some(ref editor) = self.header_editor {
-            headers.extend(editor.read(cx).get_headers(cx));
-        }
+        let mut headers = if let Some(ref editor) = self.header_editor {
+            editor.read(cx).get_headers(cx)
+        } else {
+            self.request.read(cx).headers().to_vec()
+        };
 
         // Add Content-Type header based on body type
         // Skip for FormData (multipart) - reqwest sets this automatically with boundary
         if self.body_type != BodyType::FormData {
             if let Some(content_type) = self.body_type.content_type() {
-                // Check if Content-Type is already present
-                if !headers
-                    .iter()
-                    .any(|h| h.key.to_lowercase() == "content-type")
+                if let Some(header) = headers
+                    .iter_mut()
+                    .find(|header| header.key.eq_ignore_ascii_case("Content-Type"))
                 {
+                    header.value = content_type.to_string();
+                    header.enabled = true;
+                } else {
                     headers.push(Header::new("Content-Type", content_type));
                 }
             }
@@ -316,7 +386,15 @@ impl RequestView {
         if let Some(ref auth_editor) = self.auth_editor {
             let config = auth_editor.read(cx).get_config(cx);
             if let Some((key, value)) = config.to_header() {
-                headers.push(Header::new(key, value));
+                if let Some(header) = headers
+                    .iter_mut()
+                    .find(|header| header.key.eq_ignore_ascii_case(&key))
+                {
+                    header.value = value;
+                    header.enabled = true;
+                } else {
+                    headers.push(Header::new(key, value));
+                }
             }
         }
 
@@ -335,14 +413,7 @@ impl RequestView {
     pub fn sync_headers_to_request(&self, cx: &mut Context<Self>) {
         let headers = self.get_all_headers(cx);
         self.request.update(cx, |req, cx| {
-            // Clear existing headers
-            while !req.headers().is_empty() {
-                req.remove_header(0, cx);
-            }
-            // Add new headers
-            for header in headers {
-                req.add_header(header, cx);
-            }
+            req.set_headers(headers, cx);
         });
     }
 
@@ -517,8 +588,7 @@ impl Focusable for RequestView {
 
 impl Render for RequestView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Ensure all editors are initialized
-        self.ensure_editors(window, cx);
+        self.ensure_active_tab_state(window, cx);
 
         let theme = cx.theme();
         let this = cx.entity().clone();

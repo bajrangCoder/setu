@@ -2058,8 +2058,17 @@ impl Render for MainView {
                 let this_for_group_by_change = this.clone();
 
                 el.child(
-                    div().w(px(self.sidebar_width)).h_full().flex_shrink_0().child(
-                        AppSidebar::new(history, collections, history_search, collections_search)
+                    div()
+                        .w(px(self.sidebar_width))
+                        .h_full()
+                        .flex_shrink_0()
+                        .child(
+                            AppSidebar::new(
+                                history,
+                                collections,
+                                history_search,
+                                collections_search,
+                            )
                             .active_tab(sidebar_tab)
                             .history_filter(history_filter)
                             .history_group_by(history_group_by)
@@ -2191,7 +2200,7 @@ impl Render for MainView {
                                     });
                                 },
                             ),
-                    ),
+                        ),
                 )
             })
             .when(self.sidebar_visible, |el| {

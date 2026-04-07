@@ -138,6 +138,14 @@ impl Default for ResponseData {
 
 #[allow(dead_code)]
 impl ResponseData {
+    fn compute_stored_hash(body: &str, body_bytes: &[u8]) -> u64 {
+        if body_bytes.is_empty() {
+            Self::compute_hash(body.as_bytes())
+        } else {
+            Self::compute_hash(body_bytes)
+        }
+    }
+
     fn looks_like_audio(bytes: &[u8]) -> bool {
         // MP3 with ID3 tag
         if bytes.starts_with(b"ID3") {
@@ -215,9 +223,7 @@ impl ResponseData {
         duration_ms: u64,
         content_type: Option<String>,
     ) -> Self {
-        let body_hash = Self::compute_hash(&body_bytes);
-        let body_text_cached = !body.is_empty() || body_bytes.is_empty();
-        Self {
+        let mut response = Self {
             status_code,
             status_text,
             headers,
@@ -227,9 +233,11 @@ impl ResponseData {
             duration_ms,
             content_type,
             cached_formatted_body: None,
-            body_text_cached,
-            body_hash,
-        }
+            body_text_cached: false,
+            body_hash: 0,
+        };
+        response.compact_storage();
+        response
     }
 
     /// Compute hash for content change detection
@@ -291,6 +299,38 @@ impl ResponseData {
     /// Get the body hash for efficient change detection
     pub fn body_hash(&self) -> u64 {
         self.body_hash
+    }
+
+    /// Drop redundant raw bytes for text-like responses and recompute cached metadata.
+    pub fn compact_storage(&mut self) -> bool {
+        let had_body_bytes = !self.body_bytes.is_empty();
+
+        if had_body_bytes
+            && !self.body.is_empty()
+            && matches!(
+                Self::classify_content(self.content_type.as_deref(), &self.body_bytes),
+                ContentCategory::Json
+                    | ContentCategory::Html
+                    | ContentCategory::Xml
+                    | ContentCategory::Text
+            )
+        {
+            self.body_bytes.clear();
+        }
+
+        if self.body_size_bytes == 0 {
+            self.body_size_bytes = if self.body_bytes.is_empty() {
+                self.body.len()
+            } else {
+                self.body_bytes.len()
+            };
+        }
+
+        self.cached_formatted_body = None;
+        self.body_text_cached = !self.body.is_empty() || self.body_bytes.is_empty();
+        self.body_hash = Self::compute_stored_hash(&self.body, &self.body_bytes);
+
+        had_body_bytes && self.body_bytes.is_empty()
     }
 
     /// Detect content category from content-type header
@@ -493,5 +533,21 @@ mod tests {
     fn classifies_unknown_non_text_without_header_as_binary() {
         let data = response_with(None, vec![0x00, 0x9F, 0x92, 0x00, 0xFF]);
         assert_eq!(data.content_category(), ContentCategory::Binary);
+    }
+
+    #[test]
+    fn compacts_text_responses_by_dropping_duplicate_raw_bytes() {
+        let data = response_with(Some("application/json"), br#"{"ok":true}"#.to_vec());
+        assert!(data.body_bytes.is_empty());
+        assert_eq!(data.body, r#"{"ok":true}"#);
+        assert_ne!(data.body_hash(), 0);
+    }
+
+    #[test]
+    fn keeps_raw_bytes_for_binary_responses() {
+        let png = b"\x89PNG\r\n\x1A\n\x00\x00\x00\x0DIHDR".to_vec();
+        let data = response_with(Some("image/png"), png.clone());
+        assert_eq!(data.content_category(), ContentCategory::Image);
+        assert_eq!(data.body_bytes, png);
     }
 }
