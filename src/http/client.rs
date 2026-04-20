@@ -1,10 +1,10 @@
 use crate::entities::{Header, HttpMethod, RequestBody, ResponseData};
+use crate::utils::shared_tokio_runtime;
 use anyhow::{anyhow, Result};
 use reqwest::Client;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
@@ -12,7 +12,7 @@ use tokio::task::JoinHandle;
 #[derive(Clone)]
 pub struct HttpClient {
     client: Client,
-    runtime: Arc<Runtime>,
+    runtime: Arc<tokio::runtime::Runtime>,
 }
 
 /// Handle for canceling an in-flight HTTP request.
@@ -35,12 +35,9 @@ impl HttpClient {
     pub fn new() -> Result<Self> {
         let client = Client::builder().user_agent("Setu/0.1.0").build()?;
 
-        let runtime =
-            Runtime::new().map_err(|e| anyhow!("Failed to create Tokio runtime: {}", e))?;
-
         Ok(Self {
             client,
-            runtime: Arc::new(runtime),
+            runtime: shared_tokio_runtime(),
         })
     }
 
@@ -204,21 +201,12 @@ async fn execute_request(
 
     // Get body as bytes first
     let body_bytes = response.bytes().await?.to_vec();
-    let body_size_bytes = body_bytes.len();
 
-    let body = if ResponseData::should_eagerly_decode_body(content_type.as_deref(), &body_bytes) {
-        String::from_utf8_lossy(&body_bytes).to_string()
-    } else {
-        String::new()
-    };
-
-    Ok(ResponseData::new(
+    Ok(ResponseData::from_bytes(
         status_code,
         status_text,
         response_headers,
-        body,
         body_bytes,
-        body_size_bytes,
         duration.as_millis() as u64,
         content_type,
     ))

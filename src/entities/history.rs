@@ -4,9 +4,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
+use std::time::Duration;
 use uuid::Uuid;
 
+use crate::utils::DebouncedJsonWriter;
+
 use super::{RequestData, ResponseData};
+
+const SAVE_DEBOUNCE: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryEntry {
@@ -96,7 +101,7 @@ pub enum HistoryEvent {
 pub struct HistoryEntity {
     pub entries: Vec<HistoryEntry>,
     pub max_entries: usize,
-    storage_path: Option<PathBuf>,
+    persistor: Option<DebouncedJsonWriter<Vec<HistoryEntry>>>,
     collapsed_groups: HashSet<TimeGroup>,
 }
 
@@ -106,7 +111,9 @@ impl HistoryEntity {
         let mut entity = Self {
             entries: Vec::new(),
             max_entries: 500,
-            storage_path: storage_path.clone(),
+            persistor: storage_path
+                .clone()
+                .map(|path| DebouncedJsonWriter::new("history", path, SAVE_DEBOUNCE)),
             collapsed_groups: HashSet::new(),
         };
 
@@ -153,15 +160,8 @@ impl HistoryEntity {
     }
 
     fn save_to_file(&self) {
-        if let Some(ref path) = self.storage_path {
-            if let Some(parent) = path.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-            if let Ok(contents) = serde_json::to_string_pretty(&self.entries) {
-                if let Err(e) = fs::write(path, contents) {
-                    log::error!("Failed to save history: {}", e);
-                }
-            }
+        if let Some(persistor) = &self.persistor {
+            persistor.schedule_save(self.entries.clone());
         }
     }
 
@@ -376,7 +376,7 @@ mod tests {
                 ),
             ],
             max_entries: 500,
-            storage_path: None,
+            persistor: None,
             collapsed_groups: HashSet::new(),
         };
 
@@ -398,7 +398,7 @@ mod tests {
                 sample_entry("Third", "https://alpha.example.com/teams", HttpMethod::Post),
             ],
             max_entries: 500,
-            storage_path: None,
+            persistor: None,
             collapsed_groups: HashSet::new(),
         };
 

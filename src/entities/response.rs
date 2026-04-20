@@ -240,6 +240,41 @@ impl ResponseData {
         response
     }
 
+    pub fn from_bytes(
+        status_code: u16,
+        status_text: String,
+        headers: HashMap<String, String>,
+        body_bytes: Vec<u8>,
+        duration_ms: u64,
+        content_type: Option<String>,
+    ) -> Self {
+        let body_size_bytes = body_bytes.len();
+        let should_decode = Self::should_eagerly_decode_body(content_type.as_deref(), &body_bytes);
+
+        let (body, stored_body_bytes) = if should_decode {
+            match String::from_utf8(body_bytes) {
+                Ok(body) => (body, Vec::new()),
+                Err(err) => (
+                    String::from_utf8_lossy(&err.into_bytes()).into_owned(),
+                    Vec::new(),
+                ),
+            }
+        } else {
+            (String::new(), body_bytes)
+        };
+
+        Self::new(
+            status_code,
+            status_text,
+            headers,
+            body,
+            stored_body_bytes,
+            body_size_bytes,
+            duration_ms,
+            content_type,
+        )
+    }
+
     /// Compute hash for content change detection
     fn compute_hash(content: &[u8]) -> u64 {
         let mut hasher = DefaultHasher::new();

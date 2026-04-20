@@ -3,13 +3,16 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs;
 use std::path::PathBuf;
+use std::time::Duration;
 use uuid::Uuid;
 
 use crate::importers::{ImportedCollection, ImportedNode};
+use crate::utils::DebouncedJsonWriter;
 
 use super::RequestData;
 
 const COLLECTIONS_STORAGE_VERSION: u32 = 1;
+const SAVE_DEBOUNCE: Duration = Duration::from_secs(1);
 
 fn default_expanded() -> bool {
     true
@@ -332,7 +335,7 @@ pub enum CollectionsEvent {
 
 pub struct CollectionsEntity {
     pub collections: Vec<Collection>,
-    storage_path: Option<PathBuf>,
+    persistor: Option<DebouncedJsonWriter<CollectionsStore>>,
 }
 
 #[allow(dead_code)]
@@ -341,7 +344,9 @@ impl CollectionsEntity {
         let storage_path = Self::get_storage_path();
         let mut entity = Self {
             collections: Vec::new(),
-            storage_path: storage_path.clone(),
+            persistor: storage_path
+                .clone()
+                .map(|path| DebouncedJsonWriter::new("collections", path, SAVE_DEBOUNCE)),
         };
 
         if let Some(ref path) = storage_path {
@@ -388,21 +393,12 @@ impl CollectionsEntity {
     }
 
     fn save_to_file(&self) {
-        if let Some(ref path) = self.storage_path {
-            if let Some(parent) = path.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-
+        if let Some(persistor) = &self.persistor {
             let store = CollectionsStore {
                 version: COLLECTIONS_STORAGE_VERSION,
                 collections: self.collections.clone(),
             };
-
-            if let Ok(contents) = serde_json::to_string_pretty(&store) {
-                if let Err(e) = fs::write(path, contents) {
-                    log::error!("Failed to save collections: {}", e);
-                }
-            }
+            persistor.schedule_save(store);
         }
     }
 

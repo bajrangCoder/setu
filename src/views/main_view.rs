@@ -2409,10 +2409,7 @@ mod tests {
 
     #[test]
     fn derive_tab_name_domain_only() {
-        assert_eq!(
-            MainView::derive_tab_name("https://api.example.com"),
-            "/"
-        );
+        assert_eq!(MainView::derive_tab_name("https://api.example.com"), "/");
     }
 
     #[test]
