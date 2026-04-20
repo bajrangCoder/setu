@@ -44,6 +44,7 @@ impl Render for SidebarResizeDrag {
 pub struct TabState {
     pub id: usize,
     pub name: String,
+    pub is_custom_name: bool,
     pub request: Entity<RequestEntity>,
     pub response: Entity<ResponseEntity>,
     pub url_input: Option<Entity<InputState>>,
@@ -132,7 +133,8 @@ impl MainView {
 
         let initial_tab = TabState {
             id: 0,
-            name: "Untitled 1".to_string(),
+            name: "New Request".to_string(),
+            is_custom_name: false,
             request: request.clone(),
             response: response.clone(),
             url_input: None,
@@ -301,6 +303,7 @@ impl MainView {
         let tab = TabState {
             id: self.next_tab_id,
             name: tab_name,
+            is_custom_name: true,
             request: request.clone(),
             response: response.clone(),
             url_input: Some(url_input),
@@ -426,6 +429,7 @@ impl MainView {
         let tab = TabState {
             id: self.next_tab_id,
             name: tab_name,
+            is_custom_name: true,
             request: request.clone(),
             response: response.clone(),
             url_input: Some(url_input),
@@ -525,10 +529,11 @@ impl MainView {
         tab_index: usize,
         cx: &mut Context<Self>,
     ) -> Option<RequestData> {
-        let (tab_name, request_entity, request_view, url_input) = {
+        let (tab_name, is_custom_name, request_entity, request_view, url_input) = {
             let tab = self.tabs.get(tab_index)?;
             (
                 tab.name.clone(),
+                tab.is_custom_name,
                 tab.request.clone(),
                 tab.request_view.clone(),
                 tab.url_input.clone(),
@@ -553,9 +558,14 @@ impl MainView {
         });
 
         let request = request_entity.read(cx);
+        let snapshot_name = if is_custom_name {
+            tab_name
+        } else {
+            Self::derive_request_display_name(request.method(), &final_url)
+        };
         Some(RequestData {
             id: Uuid::new_v4(),
-            name: tab_name,
+            name: snapshot_name,
             url: final_url,
             method: request.method(),
             headers: request.headers().to_vec(),
@@ -573,6 +583,48 @@ impl MainView {
             format!("{}&{}", base_url, &query_string[1..])
         } else {
             format!("{base_url}{query_string}")
+        }
+    }
+
+    fn extract_url_path(url: &str) -> Option<String> {
+        let url = url.trim();
+        if url.is_empty() {
+            return None;
+        }
+
+        let path = if let Some(after_scheme) = url
+            .strip_prefix("https://")
+            .or_else(|| url.strip_prefix("http://"))
+        {
+            after_scheme
+                .find('/')
+                .map(|i| &after_scheme[i..])
+                .unwrap_or("/")
+        } else if url.starts_with('/') {
+            url
+        } else {
+            url.find('/').map(|i| &url[i..]).unwrap_or(url)
+        };
+
+        let path = path.split('?').next().unwrap_or(path);
+
+        if path.len() > 32 {
+            Some(path[..32].to_string())
+        } else {
+            Some(path.to_string())
+        }
+    }
+
+    /// Tab display name — just the path, since the tab bar already shows a method badge
+    fn derive_tab_name(url: &str) -> String {
+        Self::extract_url_path(url).unwrap_or_else(|| "New Request".to_string())
+    }
+
+    /// Full display name for history entries and saved requests — includes method prefix
+    fn derive_request_display_name(method: HttpMethod, url: &str) -> String {
+        match Self::extract_url_path(url) {
+            Some(path) => format!("{} {}", method.as_str(), path),
+            None => "New Request".to_string(),
         }
     }
 
@@ -617,7 +669,8 @@ impl MainView {
         self.next_tab_id += 1;
         let tab = TabState {
             id: self.next_tab_id,
-            name: format!("Untitled {}", self.next_tab_id),
+            name: "New Request".to_string(),
+            is_custom_name: false,
             request: request.clone(),
             response: response.clone(),
             url_input: None,
@@ -671,10 +724,11 @@ impl MainView {
         }
     }
 
-    /// Rename a tab
+    /// Rename a tab (marks as custom since user explicitly renamed)
     pub fn rename_tab(&mut self, index: usize, new_name: String, cx: &mut Context<Self>) {
         if index < self.tabs.len() {
             self.tabs[index].name = new_name;
+            self.tabs[index].is_custom_name = true;
             cx.notify();
         }
     }
@@ -1114,7 +1168,7 @@ impl MainView {
                                         .trim()
                                         .to_string();
                                     let request_name = if request_name.is_empty() {
-                                        "Untitled Request".to_string()
+                                        "New Request".to_string()
                                     } else {
                                         request_name
                                     };
@@ -1205,7 +1259,7 @@ impl MainView {
                                     .trim()
                                     .to_string();
                                 let request_name = if request_name.is_empty() {
-                                    "Untitled Request".to_string()
+                                    "New Request".to_string()
                                 } else {
                                     request_name
                                 };
@@ -1765,6 +1819,7 @@ impl MainView {
             let new_tab = TabState {
                 id: self.next_tab_id,
                 name: format!("{} (copy)", old_name),
+                is_custom_name: true,
                 request: new_request.clone(),
                 response: new_response.clone(),
                 url_input: new_url_input,
@@ -1852,14 +1907,24 @@ impl Render for MainView {
 
         let theme = cx.theme();
 
-        // Build tab infos with index
+        // Build tab infos — auto-derive names for non-custom tabs
         let tab_infos: Vec<TabInfo> = self
             .tabs
             .iter()
             .enumerate()
             .map(|(i, tab)| {
                 let method = tab.request.read(cx).method();
-                let mut info = TabInfo::new(tab.id, i, tab.name.clone(), method);
+                let display_name = if tab.is_custom_name {
+                    tab.name.clone()
+                } else {
+                    let url = tab
+                        .url_input
+                        .as_ref()
+                        .map(|input| input.read(cx).text().to_string())
+                        .unwrap_or_default();
+                    Self::derive_tab_name(&url)
+                };
+                let mut info = TabInfo::new(tab.id, i, display_name, method);
                 if i == self.active_tab_index {
                     info = info.active();
                 }
@@ -2303,6 +2368,82 @@ mod tests {
                 String::new()
             ),
             "https://api.example.com/users?sort=name"
+        );
+    }
+
+    use crate::entities::HttpMethod;
+
+    #[test]
+    fn derive_tab_name_with_full_url() {
+        assert_eq!(
+            MainView::derive_tab_name("https://api.example.com/users"),
+            "/users"
+        );
+    }
+
+    #[test]
+    fn derive_tab_name_with_nested_path() {
+        assert_eq!(
+            MainView::derive_tab_name("https://api.example.com/v2/users/123"),
+            "/v2/users/123"
+        );
+    }
+
+    #[test]
+    fn derive_tab_name_empty_url() {
+        assert_eq!(MainView::derive_tab_name(""), "New Request");
+    }
+
+    #[test]
+    fn derive_tab_name_whitespace_url() {
+        assert_eq!(MainView::derive_tab_name("   "), "New Request");
+    }
+
+    #[test]
+    fn derive_tab_name_strips_query_params() {
+        assert_eq!(
+            MainView::derive_tab_name("https://api.example.com/users?id=5"),
+            "/users"
+        );
+    }
+
+    #[test]
+    fn derive_tab_name_domain_only() {
+        assert_eq!(
+            MainView::derive_tab_name("https://api.example.com"),
+            "/"
+        );
+    }
+
+    #[test]
+    fn derive_tab_name_no_scheme() {
+        assert_eq!(
+            MainView::derive_tab_name("api.example.com/items/42"),
+            "/items/42"
+        );
+    }
+
+    #[test]
+    fn derive_tab_name_path_only() {
+        assert_eq!(MainView::derive_tab_name("/api/resource"), "/api/resource");
+    }
+
+    #[test]
+    fn derive_request_display_name_includes_method() {
+        assert_eq!(
+            MainView::derive_request_display_name(
+                HttpMethod::Post,
+                "https://api.example.com/users"
+            ),
+            "POST /users"
+        );
+    }
+
+    #[test]
+    fn derive_request_display_name_empty_url() {
+        assert_eq!(
+            MainView::derive_request_display_name(HttpMethod::Get, ""),
+            "New Request"
         );
     }
 }
