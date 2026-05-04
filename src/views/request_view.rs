@@ -578,6 +578,69 @@ impl RequestView {
     pub fn trigger_search(&mut self, window: &mut Window, _cx: &mut Context<Self>) {
         crate::utils::trigger_editor_search(self.body_editor.clone(), window);
     }
+
+    /// Apply a parsed curl command to the request entity and editors.
+    pub fn apply_parsed_curl(
+        &mut self,
+        parsed: &crate::utils::ParsedCurl,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let body_type = BodyType::from_request_body(&parsed.body);
+
+        self.request.update(cx, |req, cx| {
+            req.set_method(parsed.method, cx);
+            req.set_url(parsed.url.clone(), cx);
+            req.set_headers(parsed.headers.clone(), cx);
+            req.set_body(parsed.body.clone(), cx);
+        });
+
+        self.body_type = body_type;
+
+        if let Some(selector) = self.body_type_selector.clone() {
+            selector.update(cx, |s, cx| s.set_type(body_type, window, cx));
+        }
+
+        match &parsed.body {
+            RequestBody::Json(content) | RequestBody::Text(content) => {
+                let display = if matches!(parsed.body, RequestBody::Json(_)) {
+                    serde_json::from_str::<serde_json::Value>(content)
+                        .ok()
+                        .and_then(|v| serde_json::to_string_pretty(&v).ok())
+                        .unwrap_or_else(|| content.clone())
+                } else {
+                    content.clone()
+                };
+                self.initial_body_content = Some(display.clone());
+                self.ensure_body_editor(window, cx);
+                if let Some(editor) = self.body_editor.clone() {
+                    editor.update(cx, |state, cx| {
+                        state.set_value(display, window, cx);
+                    });
+                }
+            }
+            RequestBody::FormData(map) => {
+                self.form_data_editor = None;
+                self.initial_form_data = Some(map.clone());
+                self.ensure_form_data_editor(window, cx);
+            }
+            RequestBody::MultipartFormData(fields) => {
+                self.multipart_form_data_editor = None;
+                self.initial_multipart_data = Some(fields.clone());
+                self.ensure_multipart_form_data_editor(window, cx);
+            }
+            RequestBody::None => {}
+        }
+
+        // Force header editor to rebuild from the request entity on next render.
+        self.header_editor = None;
+
+        if !matches!(parsed.body, RequestBody::None) {
+            self.active_tab = RequestTab::Body;
+        }
+
+        cx.notify();
+    }
 }
 
 impl Focusable for RequestView {
