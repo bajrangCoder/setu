@@ -41,7 +41,8 @@ pub fn parse_curl(input: &str) -> Result<ParsedCurl, String> {
     let mut method: Option<HttpMethod> = None;
     let mut headers: Vec<Header> = Vec::new();
     let mut data_parts: Vec<String> = Vec::new();
-    let mut form_parts: Vec<(String, String)> = Vec::new();
+    // (key, value, is_file): is_file marks a `-F key=@path` upload field.
+    let mut form_parts: Vec<(String, String, bool)> = Vec::new();
     let mut basic_auth: Option<String> = None;
     let mut force_get = false;
 
@@ -65,10 +66,24 @@ pub fn parse_curl(input: &str) -> Result<ParsedCurl, String> {
                 let v = iter.next().ok_or("Missing value for --data-urlencode")?;
                 data_parts.push(v);
             }
-            "-F" | "--form" | "--form-string" => {
+            "-F" | "--form" => {
                 let v = iter.next().ok_or("Missing value for -F")?;
                 if let Some((k, val)) = split_once(&v, '=') {
-                    form_parts.push((k.to_string(), val.to_string()));
+                    if let Some(rest) = val.strip_prefix('@') {
+                        // `-F key=@path[;type=...;filename=...]` — strip parameters,
+                        // keep just the path.
+                        let path = rest.split(';').next().unwrap_or(rest);
+                        form_parts.push((k.to_string(), path.to_string(), true));
+                    } else {
+                        form_parts.push((k.to_string(), val.to_string(), false));
+                    }
+                }
+            }
+            "--form-string" => {
+                // --form-string never interprets `@`; value is always literal text.
+                let v = iter.next().ok_or("Missing value for --form-string")?;
+                if let Some((k, val)) = split_once(&v, '=') {
+                    form_parts.push((k.to_string(), val.to_string(), false));
                 }
             }
             "-u" | "--user" => {
@@ -123,11 +138,21 @@ pub fn parse_curl(input: &str) -> Result<ParsedCurl, String> {
         }
     }
 
-    let url = url.ok_or("Could not find URL in curl command")?;
+    let mut url = url.ok_or("Could not find URL in curl command")?;
 
     if let Some(creds) = basic_auth {
         let encoded = base64_encode(creds.as_bytes());
         headers.push(Header::new("Authorization", format!("Basic {}", encoded)));
+    }
+
+    // -G/--get: data is appended to the URL as a query string and the body is
+    // dropped entirely (curl never sends -d as a body when -G is set).
+    if force_get && !data_parts.is_empty() {
+        let combined = data_parts.join("&");
+        let sep = if url.contains('?') { '&' } else { '?' };
+        url.push(sep);
+        url.push_str(&combined);
+        data_parts.clear();
     }
 
     let body = build_body(&data_parts, &form_parts, &headers);
@@ -190,13 +215,19 @@ fn header_value<'a>(headers: &'a [Header], name: &str) -> Option<&'a str> {
 
 fn build_body(
     data_parts: &[String],
-    form_parts: &[(String, String)],
+    form_parts: &[(String, String, bool)],
     headers: &[Header],
 ) -> RequestBody {
     if !form_parts.is_empty() {
         let fields = form_parts
             .iter()
-            .map(|(k, v)| crate::entities::MultipartField::text(k, v))
+            .map(|(k, v, is_file)| {
+                if *is_file {
+                    crate::entities::MultipartField::file(k, v)
+                } else {
+                    crate::entities::MultipartField::text(k, v)
+                }
+            })
             .collect::<Vec<_>>();
         return RequestBody::MultipartFormData(fields);
     }
@@ -474,6 +505,68 @@ mod tests {
                 assert!(s.contains("\"test\""));
             }
             other => panic!("expected JSON body, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn get_flag_moves_data_into_query_string() {
+        let parsed = parse_curl("curl -G https://api.test/search -d q=abc -d lang=en").unwrap();
+        assert_eq!(parsed.method, HttpMethod::Get);
+        assert_eq!(parsed.url, "https://api.test/search?q=abc&lang=en");
+        assert!(matches!(parsed.body, RequestBody::None));
+    }
+
+    #[test]
+    fn get_flag_appends_with_ampersand_when_url_has_query() {
+        let parsed =
+            parse_curl("curl -G 'https://api.test/search?existing=1' --data 'q=abc'").unwrap();
+        assert_eq!(parsed.url, "https://api.test/search?existing=1&q=abc");
+        assert!(matches!(parsed.body, RequestBody::None));
+    }
+
+    #[test]
+    fn form_field_with_at_prefix_is_file_upload() {
+        let parsed =
+            parse_curl("curl https://api.test -F 'avatar=@/tmp/a.png' -F 'name=alice'").unwrap();
+        match &parsed.body {
+            RequestBody::MultipartFormData(fields) => {
+                assert_eq!(fields.len(), 2);
+                assert_eq!(fields[0].key, "avatar");
+                assert!(fields[0].is_file());
+                assert_eq!(fields[0].file_path.as_deref(), Some("/tmp/a.png"));
+                assert_eq!(fields[1].key, "name");
+                assert!(!fields[1].is_file());
+                assert_eq!(fields[1].value, "alice");
+            }
+            other => panic!("expected MultipartFormData body, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn form_field_strips_filename_and_type_params() {
+        let parsed = parse_curl(
+            "curl https://api.test -F 'doc=@/tmp/x.pdf;type=application/pdf;filename=x.pdf'",
+        )
+        .unwrap();
+        match &parsed.body {
+            RequestBody::MultipartFormData(fields) => {
+                assert!(fields[0].is_file());
+                assert_eq!(fields[0].file_path.as_deref(), Some("/tmp/x.pdf"));
+            }
+            other => panic!("expected MultipartFormData body, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn form_string_keeps_at_prefix_as_literal() {
+        let parsed =
+            parse_curl("curl https://api.test --form-string 'note=@notreallyafile'").unwrap();
+        match &parsed.body {
+            RequestBody::MultipartFormData(fields) => {
+                assert!(!fields[0].is_file());
+                assert_eq!(fields[0].value, "@notreallyafile");
+            }
+            other => panic!("expected MultipartFormData body, got {:?}", other),
         }
     }
 

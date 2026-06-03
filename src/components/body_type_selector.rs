@@ -48,6 +48,27 @@ impl BodyType {
         }
     }
 
+    /// True if `value` is one of the generic Content-Types that get auto-set
+    /// when a body type is selected. Custom MIME types like
+    /// `application/vnd.api+json` or `text/csv` are NOT defaults and should
+    /// be preserved as-is.
+    pub fn is_default_content_type(value: &str) -> bool {
+        let v = value.trim();
+        if v.is_empty() {
+            return true;
+        }
+        matches!(
+            v.to_ascii_lowercase().as_str(),
+            "application/json"
+                | "text/plain"
+                | "application/x-www-form-urlencoded"
+                | "multipart/form-data"
+                | "application/xml"
+                | "text/xml"
+                | "text/html"
+        )
+    }
+
     pub fn syntax_language(&self) -> &'static str {
         match self {
             BodyType::Json => "json",

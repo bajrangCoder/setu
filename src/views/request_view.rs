@@ -374,7 +374,11 @@ impl RequestView {
                     .iter_mut()
                     .find(|header| header.key.eq_ignore_ascii_case("Content-Type"))
                 {
-                    header.value = content_type.to_string();
+                    // Don't clobber a user-supplied custom MIME type
+                    // (e.g. application/vnd.api+json, text/csv).
+                    if BodyType::is_default_content_type(&header.value) {
+                        header.value = content_type.to_string();
+                    }
                     header.enabled = true;
                 } else {
                     headers.push(Header::new("Content-Type", content_type));
