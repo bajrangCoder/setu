@@ -184,9 +184,63 @@ impl MainView {
             if tab.url_input.is_none() {
                 let url_input =
                     cx.new(|cx| InputState::new(window, cx).placeholder("Enter request URL..."));
+                Self::subscribe_url_input_for_curl(&url_input, window, cx);
                 tab.url_input = Some(url_input);
             }
         }
+    }
+
+    /// Subscribe to URL input changes to detect pasted curl commands.
+    fn subscribe_url_input_for_curl(
+        url_input: &Entity<InputState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.subscribe_in(url_input, window, |this, state, event, window, cx| {
+            use gpui_component::input::InputEvent;
+            if !matches!(event, InputEvent::Change) {
+                return;
+            }
+            let text = state.read(cx).text().to_string();
+            if !crate::utils::looks_like_curl(&text) {
+                return;
+            }
+            match crate::utils::parse_curl(&text) {
+                Ok(parsed) => {
+                    let url_value = parsed.url.clone();
+                    state.update(cx, |s, cx| {
+                        s.set_value(url_value, window, cx);
+                    });
+                    this.apply_parsed_curl_to_active_tab(&parsed, window, cx);
+                }
+                Err(err) => {
+                    log::warn!("Failed to parse curl from URL bar: {}", err);
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Apply a parsed curl to the currently-active tab.
+    fn apply_parsed_curl_to_active_tab(
+        &mut self,
+        parsed: &crate::utils::ParsedCurl,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(tab) = self.tabs.get(self.active_tab_index) else {
+            return;
+        };
+        let method_dropdown = tab.method_dropdown.clone();
+        let request_view = tab.request_view.clone();
+
+        method_dropdown.update(cx, |state, cx| {
+            state.set_method(parsed.method, cx);
+        });
+        request_view.update(cx, |view, cx| {
+            view.apply_parsed_curl(parsed, window, cx);
+        });
+        cx.notify();
     }
 
     /// Ensure sidebar search inputs are initialized
@@ -299,6 +353,7 @@ impl MainView {
                 .placeholder("Enter request URL...")
                 .default_value(&request_data.url)
         });
+        Self::subscribe_url_input_for_curl(&url_input, window, cx);
 
         let tab = TabState {
             id: self.next_tab_id,
@@ -425,6 +480,7 @@ impl MainView {
                 .placeholder("Enter request URL...")
                 .default_value(&request_data.url)
         });
+        Self::subscribe_url_input_for_curl(&url_input, window, cx);
 
         let tab = TabState {
             id: self.next_tab_id,
@@ -1798,11 +1854,13 @@ impl MainView {
             let new_method_dropdown = cx.new(|_| MethodDropdownState::new(old_method));
 
             let new_url_input = if old_url_input.is_some() {
-                Some(cx.new(|cx| {
+                let input = cx.new(|cx| {
                     InputState::new(window, cx)
                         .placeholder("Enter request URL...")
                         .default_value(&duplicated_url)
-                }))
+                });
+                Self::subscribe_url_input_for_curl(&input, window, cx);
+                Some(input)
             } else {
                 None
             };
