@@ -1,6 +1,6 @@
 mod postman;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use std::path::Path;
 
 use crate::entities::RequestData;

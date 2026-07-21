@@ -1,9 +1,7 @@
 use gpui::prelude::*;
-use gpui::{div, px, App, ClickEvent, IntoElement, Styled, Window};
-
+use gpui::{App, ClickEvent, IntoElement, Styled, Window, div, px};
 use gpui_component::ActiveTheme;
 
-/// Callback type for tab click
 pub type OnTabClickCallback = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
 #[derive(IntoElement)]
@@ -44,7 +42,6 @@ impl RenderOnce for PanelTab {
         div()
             .id(self.label)
             .flex()
-            .flex_row()
             .items_center()
             .gap(px(6.0))
             .h(px(28.0))
@@ -58,37 +55,49 @@ impl RenderOnce for PanelTab {
             } else {
                 gpui::FontWeight::NORMAL
             })
-            .when(is_active, |s| {
-                s.bg(theme.muted).text_color(theme.foreground)
+            .when(is_active, |style| {
+                style.bg(theme.muted).text_color(theme.foreground)
             })
-            .when(!is_active, |s| {
-                s.text_color(theme.muted_foreground)
-                    .hover(|h| h.bg(theme.muted.opacity(0.5)))
+            .when(!is_active, |style| {
+                style
+                    .text_color(theme.muted_foreground)
+                    .hover(|hover| hover.bg(theme.muted.opacity(0.5)))
             })
-            .when_some(self.on_click, |el, callback| {
-                el.on_click(move |event, window, cx| {
-                    callback(event, window, cx);
-                })
+            .when_some(self.on_click, |element, callback| {
+                element.on_click(move |event, window, cx| callback(event, window, cx))
             })
             .child(self.label)
     }
 }
 
-/// Container for panel tabs - horizontal scrollable row
 #[derive(IntoElement)]
 pub struct PanelTabBar {
     children: Vec<PanelTab>,
+    bordered: bool,
+    align_end: bool,
 }
 
 impl PanelTabBar {
     pub fn new() -> Self {
         Self {
             children: Vec::new(),
+            bordered: true,
+            align_end: false,
         }
     }
 
     pub fn child(mut self, tab: PanelTab) -> Self {
         self.children.push(tab);
+        self
+    }
+
+    pub fn bordered(mut self, bordered: bool) -> Self {
+        self.bordered = bordered;
+        self
+    }
+
+    pub fn align_end(mut self) -> Self {
+        self.align_end = true;
         self
     }
 }
@@ -100,19 +109,21 @@ impl RenderOnce for PanelTabBar {
         div()
             .id("panel-tab-bar")
             .flex()
-            .flex_row()
             .items_center()
             .w_full()
             .h(px(36.0))
             .px(px(12.0))
-            .bg(theme.secondary)
-            .border_b_1()
-            .border_color(theme.border)
-            .overflow_scroll()
+            .when(self.bordered, |style| {
+                style
+                    .bg(theme.secondary)
+                    .border_b_1()
+                    .border_color(theme.border)
+            })
+            .when(self.align_end, |style| style.justify_end())
+            .overflow_x_scroll()
             .child(
                 div()
                     .flex()
-                    .flex_row()
                     .items_center()
                     .gap(px(2.0))
                     .children(self.children),

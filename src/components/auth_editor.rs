@@ -1,13 +1,12 @@
-use std::io::Write;
-
+use base64::Engine as _;
 use gpui::prelude::*;
 use gpui::{
-    div, px, App, Context, Entity, FocusHandle, Focusable, IntoElement, Render, SharedString,
-    Styled, Window,
+    App, Context, Entity, FocusHandle, Focusable, IntoElement, Render, SharedString, Styled,
+    Window, div, px,
 };
+use gpui_component::Sizable;
 use gpui_component::input::{Input, InputState};
 use gpui_component::select::{Select, SelectEvent, SelectItem, SelectState};
-use gpui_component::Sizable;
 
 use gpui_component::ActiveTheme;
 
@@ -107,7 +106,7 @@ impl AuthConfig {
             AuthType::None => None,
             AuthType::Basic => {
                 let credentials = format!("{}:{}", self.username, self.password);
-                let encoded = base64_encode(&credentials);
+                let encoded = base64::engine::general_purpose::STANDARD.encode(credentials);
                 Some(("Authorization".to_string(), format!("Basic {}", encoded)))
             }
             AuthType::Bearer => {
@@ -131,86 +130,9 @@ impl AuthConfig {
     }
 }
 
-/// Simple base64 encoding (ASCII only for HTTP auth)
-fn base64_encode(input: &str) -> String {
-    let mut buf = Vec::new();
-    {
-        let mut encoder = Base64Encoder::new(&mut buf);
-        encoder.write_all(input.as_bytes()).ok();
-    }
-    String::from_utf8(buf).unwrap_or_default()
-}
-
-struct Base64Encoder<'a> {
-    output: &'a mut Vec<u8>,
-    buffer: [u8; 3],
-    buffer_len: usize,
-}
-
-impl<'a> Base64Encoder<'a> {
-    fn new(output: &'a mut Vec<u8>) -> Self {
-        Self {
-            output,
-            buffer: [0; 3],
-            buffer_len: 0,
-        }
-    }
-}
-
-impl<'a> Write for Base64Encoder<'a> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-        for &byte in buf {
-            self.buffer[self.buffer_len] = byte;
-            self.buffer_len += 1;
-
-            if self.buffer_len == 3 {
-                self.output.push(CHARS[(self.buffer[0] >> 2) as usize]);
-                self.output
-                    .push(CHARS[((self.buffer[0] & 0x03) << 4 | self.buffer[1] >> 4) as usize]);
-                self.output
-                    .push(CHARS[((self.buffer[1] & 0x0f) << 2 | self.buffer[2] >> 6) as usize]);
-                self.output.push(CHARS[(self.buffer[2] & 0x3f) as usize]);
-                self.buffer_len = 0;
-            }
-        }
-
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-        if self.buffer_len > 0 {
-            self.output.push(CHARS[(self.buffer[0] >> 2) as usize]);
-            if self.buffer_len == 1 {
-                self.output
-                    .push(CHARS[((self.buffer[0] & 0x03) << 4) as usize]);
-                self.output.push(b'=');
-                self.output.push(b'=');
-            } else {
-                self.output
-                    .push(CHARS[((self.buffer[0] & 0x03) << 4 | self.buffer[1] >> 4) as usize]);
-                self.output
-                    .push(CHARS[((self.buffer[1] & 0x0f) << 2) as usize]);
-                self.output.push(b'=');
-            }
-            self.buffer_len = 0;
-        }
-        Ok(())
-    }
-}
-
-impl<'a> Drop for Base64Encoder<'a> {
-    fn drop(&mut self) {
-        self.flush().ok();
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{base64_encode, AuthConfig, AuthType};
+    use super::{AuthConfig, AuthType};
 
     #[test]
     fn basic_auth_generates_expected_header() {
@@ -272,13 +194,6 @@ mod tests {
             header.to_header(),
             Some(("X-Api-Key".to_string(), "secret".to_string()))
         );
-    }
-
-    #[test]
-    fn base64_encoder_handles_padding_cases() {
-        assert_eq!(base64_encode("f"), "Zg==");
-        assert_eq!(base64_encode("fo"), "Zm8=");
-        assert_eq!(base64_encode("foo"), "Zm9v");
     }
 }
 

@@ -1,12 +1,12 @@
 use gpui::prelude::*;
 use gpui::{
-    div, px, App, Context, ElementId, Entity, FocusHandle, Focusable, IntoElement, Render,
-    SharedString, Styled, Window,
+    App, Context, ElementId, Entity, FocusHandle, Focusable, IntoElement, Render, SharedString,
+    Styled, Window, div, px,
 };
+use gpui_component::Sizable;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::checkbox::Checkbox;
 use gpui_component::input::{Input, InputState};
-use gpui_component::Sizable;
 
 use crate::icons::IconName;
 use gpui_component::ActiveTheme;

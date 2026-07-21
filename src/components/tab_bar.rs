@@ -1,17 +1,16 @@
 use gpui::prelude::*;
-use gpui::{div, px, App, Entity, Hsla, IntoElement, ScrollHandle, SharedString, Styled, Window};
-use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
+use gpui::{App, Entity, Hsla, IntoElement, ScrollHandle, SharedString, Styled, Window, div, px};
 use gpui_component::ActiveTheme;
+use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
 
 use crate::entities::HttpMethod;
 use crate::icons::IconName;
 use crate::theme::method_color;
 
-/// A single tab in the tab bar
 #[derive(Clone)]
 pub struct TabInfo {
     pub id: usize,
-    pub index: usize, // Position in tabs array
+    pub index: usize,
     pub name: SharedString,
     pub method: HttpMethod,
     pub is_active: bool,
@@ -34,7 +33,6 @@ impl TabInfo {
     }
 }
 
-/// Tab bar component - original custom implementation with colored method badges
 #[derive(IntoElement)]
 pub struct TabBar {
     tabs: Vec<TabInfo>,
@@ -71,7 +69,6 @@ impl RenderOnce for TabBar {
             .bg(theme.secondary)
             .border_b_1()
             .border_color(theme.border)
-            // Tabs - horizontally scrollable
             .child(
                 div()
                     .id("tab-scroll")
@@ -88,20 +85,17 @@ impl RenderOnce for TabBar {
                         let main_view_for_close = main_view.clone();
                         let main_view_for_context = main_view.clone();
 
-                        Tab::new(tab, main_view_for_context, cx)
-                            .on_click(move |_event, _window, cx| {
-                                main_view_for_click.update(cx, |view, cx| {
-                                    view.switch_tab(index, cx);
-                                });
+                        RequestTab::new(tab, main_view_for_context, cx)
+                            .on_click(move |_, _, cx| {
+                                main_view_for_click
+                                    .update(cx, |view, cx| view.switch_tab(index, cx));
                             })
-                            .on_close(move |_event, _window, cx| {
-                                main_view_for_close.update(cx, |view, cx| {
-                                    view.close_tab(index, cx);
-                                });
+                            .on_close(move |_, _, cx| {
+                                main_view_for_close
+                                    .update(cx, |view, cx| view.close_tab(index, cx));
                             })
                     })),
             )
-            // New tab button
             .child(
                 div()
                     .id("new-tab-button")
@@ -115,23 +109,18 @@ impl RenderOnce for TabBar {
                     .cursor_pointer()
                     .text_color(theme.muted_foreground)
                     .text_size(px(14.0))
-                    .hover(|s| s.bg(theme.muted).text_color(theme.secondary_foreground))
-                    .on_click(move |_event, _window, cx| {
-                        main_view_for_new.update(cx, |view, cx| {
-                            view.new_tab(cx);
-                        });
+                    .hover(|style| style.bg(theme.muted).text_color(theme.secondary_foreground))
+                    .on_click(move |_, _, cx| {
+                        main_view_for_new.update(cx, |view, cx| view.new_tab(cx));
                     })
                     .child(IconName::Plus),
             )
     }
 }
 
-/// Single tab component with click handler
-/// Stores theme colors so they're available in into_element
-pub struct Tab {
+struct RequestTab {
     info: TabInfo,
     main_view: Entity<crate::views::MainView>,
-    // Theme colors captured at creation time
     method_color: Hsla,
     bg_active: Hsla,
     bg_hover: Hsla,
@@ -141,15 +130,13 @@ pub struct Tab {
     on_close: Option<Box<dyn Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static>>,
 }
 
-impl Tab {
-    pub fn new(info: TabInfo, main_view: Entity<crate::views::MainView>, cx: &App) -> Self {
+impl RequestTab {
+    fn new(info: TabInfo, main_view: Entity<crate::views::MainView>, cx: &App) -> Self {
         let theme = cx.theme();
-        let m_color = method_color(&info.method, cx);
-
         Self {
+            method_color: method_color(&info.method, cx),
             info,
             main_view,
-            method_color: m_color,
             bg_active: theme.muted,
             bg_hover: theme.accent,
             text_active: theme.foreground,
@@ -159,7 +146,7 @@ impl Tab {
         }
     }
 
-    pub fn on_click(
+    fn on_click(
         mut self,
         callback: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
@@ -167,7 +154,7 @@ impl Tab {
         self
     }
 
-    pub fn on_close(
+    fn on_close(
         mut self,
         callback: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
@@ -176,7 +163,7 @@ impl Tab {
     }
 }
 
-impl IntoElement for Tab {
+impl IntoElement for RequestTab {
     type Element = gpui::AnyElement;
 
     fn into_element(self) -> Self::Element {
@@ -184,17 +171,9 @@ impl IntoElement for Tab {
         let tab_id = self.info.id;
         let tab_index = self.info.index;
         let tab_name = self.info.name.clone();
-        let main_view = self.main_view.clone();
-
-        // Clone main_view for context menu closures
-        let main_view_for_rename = main_view.clone();
-        let main_view_for_close = main_view.clone();
-        let main_view_for_close_others = main_view.clone();
-
-        // Use captured theme colors
-        let method_color = self.method_color;
-        let bg_active = self.bg_active;
-        let bg_hover = self.bg_hover;
+        let main_view_for_rename = self.main_view.clone();
+        let main_view_for_close = self.main_view.clone();
+        let main_view_for_close_others = self.main_view;
         let text_color = if is_active {
             self.text_active
         } else {
@@ -203,8 +182,8 @@ impl IntoElement for Tab {
 
         div()
             .id(("tab", tab_id))
+            .group("tab")
             .flex()
-            .flex_row()
             .items_center()
             .gap(px(6.0))
             .h(px(28.0))
@@ -212,33 +191,31 @@ impl IntoElement for Tab {
             .mx(px(2.0))
             .rounded(px(4.0))
             .cursor_pointer()
-            // Active tab styling
-            .when(is_active, |s| s.bg(bg_active))
-            .when(!is_active, |s| s.hover(|h| h.bg(bg_hover.opacity(0.3))))
-            .when_some(self.on_click, |el, callback| {
-                el.on_click(move |event, window, cx| {
-                    callback(event, window, cx);
-                })
+            .when(is_active, |style| style.bg(self.bg_active))
+            .when(!is_active, |style| {
+                style.hover(|hover| hover.bg(self.bg_hover.opacity(0.3)))
             })
-            // Method badge
+            .when_some(self.on_click, |element, callback| {
+                element.on_click(move |event, window, cx| callback(event, window, cx))
+            })
             .child(
                 div()
-                    .text_color(method_color)
+                    .text_color(self.method_color)
                     .font_weight(gpui::FontWeight::BOLD)
                     .text_size(px(9.0))
                     .child(self.info.method.as_str()),
             )
-            // Tab name
             .child(
                 div()
+                    .max_w(px(180.0))
+                    .overflow_hidden()
+                    .text_ellipsis()
                     .text_color(text_color)
                     .text_size(px(11.0))
                     .child(self.info.name),
             )
-            // Close button - use group for hover
-            .group("tab")
-            .when_some(self.on_close, |el, on_close| {
-                el.child(
+            .when_some(self.on_close, |element, on_close| {
+                element.child(
                     div()
                         .id(("tab-close", tab_id))
                         .ml(px(4.0))
@@ -251,50 +228,45 @@ impl IntoElement for Tab {
                         .text_size(px(10.0))
                         .cursor_pointer()
                         .text_color(text_color)
-                        // Hide by default for inactive tabs, show on group hover
-                        .when(!is_active, |s| {
-                            s.invisible().group_hover("tab", |s| s.visible())
+                        .when(!is_active, |style| {
+                            style
+                                .invisible()
+                                .group_hover("tab", |hover| hover.visible())
                         })
                         .on_click(move |event, window, cx| {
-                            // Stop propagation to prevent tab switch
                             cx.stop_propagation();
                             on_close(event, window, cx);
                         })
                         .child(IconName::Close),
                 )
             })
-            // Context menu for right-click
-            .context_menu(move |menu, _window, _cx| {
-                let tab_name_for_rename = tab_name.to_string();
-                let main_view_rename = main_view_for_rename.clone();
-                let main_view_close = main_view_for_close.clone();
-                let main_view_close_others = main_view_for_close_others.clone();
+            .context_menu(move |menu, _, _| {
+                let tab_name = tab_name.to_string();
+                let main_view_for_rename = main_view_for_rename.clone();
+                let main_view_for_close = main_view_for_close.clone();
+                let main_view_for_close_others = main_view_for_close_others.clone();
 
                 menu.item(
                     PopupMenuItem::new("Rename")
                         .icon(IconName::FilePen)
-                        .on_click(move |_event, window, cx| {
-                            let current_name = tab_name_for_rename.clone();
-                            main_view_rename.update(cx, |view, cx| {
-                                view.show_rename_dialog(tab_index, current_name, window, cx);
+                        .on_click(move |_, window, cx| {
+                            main_view_for_rename.update(cx, |view, cx| {
+                                view.show_rename_dialog(tab_index, tab_name.clone(), window, cx);
                             });
                         }),
                 )
                 .separator()
                 .item(PopupMenuItem::new("Close").icon(IconName::Close).on_click(
-                    move |_event, _window, cx| {
-                        main_view_close.update(cx, |view, cx| {
-                            view.close_tab(tab_index, cx);
-                        });
+                    move |_, _, cx| {
+                        main_view_for_close.update(cx, |view, cx| view.close_tab(tab_index, cx));
                     },
                 ))
                 .item(
                     PopupMenuItem::new("Close Others")
                         .icon(IconName::CircleX)
-                        .on_click(move |_event, _window, cx| {
-                            main_view_close_others.update(cx, |view, cx| {
-                                view.close_other_tabs(tab_index, cx);
-                            });
+                        .on_click(move |_, _, cx| {
+                            main_view_for_close_others
+                                .update(cx, |view, cx| view.close_other_tabs(tab_index, cx));
                         }),
                 )
             })

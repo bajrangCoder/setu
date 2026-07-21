@@ -1,5 +1,5 @@
 use gpui::prelude::*;
-use gpui::{div, px, App, IntoElement, Styled, Window};
+use gpui::{App, IntoElement, Styled, Window, div, px};
 
 use crate::theme::status_color;
 

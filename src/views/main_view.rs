@@ -1,18 +1,20 @@
 use gpui::prelude::*;
 use gpui::{
-    div, px, App, Entity, FocusHandle, Focusable, IntoElement, PathPromptOptions, Render,
-    ScrollHandle, SharedString, Styled, Window,
+    App, Entity, FocusHandle, Focusable, IntoElement, PathPromptOptions, Render, ScrollHandle,
+    SharedString, Styled, Window, div, px,
 };
+use gpui_component::PixelsExt;
+use gpui_component::Root;
+use gpui_component::Selectable;
+use gpui_component::Sizable;
+use gpui_component::WindowExt;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputState};
 use gpui_component::notification::NotificationType;
-use gpui_component::resizable::{h_resizable, resizable_panel, v_resizable};
+use gpui_component::resizable::{ResizableState, h_resizable, resizable_panel, v_resizable};
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::select::{Select, SelectItem, SelectState};
 use gpui_component::v_flex;
-use gpui_component::Root;
-use gpui_component::Sizable;
-use gpui_component::WindowExt;
 use gpui_component::{ActiveTheme, Icon};
 use uuid::Uuid;
 
@@ -23,7 +25,8 @@ use crate::components::{
 };
 use crate::entities::{
     CollectionDestination, CollectionDestinationEntry, CollectionsEntity, Header, HistoryEntity,
-    HttpMethod, RequestBody, RequestData, RequestEntity, ResponseData, ResponseEntity,
+    HttpMethod, PreferredLayout, RequestBody, RequestData, RequestEntity, RequestEvent,
+    ResponseData, ResponseEntity, UiPreferences, UiPreferencesStore,
 };
 use crate::http::{HttpClient, InFlightRequest};
 use crate::icons::IconName;
@@ -41,8 +44,21 @@ impl Render for SidebarResizeDrag {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TabId(pub u64);
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RequestGeneration(u64);
+
+impl RequestGeneration {
+    fn advance(&mut self) -> Self {
+        self.0 = self.0.wrapping_add(1);
+        *self
+    }
+}
+
 pub struct TabState {
-    pub id: usize,
+    pub id: TabId,
     pub name: String,
     pub is_custom_name: bool,
     pub request: Entity<RequestEntity>,
@@ -52,6 +68,7 @@ pub struct TabState {
     pub request_view: Entity<RequestView>,
     pub response_view: Entity<ResponseView>,
     pub in_flight_request: Option<InFlightRequest>,
+    pub request_generation: RequestGeneration,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,7 +115,7 @@ pub struct MainView {
     // Tabs
     tabs: Vec<TabState>,
     active_tab_index: usize,
-    next_tab_id: usize,
+    next_tab_id: u64,
     tab_scroll_handle: ScrollHandle,
 
     // Command palette (shared across tabs)
@@ -120,6 +137,10 @@ pub struct MainView {
     request_response_layout: RequestResponseLayout,
     focus_handle: FocusHandle,
     pending_window_command: Option<CommandId>,
+    ui_preferences: UiPreferences,
+    ui_preferences_store: UiPreferencesStore,
+    stacked_split_state: Entity<ResizableState>,
+    side_by_side_split_state: Entity<ResizableState>,
 }
 
 impl MainView {
@@ -132,7 +153,7 @@ impl MainView {
         let response_view = cx.new(|cx| ResponseView::new(response.clone(), cx));
 
         let initial_tab = TabState {
-            id: 0,
+            id: TabId(0),
             name: "New Request".to_string(),
             is_custom_name: false,
             request: request.clone(),
@@ -142,17 +163,53 @@ impl MainView {
             request_view,
             response_view,
             in_flight_request: None,
+            request_generation: RequestGeneration::default(),
         };
 
         let command_palette = cx.new(|cx| CommandPaletteView::new(cx));
         let history = cx.new(|_| HistoryEntity::new());
         let collections = cx.new(|_| CollectionsEntity::new());
+        let history_load = HistoryEntity::spawn_storage_load();
+        let history_for_load = history.clone();
+        cx.spawn(async move |_view, cx| {
+            let result = history_load
+                .await
+                .unwrap_or_else(|_| Err("History loader stopped unexpectedly".to_string()));
+            cx.update(|app| {
+                history_for_load.update(app, |history, cx| {
+                    history.apply_storage_load(result, cx);
+                });
+            })
+        })
+        .detach_and_log_err(cx);
+
+        let collections_load = CollectionsEntity::spawn_storage_load();
+        let collections_for_load = collections.clone();
+        cx.spawn(async move |_view, cx| {
+            let result = collections_load
+                .await
+                .unwrap_or_else(|_| Err("Collections loader stopped unexpectedly".to_string()));
+            cx.update(|app| {
+                collections_for_load.update(app, |collections, cx| {
+                    collections.apply_storage_load(result, cx);
+                });
+            })
+        })
+        .detach_and_log_err(cx);
+        let (ui_preferences, ui_preferences_store) = UiPreferencesStore::load();
+        let stacked_split_state = cx.new(|_| ResizableState::default());
+        let side_by_side_split_state = cx.new(|_| ResizableState::default());
 
         cx.subscribe(&command_palette, |this, _, event, cx| {
             let CommandPaletteEvent::ExecuteCommand(cmd_id) = event;
             this.execute_command(*cmd_id, cx);
         })
         .detach();
+        Self::subscribe_request_changes(&request, cx);
+        cx.subscribe(&history, |_this, _, _event, cx| cx.notify())
+            .detach();
+        cx.subscribe(&collections, |_this, _, _event, cx| cx.notify())
+            .detach();
 
         let http_client = HttpClient::new().expect("Failed to create HTTP client");
 
@@ -165,17 +222,40 @@ impl MainView {
             history,
             collections,
             http_client,
-            sidebar_visible: true,
-            sidebar_width: 300.0,
+            sidebar_visible: ui_preferences.sidebar_visible,
+            sidebar_width: ui_preferences.sidebar_width,
             sidebar_tab: SidebarTab::History,
             history_search: None,
             collections_search: None,
             history_filter: HistoryFilter::All,
             history_group_by: HistoryGroupBy::Time,
-            request_response_layout: RequestResponseLayout::Stacked,
+            request_response_layout: match ui_preferences.layout {
+                PreferredLayout::Stacked => RequestResponseLayout::Stacked,
+                PreferredLayout::SideBySide => RequestResponseLayout::SideBySide,
+            },
             focus_handle: cx.focus_handle(),
             pending_window_command: None,
+            ui_preferences,
+            ui_preferences_store,
+            stacked_split_state,
+            side_by_side_split_state,
         }
+    }
+
+    fn persist_ui_preferences(&self) {
+        self.ui_preferences_store.save(&self.ui_preferences);
+    }
+
+    fn subscribe_request_changes(request: &Entity<RequestEntity>, cx: &mut Context<Self>) {
+        cx.subscribe(request, |_this, _request, event: &RequestEvent, cx| {
+            if matches!(
+                event,
+                RequestEvent::UrlChanged | RequestEvent::MethodChanged
+            ) {
+                cx.notify();
+            }
+        })
+        .detach();
     }
 
     /// Ensure URL input is initialized for a tab
@@ -184,24 +264,32 @@ impl MainView {
             if tab.url_input.is_none() {
                 let url_input =
                     cx.new(|cx| InputState::new(window, cx).placeholder("Enter request URL..."));
-                Self::subscribe_url_input_for_curl(&url_input, window, cx);
+                let tab_id = tab.id;
+                Self::subscribe_url_input(&url_input, tab_id, window, cx);
                 tab.url_input = Some(url_input);
             }
         }
     }
 
     /// Subscribe to URL input changes to detect pasted curl commands.
-    fn subscribe_url_input_for_curl(
+    fn subscribe_url_input(
         url_input: &Entity<InputState>,
+        tab_id: TabId,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        cx.subscribe_in(url_input, window, |this, state, event, window, cx| {
+        cx.subscribe_in(url_input, window, move |this, state, event, window, cx| {
             use gpui_component::input::InputEvent;
             if !matches!(event, InputEvent::Change) {
                 return;
             }
             let text = state.read(cx).text().to_string();
+            if let Some(tab) = this.tabs.iter().find(|tab| tab.id == tab_id) {
+                tab.request.update(cx, |request, cx| {
+                    request.set_url(text.clone(), cx);
+                });
+            }
+            cx.notify();
             if !crate::utils::looks_like_curl(&text) {
                 return;
             }
@@ -211,7 +299,7 @@ impl MainView {
                     state.update(cx, |s, cx| {
                         s.set_value(url_value, window, cx);
                     });
-                    this.apply_parsed_curl_to_active_tab(&parsed, window, cx);
+                    this.apply_parsed_curl_to_tab(tab_id, &parsed, window, cx);
                 }
                 Err(err) => {
                     log::warn!("Failed to parse curl from URL bar: {}", err);
@@ -222,13 +310,14 @@ impl MainView {
     }
 
     /// Apply a parsed curl to the currently-active tab.
-    fn apply_parsed_curl_to_active_tab(
+    fn apply_parsed_curl_to_tab(
         &mut self,
+        tab_id: TabId,
         parsed: &crate::utils::ParsedCurl,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(tab) = self.tabs.get(self.active_tab_index) else {
+        let Some(tab) = self.tabs.iter().find(|tab| tab.id == tab_id) else {
             return;
         };
         let method_dropdown = tab.method_dropdown.clone();
@@ -246,12 +335,25 @@ impl MainView {
     /// Ensure sidebar search inputs are initialized
     fn ensure_sidebar_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.history_search.is_none() {
-            self.history_search =
-                Some(cx.new(|cx| InputState::new(window, cx).placeholder("Search history...")));
+            let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search history..."));
+            cx.subscribe_in(&input, window, |_, _, event, _, cx| {
+                if matches!(event, gpui_component::input::InputEvent::Change) {
+                    cx.notify();
+                }
+            })
+            .detach();
+            self.history_search = Some(input);
         }
         if self.collections_search.is_none() {
-            self.collections_search =
-                Some(cx.new(|cx| InputState::new(window, cx).placeholder("Search collections...")));
+            let input =
+                cx.new(|cx| InputState::new(window, cx).placeholder("Search collections..."));
+            cx.subscribe_in(&input, window, |_, _, event, _, cx| {
+                if matches!(event, gpui_component::input::InputEvent::Change) {
+                    cx.notify();
+                }
+            })
+            .detach();
+            self.collections_search = Some(input);
         }
     }
 
@@ -353,10 +455,12 @@ impl MainView {
                 .placeholder("Enter request URL...")
                 .default_value(&request_data.url)
         });
-        Self::subscribe_url_input_for_curl(&url_input, window, cx);
+        let tab_id = TabId(self.next_tab_id);
+        Self::subscribe_url_input(&url_input, tab_id, window, cx);
+        Self::subscribe_request_changes(&request, cx);
 
         let tab = TabState {
-            id: self.next_tab_id,
+            id: tab_id,
             name: tab_name,
             is_custom_name: true,
             request: request.clone(),
@@ -366,6 +470,7 @@ impl MainView {
             request_view,
             response_view,
             in_flight_request: None,
+            request_generation: RequestGeneration::default(),
         };
 
         self.tabs.push(tab);
@@ -480,10 +585,12 @@ impl MainView {
                 .placeholder("Enter request URL...")
                 .default_value(&request_data.url)
         });
-        Self::subscribe_url_input_for_curl(&url_input, window, cx);
+        let tab_id = TabId(self.next_tab_id);
+        Self::subscribe_url_input(&url_input, tab_id, window, cx);
+        Self::subscribe_request_changes(&request, cx);
 
         let tab = TabState {
-            id: self.next_tab_id,
+            id: tab_id,
             name: tab_name,
             is_custom_name: true,
             request: request.clone(),
@@ -493,6 +600,7 @@ impl MainView {
             request_view,
             response_view,
             in_flight_request: None,
+            request_generation: RequestGeneration::default(),
         };
 
         self.tabs.push(tab);
@@ -698,19 +806,22 @@ impl MainView {
         self.tabs.get(self.active_tab_index)
     }
 
-    fn cancel_in_flight_for_tab(&mut self, index: usize) {
+    fn cancel_in_flight_for_tab(&mut self, index: usize, cx: &mut Context<Self>) {
         if let Some(tab) = self.tabs.get_mut(index) {
             if let Some(mut in_flight) = tab.in_flight_request.take() {
                 let _ = in_flight.cancel();
+                tab.request_generation.advance();
+                tab.request
+                    .update(cx, |request, cx| request.set_sending(false, cx));
+                tab.response
+                    .update(cx, |response, cx| response.set_cancelled(cx));
             }
         }
     }
 
-    fn cancel_in_flight_for_all_tabs(&mut self) {
-        for tab in &mut self.tabs {
-            if let Some(mut in_flight) = tab.in_flight_request.take() {
-                let _ = in_flight.cancel();
-            }
+    fn cancel_in_flight_for_all_tabs(&mut self, cx: &mut Context<Self>) {
+        for index in 0..self.tabs.len() {
+            self.cancel_in_flight_for_tab(index, cx);
         }
     }
 
@@ -722,9 +833,11 @@ impl MainView {
         let request_view = cx.new(|cx| RequestView::new(request.clone(), BodyType::None, cx));
         let response_view = cx.new(|cx| ResponseView::new(response.clone(), cx));
 
+        let tab_id = TabId(self.next_tab_id);
         self.next_tab_id += 1;
+        Self::subscribe_request_changes(&request, cx);
         let tab = TabState {
-            id: self.next_tab_id,
+            id: tab_id,
             name: "New Request".to_string(),
             is_custom_name: false,
             request: request.clone(),
@@ -734,6 +847,7 @@ impl MainView {
             request_view,
             response_view,
             in_flight_request: None,
+            request_generation: RequestGeneration::default(),
         };
 
         self.tabs.push(tab);
@@ -766,7 +880,7 @@ impl MainView {
     /// Close a tab
     pub fn close_tab(&mut self, index: usize, cx: &mut Context<Self>) {
         if self.tabs.len() > 1 && index < self.tabs.len() {
-            self.cancel_in_flight_for_tab(index);
+            self.cancel_in_flight_for_tab(index, cx);
             self.tabs.remove(index);
 
             // Adjust active index
@@ -1462,12 +1576,14 @@ impl MainView {
                         }),
                 )
                 .footer(|_, _, _, _| {
-                    vec![Button::new("import-summary-close")
-                        .primary()
-                        .label("Close")
-                        .on_click(|_, window, cx| {
-                            window.close_dialog(cx);
-                        })]
+                    vec![
+                        Button::new("import-summary-close")
+                            .primary()
+                            .label("Close")
+                            .on_click(|_, window, cx| {
+                                window.close_dialog(cx);
+                            }),
+                    ]
                 })
         });
     }
@@ -1477,7 +1593,7 @@ impl MainView {
         if index < self.tabs.len() {
             for i in 0..self.tabs.len() {
                 if i != index {
-                    self.cancel_in_flight_for_tab(i);
+                    self.cancel_in_flight_for_tab(i, cx);
                 }
             }
 
@@ -1498,6 +1614,7 @@ impl MainView {
             return;
         };
 
+        let tab_id = tab.id;
         let request_entity = tab.request.clone();
         let response_entity = tab.response.clone();
         let request_view = tab.request_view.clone();
@@ -1559,15 +1676,8 @@ impl MainView {
         let headers: Vec<Header> = request.headers().to_vec();
         let body: RequestBody = request.body().clone();
 
-        log::info!("Sending {} request to: {}", method.as_str(), url);
-        log::info!(
-            "Headers: {:?}",
-            headers
-                .iter()
-                .map(|h| format!("{}: {}", h.key, h.value))
-                .collect::<Vec<_>>()
-        );
-        log::info!("Body: {:?}", body);
+        let started_at = std::time::Instant::now();
+        log::info!("Sending {} request to {}", method.as_str(), url);
 
         // Create request data for history before sending
         let history_request_data = RequestData {
@@ -1585,68 +1695,70 @@ impl MainView {
         // Spawn HTTP request on Tokio runtime and keep a cancel handle on the tab.
         let (result_rx, in_flight_request) =
             self.http_client.spawn_request(method, url, headers, body);
-        if let Some(tab) = self.tabs.get_mut(tab_index) {
+        let generation = if let Some(tab) = self.tabs.get_mut(tab_index) {
+            let generation = tab.request_generation.advance();
             tab.in_flight_request = Some(in_flight_request);
-        }
+            generation
+        } else {
+            return;
+        };
 
         // Spawn foreground task to await result and update UI
-        cx.spawn(async move |_view, cx| {
+        cx.spawn(async move |view, cx| {
             // Await the result from Tokio runtime
             let result = result_rx.await;
 
-            // Update entities with result in a single sync context
             cx.update(|app| {
-                // Mark request as done sending
-                request_entity.update(app, |req, cx| {
-                    req.set_sending(false, cx);
-                });
+                let _ = view.update(app, |main, cx| {
+                    let Some(tab) = main.tabs.iter_mut().find(|tab| tab.id == tab_id) else {
+                        return;
+                    };
+                    if tab.request_generation != generation {
+                        log::debug!("Discarded stale result for tab {}", tab_id.0);
+                        return;
+                    }
 
-                // Handle the result
-                match result {
-                    Ok(Ok(data)) => {
-                        log::info!(
-                            "Request completed: {} {} - {} bytes in {}ms",
-                            data.status_code,
-                            data.status_text,
-                            data.body_size_bytes,
-                            data.duration_ms
-                        );
+                    tab.in_flight_request = None;
+                    request_entity.update(cx, |req, cx| req.set_sending(false, cx));
 
-                        // Create response data for history (clone the data)
-                        let history_response_data = data.clone();
-
-                        // Add to history
-                        history_entity.update(app, |history, cx| {
-                            history.add_entry(
-                                history_request_data.clone(),
-                                Some(history_response_data),
-                                cx,
+                    match result {
+                        Ok(Ok(data)) => {
+                            log::info!(
+                                "Completed {} request: status={}, duration={}ms, size={} bytes",
+                                history_request_data.method.as_str(),
+                                data.status_code,
+                                data.duration_ms,
+                                data.body_size_bytes
                             );
-                        });
-
-                        response_entity.update(app, |resp, cx| {
-                            resp.set_success(data, cx);
-                        });
+                            history_entity.update(cx, |history, cx| {
+                                history.add_entry(
+                                    history_request_data.clone(),
+                                    Some(data.clone()),
+                                    cx,
+                                );
+                            });
+                            response_entity.update(cx, |resp, cx| resp.set_success(data, cx));
+                        }
+                        Ok(Err(error)) => {
+                            log::error!(
+                                "{} request failed after {}ms: {}",
+                                history_request_data.method.as_str(),
+                                started_at.elapsed().as_millis(),
+                                error
+                            );
+                            history_entity.update(cx, |history, cx| {
+                                history.add_entry(history_request_data.clone(), None, cx);
+                            });
+                            response_entity
+                                .update(cx, |resp, cx| resp.set_error(error.to_string(), cx));
+                        }
+                        Err(_) => {
+                            // Cancellation advances the generation immediately, so this is only
+                            // reachable if the worker exits without an explicit user cancel.
+                            response_entity.update(cx, |resp, cx| resp.set_cancelled(cx));
+                        }
                     }
-                    Ok(Err(e)) => {
-                        log::error!("Request failed: {}", e);
-
-                        // Add to history even on error (no response data)
-                        history_entity.update(app, |history, cx| {
-                            history.add_entry(history_request_data.clone(), None, cx);
-                        });
-
-                        response_entity.update(app, |resp, cx| {
-                            resp.set_error(e.to_string(), cx);
-                        });
-                    }
-                    Err(_) => {
-                        log::info!("Request was cancelled");
-                        response_entity.update(app, |resp, cx| {
-                            resp.set_error("Request was cancelled".to_string(), cx);
-                        });
-                    }
-                }
+                });
             })
         })
         .detach_and_log_err(cx);
@@ -1666,10 +1778,18 @@ impl MainView {
         if let Some(mut in_flight) = tab.in_flight_request.take() {
             let _ = in_flight.cancel();
         }
+        tab.request_generation.advance();
+        tab.request
+            .update(cx, |request, cx| request.set_sending(false, cx));
+        tab.response
+            .update(cx, |response, cx| response.set_cancelled(cx));
+        cx.notify();
     }
 
     pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         self.sidebar_visible = !self.sidebar_visible;
+        self.ui_preferences.sidebar_visible = self.sidebar_visible;
+        self.persist_ui_preferences();
         cx.notify();
     }
 
@@ -1688,13 +1808,41 @@ impl MainView {
     ) {
         if self.request_response_layout != layout {
             self.request_response_layout = layout;
+            self.ui_preferences.layout = match layout {
+                RequestResponseLayout::Stacked => PreferredLayout::Stacked,
+                RequestResponseLayout::SideBySide => PreferredLayout::SideBySide,
+            };
+            self.persist_ui_preferences();
             cx.notify();
         }
     }
 
     pub fn toggle_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.command_palette.read(cx).is_open() {
+            self.command_palette.update(cx, |palette, cx| {
+                palette.close(cx);
+            });
+            window.close_dialog(cx);
+            return;
+        }
+
         self.command_palette.update(cx, |palette, cx| {
             palette.toggle(window, cx);
+        });
+        let palette = self.command_palette.clone();
+        let palette_for_close = palette.clone();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let palette_for_close = palette_for_close.clone();
+            dialog
+                .w(px(560.0))
+                .margin_top(px(48.0))
+                .p_0()
+                .overflow_hidden()
+                .close_button(false)
+                .on_close(move |_, _, cx| {
+                    palette_for_close.update(cx, |palette, cx| palette.close(cx));
+                })
+                .child(palette.clone())
         });
     }
 
@@ -1788,7 +1936,7 @@ impl MainView {
     }
 
     pub fn close_all_tabs(&mut self, cx: &mut Context<Self>) {
-        self.cancel_in_flight_for_all_tabs();
+        self.cancel_in_flight_for_all_tabs(cx);
         while self.tabs.len() > 1 {
             self.tabs.pop();
         }
@@ -1859,7 +2007,8 @@ impl MainView {
                         .placeholder("Enter request URL...")
                         .default_value(&duplicated_url)
                 });
-                Self::subscribe_url_input_for_curl(&input, window, cx);
+                let tab_id = TabId(self.next_tab_id);
+                Self::subscribe_url_input(&input, tab_id, window, cx);
                 Some(input)
             } else {
                 None
@@ -1873,9 +2022,11 @@ impl MainView {
             });
             let new_response_view = cx.new(|cx| ResponseView::new(new_response.clone(), cx));
 
+            let tab_id = TabId(self.next_tab_id);
             self.next_tab_id += 1;
+            Self::subscribe_request_changes(&new_request, cx);
             let new_tab = TabState {
-                id: self.next_tab_id,
+                id: tab_id,
                 name: format!("{} (copy)", old_name),
                 is_custom_name: true,
                 request: new_request.clone(),
@@ -1885,6 +2036,7 @@ impl MainView {
                 request_view: new_request_view,
                 response_view: new_response_view,
                 in_flight_request: None,
+                request_generation: RequestGeneration::default(),
             };
 
             self.tabs.push(new_tab);
@@ -1964,6 +2116,14 @@ impl Render for MainView {
         self.ensure_sidebar_inputs(window, cx);
 
         let theme = cx.theme();
+        let viewport_width = window.viewport_size().width;
+        let show_sidebar_rail = self.sidebar_visible && viewport_width < px(960.0);
+        let show_full_sidebar = self.sidebar_visible && !show_sidebar_rail;
+        let effective_layout = if viewport_width < px(1050.0) {
+            RequestResponseLayout::Stacked
+        } else {
+            self.request_response_layout
+        };
 
         // Build tab infos — auto-derive names for non-custom tabs
         let tab_infos: Vec<TabInfo> = self
@@ -1982,7 +2142,7 @@ impl Render for MainView {
                         .unwrap_or_default();
                     Self::derive_tab_name(&url)
                 };
-                let mut info = TabInfo::new(tab.id, i, display_name, method);
+                let mut info = TabInfo::new(tab.id.0 as usize, i, display_name, method);
                 if i == self.active_tab_index {
                     info = info.active();
                 }
@@ -2145,8 +2305,53 @@ impl Render for MainView {
             .on_action(cx.listener(|this, _: &SetMethodOptions, _window, cx| {
                 this.set_method(HttpMethod::Options, cx);
             }))
+            .when(show_sidebar_rail, |el| {
+                let history_active = self.sidebar_tab == SidebarTab::History;
+                let collections_active = self.sidebar_tab == SidebarTab::Collections;
+                let this_for_history = this.clone();
+                let this_for_collections = this.clone();
+                el.child(
+                    div()
+                        .w(px(44.0))
+                        .h_full()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap(px(6.0))
+                        .pt(px(8.0))
+                        .bg(theme.secondary)
+                        .border_r_1()
+                        .border_color(theme.border)
+                        .child(
+                            Button::new("rail-history")
+                                .icon(Icon::new(IconName::History).size(px(15.0)))
+                                .ghost()
+                                .xsmall()
+                                .selected(history_active)
+                                .tooltip("History")
+                                .on_click(move |_, _, cx| {
+                                    this_for_history.update(cx, |view, cx| {
+                                        view.set_sidebar_tab(SidebarTab::History, cx);
+                                    });
+                                }),
+                        )
+                        .child(
+                            Button::new("rail-collections")
+                                .icon(Icon::new(IconName::Folder).size(px(15.0)))
+                                .ghost()
+                                .xsmall()
+                                .selected(collections_active)
+                                .tooltip("Collections")
+                                .on_click(move |_, _, cx| {
+                                    this_for_collections.update(cx, |view, cx| {
+                                        view.set_sidebar_tab(SidebarTab::Collections, cx);
+                                    });
+                                }),
+                        ),
+                )
+            })
             // Sidebar
-            .when(self.sidebar_visible, |el| {
+            .when(show_full_sidebar, |el| {
                 let history = self.history.clone();
                 let collections = self.collections.clone();
                 let history_search = self
@@ -2326,28 +2531,44 @@ impl Render for MainView {
                         ),
                 )
             })
-            .when(self.sidebar_visible, |el| {
+            .when(show_full_sidebar, |el| {
                 let border_color = theme.border;
                 let this_for_resize = this.clone();
                 el.child(
                     div()
                         .id("sidebar-resize-handle")
-                        .w(px(5.0))
+                        .relative()
+                        .w(px(1.0))
                         .h_full()
-                        .cursor_col_resize()
-                        .hover(move |s| s.bg(border_color))
-                        .on_drag(SidebarResizeDrag, |_, _, _, cx| {
-                            cx.new(|_| SidebarResizeDrag)
-                        })
-                        .on_drag_move(
-                            move |event: &gpui::DragMoveEvent<SidebarResizeDrag>, _window, cx| {
-                                let pos: f32 = event.event.position.x.into();
-                                let new_width = pos.clamp(200.0, 500.0);
-                                this_for_resize.update(cx, |view, cx| {
-                                    view.sidebar_width = new_width;
-                                    cx.notify();
-                                });
-                            },
+                        .bg(border_color)
+                        .flex_shrink_0()
+                        .child(
+                            div()
+                                .id("sidebar-resize-hit-area")
+                                .absolute()
+                                .left(px(-3.0))
+                                .right(px(-3.0))
+                                .top_0()
+                                .bottom_0()
+                                .cursor_col_resize()
+                                .hover(move |style| style.bg(border_color.opacity(0.45)))
+                                .on_drag(SidebarResizeDrag, |_, _, _, cx| {
+                                    cx.new(|_| SidebarResizeDrag)
+                                })
+                                .on_drag_move(
+                                    move |event: &gpui::DragMoveEvent<SidebarResizeDrag>,
+                                          _window,
+                                          cx| {
+                                        let pos: f32 = event.event.position.x.into();
+                                        let new_width = pos.clamp(200.0, 500.0);
+                                        this_for_resize.update(cx, |view, cx| {
+                                            view.sidebar_width = new_width;
+                                            view.ui_preferences.sidebar_width = new_width;
+                                            view.persist_ui_preferences();
+                                            cx.notify();
+                                        });
+                                    },
+                                ),
                         ),
                 )
             })
@@ -2359,8 +2580,8 @@ impl Render for MainView {
                     .flex_col()
                     .h_full()
                     .overflow_hidden()
-                    // Header with protocol selector
-                    .child(self.render_header(&theme))
+                    // Compact application toolbar
+                    .child(self.render_header(&theme, this.clone()))
                     // Tab bar - pass this entity directly with scroll handle
                     .child(TabBar::new(
                         tab_infos,
@@ -2377,13 +2598,10 @@ impl Render for MainView {
                             this_for_send,
                             request_view,
                             response_view,
+                            effective_layout,
                         ),
-                    ))
-                    // Bottom shortcuts bar
-                    .child(self.render_shortcuts(&theme, this.clone())),
+                    )),
             )
-            // Command palette overlay
-            .child(self.command_palette.clone())
             // Dialog layer - renders dialogs on top of everything
             .children(Root::render_dialog_layer(window, cx))
             // Notification layer - renders notifications on top of everything
@@ -2394,7 +2612,7 @@ impl Render for MainView {
 
 #[cfg(test)]
 mod tests {
-    use super::MainView;
+    use super::{MainView, RequestGeneration, TabId};
 
     #[test]
     fn compose_request_url_appends_query_to_plain_url() {
@@ -2427,6 +2645,21 @@ mod tests {
             ),
             "https://api.example.com/users?sort=name"
         );
+    }
+
+    #[test]
+    fn tab_ids_are_stable_values() {
+        assert_eq!(TabId(7), TabId(7));
+        assert_ne!(TabId(7), TabId(8));
+    }
+
+    #[test]
+    fn request_generations_advance_monotonically() {
+        let mut current = RequestGeneration::default();
+        let first = current.advance();
+        let second = current.advance();
+        assert_ne!(first, second);
+        assert_eq!(current, second);
     }
 
     use crate::entities::HttpMethod;
@@ -2564,14 +2797,17 @@ impl MainView {
         this: Entity<MainView>,
         request_view: Entity<RequestView>,
         response_view: Entity<ResponseView>,
+        layout: RequestResponseLayout,
     ) -> impl IntoElement {
+        let initial_sizes = match layout {
+            RequestResponseLayout::Stacked => self.ui_preferences.stacked_split,
+            RequestResponseLayout::SideBySide => self.ui_preferences.side_by_side_split,
+        };
+        let this_for_resize = this.clone();
         let request_panel = resizable_panel()
-            .size(match self.request_response_layout {
-                RequestResponseLayout::Stacked => px(400.0),
-                RequestResponseLayout::SideBySide => px(520.0),
-            })
+            .size(px(initial_sizes[0]))
             .size_range(
-                px(150.0)..match self.request_response_layout {
+                px(150.0)..match layout {
                     RequestResponseLayout::Stacked => px(600.0),
                     RequestResponseLayout::SideBySide => px(900.0),
                 },
@@ -2588,6 +2824,7 @@ impl MainView {
             ));
 
         let response_panel = resizable_panel()
+            .size(px(initial_sizes[1]))
             .size_range(px(150.0)..gpui::Pixels::MAX)
             .child(
                 div()
@@ -2598,140 +2835,121 @@ impl MainView {
                     .child(response_view),
             );
 
-        match self.request_response_layout {
+        let on_resize =
+            move |state: &Entity<ResizableState>, _window: &mut Window, cx: &mut App| {
+                let sizes = state.read(cx).sizes();
+                if sizes.len() != 2 {
+                    return;
+                }
+                let split = [sizes[0].as_f32(), sizes[1].as_f32()];
+                this_for_resize.update(cx, |view, _cx| {
+                    match layout {
+                        RequestResponseLayout::Stacked => view.ui_preferences.stacked_split = split,
+                        RequestResponseLayout::SideBySide => {
+                            view.ui_preferences.side_by_side_split = split
+                        }
+                    }
+                    view.persist_ui_preferences();
+                });
+            };
+
+        match layout {
             RequestResponseLayout::Stacked => v_resizable("request-response-split-stacked")
+                .with_state(&self.stacked_split_state)
+                .on_resize(on_resize)
                 .child(request_panel)
                 .child(response_panel)
                 .into_any_element(),
             RequestResponseLayout::SideBySide => h_resizable("request-response-split-side-by-side")
+                .with_state(&self.side_by_side_split_state)
+                .on_resize(on_resize)
                 .child(request_panel)
                 .child(response_panel)
                 .into_any_element(),
         }
     }
 
-    fn render_header(&self, theme: &gpui_component::theme::ThemeColor) -> impl IntoElement {
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .justify_between()
-            .h(px(44.0))
-            .px(px(16.0))
-            .border_b_1()
-            .border_color(theme.border)
-            // Left: Logo + Protocol selector
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(16.0))
-                    .child(
-                        div()
-                            .text_color(theme.primary)
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .text_size(px(14.0))
-                            .child("setu"),
-                    )
-                    .child(ProtocolSelector::new(ProtocolType::Rest)),
-            )
-    }
-
-    fn render_shortcuts(
+    fn render_header(
         &self,
         theme: &gpui_component::theme::ThemeColor,
         this: Entity<MainView>,
     ) -> impl IntoElement {
-        let (button_id, button_icon, tooltip) = match self.request_response_layout {
-            RequestResponseLayout::Stacked => (
-                "footer-layout-side-by-side",
-                IconName::LayoutSplit,
-                "Switch to side by side layout",
-            ),
-            RequestResponseLayout::SideBySide => (
-                "footer-layout-stacked",
-                IconName::LayoutStacked,
-                "Switch to stacked layout",
-            ),
+        let layout_icon = match self.request_response_layout {
+            RequestResponseLayout::Stacked => IconName::LayoutSplit,
+            RequestResponseLayout::SideBySide => IconName::LayoutStacked,
         };
+        let this_for_sidebar = this.clone();
+        let this_for_commands = this.clone();
+        let this_for_layout = this;
 
         div()
             .flex()
             .flex_row()
             .items_center()
             .justify_between()
-            .gap(px(12.0))
-            .h(px(36.0))
-            .px(px(12.0))
-            .border_t_1()
-            .border_color(theme.border)
+            .h(px(40.0))
+            .px(px(10.0))
             .bg(theme.secondary)
+            .border_b_1()
+            .border_color(theme.border)
             .child(
-                Button::new("footer-toggle-sidebar")
-                    .icon(Icon::new(IconName::PanelLeft).size(px(14.0)))
-                    .ghost()
-                    .xsmall()
-                    .tooltip(if self.sidebar_visible {
-                        "Hide sidebar"
-                    } else {
-                        "Show sidebar"
-                    })
-                    .on_click({
-                        let this = this.clone();
-                        move |_, _, cx| {
-                            this.update(cx, |view, cx| {
-                                view.toggle_sidebar(cx);
-                            });
-                        }
-                    }),
-            )
-            .child(
-                div().flex().items_center().gap(px(12.0)).children(
-                    [
-                        ("Send", "⌘↵"),
-                        ("URL", "⌘L"),
-                        ("Tabs", "⌃⇥"),
-                        ("Sidebar", "⌘B"),
-                        ("Commands", "⌘K"),
-                    ]
-                    .into_iter()
-                    .map(|(label, shortcut)| {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(
+                        Button::new("toolbar-sidebar")
+                            .icon(Icon::new(IconName::PanelLeft).size(px(15.0)))
+                            .ghost()
+                            .xsmall()
+                            .tooltip(if self.sidebar_visible {
+                                "Hide sidebar (⌘B)"
+                            } else {
+                                "Show sidebar (⌘B)"
+                            })
+                            .on_click(move |_, _, cx| {
+                                this_for_sidebar.update(cx, |view, cx| view.toggle_sidebar(cx));
+                            }),
+                    )
+                    .child(
                         div()
-                            .flex()
-                            .items_center()
-                            .gap(px(4.0))
-                            .child(
-                                div()
-                                    .text_color(theme.muted_foreground)
-                                    .text_size(px(10.0))
-                                    .child(label),
-                            )
-                            .child(
-                                div()
-                                    .px(px(4.0))
-                                    .py(px(1.0))
-                                    .bg(theme.muted)
-                                    .rounded(px(2.0))
-                                    .text_color(theme.muted_foreground)
-                                    .text_size(px(9.0))
-                                    .child(shortcut),
-                            )
-                    }),
-                ),
+                            .text_color(theme.foreground)
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_size(px(15.0))
+                            .child("setu"),
+                    )
+                    .child(ProtocolSelector::new(ProtocolType::Rest)),
             )
             .child(
-                div().flex().items_center().child(
-                    Button::new(button_id)
-                        .icon(Icon::new(button_icon).size(px(14.0)))
-                        .ghost()
-                        .xsmall()
-                        .tooltip(tooltip)
-                        .on_click(move |_, _, cx| {
-                            this.update(cx, |view, cx| {
-                                view.toggle_request_response_layout(cx);
-                            });
-                        }),
-                ),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .child(
+                        Button::new("toolbar-command-search")
+                            .icon(Icon::new(IconName::Search).size(px(14.0)))
+                            .label("Commands")
+                            .ghost()
+                            .xsmall()
+                            .tooltip("Search commands (⌘K)")
+                            .on_click(move |_, window, cx| {
+                                this_for_commands.update(cx, |view, cx| {
+                                    view.toggle_command_palette(window, cx);
+                                });
+                            }),
+                    )
+                    .child(
+                        Button::new("toolbar-layout")
+                            .icon(Icon::new(layout_icon).size(px(14.0)))
+                            .ghost()
+                            .xsmall()
+                            .tooltip("Toggle request/response layout")
+                            .on_click(move |_, _, cx| {
+                                this_for_layout.update(cx, |view, cx| {
+                                    view.toggle_request_response_layout(cx);
+                                });
+                            }),
+                    ),
             )
     }
 }

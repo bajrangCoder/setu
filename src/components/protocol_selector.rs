@@ -1,9 +1,7 @@
 use gpui::prelude::*;
-use gpui::{div, px, App, IntoElement, Styled, Window};
-
+use gpui::{App, IntoElement, Styled, Window, div, px};
 use gpui_component::ActiveTheme;
 
-/// Available protocol types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ProtocolType {
     #[default]
@@ -14,21 +12,20 @@ pub enum ProtocolType {
 }
 
 impl ProtocolType {
-    pub fn label(&self) -> &'static str {
+    fn label(self) -> &'static str {
         match self {
-            ProtocolType::Rest => "REST",
-            ProtocolType::WebSocket => "WebSocket",
-            ProtocolType::GraphQL => "GraphQL",
-            ProtocolType::Sse => "SSE",
+            Self::Rest => "REST",
+            Self::WebSocket => "WebSocket",
+            Self::GraphQL => "GraphQL",
+            Self::Sse => "SSE",
         }
     }
 
-    pub fn is_available(&self) -> bool {
-        matches!(self, ProtocolType::Rest)
+    fn is_available(self) -> bool {
+        matches!(self, Self::Rest)
     }
 }
 
-/// Protocol selector component
 #[derive(IntoElement)]
 pub struct ProtocolSelector {
     selected: ProtocolType,
@@ -52,7 +49,6 @@ impl RenderOnce for ProtocolSelector {
 
         div()
             .flex()
-            .flex_row()
             .items_center()
             .gap(px(2.0))
             .p(px(2.0))
@@ -75,15 +71,16 @@ impl RenderOnce for ProtocolSelector {
                     } else {
                         gpui::CursorStyle::Arrow
                     })
-                    .when(is_selected, |s| {
-                        s.bg(theme.popover).text_color(theme.foreground)
+                    .when(is_selected, |style| {
+                        style.bg(theme.popover).text_color(theme.foreground)
                     })
-                    .when(!is_selected && is_available, |s| {
-                        s.text_color(theme.muted_foreground)
-                            .hover(|s| s.text_color(theme.secondary_foreground))
+                    .when(!is_selected && is_available, |style| {
+                        style
+                            .text_color(theme.muted_foreground)
+                            .hover(|hover| hover.text_color(theme.secondary_foreground))
                     })
-                    .when(!is_available, |s| {
-                        s.text_color(theme.muted_foreground).opacity(0.6)
+                    .when(!is_available, |style| {
+                        style.text_color(theme.muted_foreground).opacity(0.6)
                     })
                     .text_size(px(11.0))
                     .font_weight(if is_selected {
@@ -92,9 +89,8 @@ impl RenderOnce for ProtocolSelector {
                         gpui::FontWeight::NORMAL
                     })
                     .child(protocol.label())
-                    // "Soon" badge for unavailable protocols
-                    .when(!is_available, |s| {
-                        s.child(
+                    .when(!is_available, |style| {
+                        style.child(
                             div()
                                 .px(px(4.0))
                                 .py(px(1.0))

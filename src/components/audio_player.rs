@@ -2,16 +2,17 @@ use std::io::Cursor;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use bytes::Bytes;
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, px, App, Bounds, Context, FocusHandle, Focusable, IntoElement, KeyDownEvent,
-    MouseButton, MouseDownEvent, Pixels, Point, Render, Styled, Window,
+    App, Bounds, Context, FocusHandle, Focusable, IntoElement, KeyDownEvent, MouseButton,
+    MouseDownEvent, Pixels, Point, Render, Styled, Window, canvas, div, px,
 };
-use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::ActiveTheme;
 use gpui_component::Disableable;
 use gpui_component::Icon;
 use gpui_component::Sizable;
+use gpui_component::button::{Button, ButtonVariants};
 
 use crate::icons::IconName;
 
@@ -27,12 +28,12 @@ pub enum PlaybackState {
 }
 
 struct AudioBackend {
-    sink: rodio::Sink,
-    _stream: rodio::OutputStream,
+    player: rodio::Player,
+    _device_sink: rodio::MixerDeviceSink,
 }
 
 pub struct AudioPlayer {
-    audio_bytes: Arc<Vec<u8>>,
+    audio_bytes: Bytes,
     content_type: String,
     playback_state: PlaybackState,
     volume: f32,
@@ -46,11 +47,11 @@ pub struct AudioPlayer {
 }
 
 impl AudioPlayer {
-    pub fn new(audio_bytes: Vec<u8>, content_type: String, cx: &mut Context<Self>) -> Self {
+    pub fn new(audio_bytes: Bytes, content_type: String, cx: &mut Context<Self>) -> Self {
         let duration = Self::probe_duration(&audio_bytes, &content_type);
 
         Self {
-            audio_bytes: Arc::new(audio_bytes),
+            audio_bytes,
             content_type,
             playback_state: PlaybackState::Stopped,
             volume: 0.8,
@@ -64,11 +65,11 @@ impl AudioPlayer {
         }
     }
 
-    fn probe_duration(bytes: &[u8], _content_type: &str) -> Option<Duration> {
+    fn probe_duration(bytes: &Bytes, _content_type: &str) -> Option<Duration> {
         use rodio::Source;
 
-        let cursor = Cursor::new(bytes.to_vec());
-        let source = rodio::Decoder::new(cursor).ok()?;
+        let cursor = Cursor::new(bytes.clone());
+        let source = rodio::Decoder::try_from(cursor).ok()?;
         source.total_duration()
     }
 
@@ -77,28 +78,24 @@ impl AudioPlayer {
             return true;
         }
 
-        let Ok(stream) = rodio::OutputStreamBuilder::open_default_stream() else {
+        let Ok(device_sink) = rodio::DeviceSinkBuilder::open_default_sink() else {
             log::error!("Failed to open audio output stream");
             self.error_message = Some("No audio output device found".to_string());
             self.playback_state = PlaybackState::Error;
             return false;
         };
-        let sink = rodio::Sink::connect_new(stream.mixer());
-        sink.set_volume(self.effective_volume());
+        let player = rodio::Player::connect_new(device_sink.mixer());
+        player.set_volume(self.effective_volume());
 
         self.backend = Some(Arc::new(Mutex::new(AudioBackend {
-            sink,
-            _stream: stream,
+            player,
+            _device_sink: device_sink,
         })));
         true
     }
 
     fn effective_volume(&self) -> f32 {
-        if self.muted {
-            0.0
-        } else {
-            self.volume
-        }
+        if self.muted { 0.0 } else { self.volume }
     }
 
     fn sync_playback_state(&mut self) {
@@ -112,8 +109,8 @@ impl AudioPlayer {
         };
 
         if let Ok(backend) = backend.lock() {
-            let sink_empty = backend.sink.empty();
-            let sink_position = backend.sink.get_pos();
+            let sink_empty = backend.player.empty();
+            let sink_position = backend.player.get_pos();
 
             self.current_position = if sink_empty {
                 self.total_duration.unwrap_or(sink_position)
@@ -148,8 +145,8 @@ impl AudioPlayer {
             return;
         }
 
-        let cursor = Cursor::new((*self.audio_bytes).clone());
-        let Ok(source) = rodio::Decoder::new(cursor) else {
+        let cursor = Cursor::new(self.audio_bytes.clone());
+        let Ok(source) = rodio::Decoder::try_from(cursor) else {
             self.error_message = Some("Failed to decode audio format".to_string());
             self.playback_state = PlaybackState::Error;
             cx.notify();
@@ -160,16 +157,16 @@ impl AudioPlayer {
 
         if let Some(ref backend) = self.backend {
             if let Ok(backend) = backend.lock() {
-                backend.sink.append(source);
+                backend.player.append(source);
 
                 if start_position > Duration::ZERO {
-                    if let Err(error) = backend.sink.try_seek(start_position) {
+                    if let Err(error) = backend.player.try_seek(start_position) {
                         log::warn!("Failed to seek audio on play: {error:?}");
                         self.error_message =
                             Some("Seeking is not supported for this audio".to_string());
                         self.current_position = Duration::ZERO;
                     } else {
-                        self.current_position = self.clamp_to_duration(backend.sink.get_pos());
+                        self.current_position = self.clamp_to_duration(backend.player.get_pos());
                     }
                 }
             }
@@ -182,8 +179,8 @@ impl AudioPlayer {
     fn pause(&mut self, cx: &mut Context<Self>) {
         if let Some(ref backend) = self.backend {
             if let Ok(backend) = backend.lock() {
-                backend.sink.pause();
-                self.current_position = self.clamp_to_duration(backend.sink.get_pos());
+                backend.player.pause();
+                self.current_position = self.clamp_to_duration(backend.player.get_pos());
             }
         }
 
@@ -194,8 +191,8 @@ impl AudioPlayer {
     fn resume(&mut self, cx: &mut Context<Self>) {
         if let Some(ref backend) = self.backend {
             if let Ok(backend) = backend.lock() {
-                backend.sink.play();
-                self.current_position = self.clamp_to_duration(backend.sink.get_pos());
+                backend.player.play();
+                self.current_position = self.clamp_to_duration(backend.player.get_pos());
             }
         }
 
@@ -206,7 +203,7 @@ impl AudioPlayer {
     pub fn stop(&mut self, cx: &mut Context<Self>) {
         if let Some(ref backend) = self.backend {
             if let Ok(backend) = backend.lock() {
-                backend.sink.stop();
+                backend.player.stop();
             }
         }
 
@@ -240,7 +237,7 @@ impl AudioPlayer {
     fn apply_volume(&self) {
         if let Some(ref backend) = self.backend {
             if let Ok(backend) = backend.lock() {
-                backend.sink.set_volume(self.effective_volume());
+                backend.player.set_volume(self.effective_volume());
             }
         }
     }
@@ -265,7 +262,7 @@ impl AudioPlayer {
 
         if let Some(ref backend) = self.backend {
             if let Ok(backend) = backend.lock() {
-                if let Err(error) = backend.sink.try_seek(clamped) {
+                if let Err(error) = backend.player.try_seek(clamped) {
                     log::warn!("Failed to seek audio: {error:?}");
                     self.error_message =
                         Some("Seeking is not supported for this audio".to_string());
@@ -273,7 +270,7 @@ impl AudioPlayer {
                     return;
                 }
 
-                self.current_position = self.clamp_to_duration(backend.sink.get_pos());
+                self.current_position = self.clamp_to_duration(backend.player.get_pos());
                 self.error_message = None;
                 cx.notify();
                 return;

@@ -1,14 +1,18 @@
 use gpui::prelude::*;
-use gpui::{div, px, AnyElement, App, Entity, Hsla, IntoElement, Styled, Window};
+use gpui::{AnyElement, App, Entity, Hsla, IntoElement, Styled, Window, div, px, uniform_list};
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputState};
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_component::spinner::Spinner;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme, Icon, Selectable, Sizable};
 use std::rc::Rc;
 use uuid::Uuid;
 
-use crate::entities::{HistoryEntity, HistoryEntry, TimeGroup};
+use crate::entities::{
+    HistoryEntity, HistoryEntry, HistoryGroupKey, HistoryGrouping, HistoryRow, SidebarLoadState,
+    TimeGroup,
+};
 use crate::icons::IconName;
 use crate::theme::method_color;
 
@@ -156,10 +160,9 @@ impl HistoryPanel {
             .flex_row()
             .items_center()
             .w_full()
+            .h(px(32.0))
             .gap(px(6.0))
-            .mt(px(4.0))
             .px(px(12.0))
-            .py(px(4.0))
             .cursor_pointer()
             .rounded(px(6.0))
             .hover(move |s| s.bg(list_hover))
@@ -194,7 +197,9 @@ impl HistoryPanel {
         is_collapsed: bool,
         count: usize,
         theme: &gpui_component::theme::ThemeColor,
+        history: Entity<HistoryEntity>,
     ) -> AnyElement {
+        let domain_for_click = domain.to_string();
         let chevron_icon = if is_collapsed {
             IconName::ChevronRight
         } else {
@@ -209,10 +214,9 @@ impl HistoryPanel {
             .flex_row()
             .items_center()
             .w_full()
+            .h(px(32.0))
             .gap(px(6.0))
-            .mt(px(4.0))
             .px(px(12.0))
-            .py(px(4.0))
             .cursor_pointer()
             .rounded(px(6.0))
             .hover(move |s| s.bg(list_hover))
@@ -241,6 +245,11 @@ impl HistoryPanel {
                     .text_size(px(11.0))
                     .child(format!("({})", count)),
             )
+            .on_click(move |_, _window, cx| {
+                history.update(cx, |history, cx| {
+                    history.toggle_url_group_collapsed(&domain_for_click, cx);
+                });
+            })
             .into_any_element()
     }
 
@@ -286,9 +295,9 @@ impl HistoryPanel {
             .flex_row()
             .items_center()
             .w_full()
+            .h(px(32.0))
             .gap(px(8.0))
             .px(px(12.0))
-            .py(px(5.0))
             .cursor_pointer()
             .rounded(px(6.0))
             .hover(|el| el.bg(list_hover))
@@ -391,33 +400,17 @@ impl RenderOnce for HistoryPanel {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let history = self.history.read(cx);
         let search_query = self.search_input.read(cx).text().to_string();
-
-        let filtered_entries: Vec<&HistoryEntry> = if search_query.is_empty() {
-            match self.filter {
-                HistoryFilter::All => history.entries.iter().collect(),
-                HistoryFilter::Starred => history.starred(),
-            }
-        } else {
-            let searched = history.search(&search_query);
-            match self.filter {
-                HistoryFilter::All => searched,
-                HistoryFilter::Starred => searched.into_iter().filter(|e| e.starred).collect(),
-            }
-        };
-
-        let is_empty = filtered_entries.is_empty();
+        let rows = history.flattened_rows(
+            &search_query,
+            self.filter == HistoryFilter::Starred,
+            match self.group_by {
+                HistoryGroupBy::Time => HistoryGrouping::Time,
+                HistoryGroupBy::Url => HistoryGrouping::Url,
+            },
+        );
+        let is_empty = rows.is_empty();
+        let load_state = history.load_state.clone();
         let has_query = !search_query.is_empty();
-
-        let entry_colors: Vec<(Uuid, Hsla)> = filtered_entries
-            .iter()
-            .map(|e| (e.id, method_color(&e.request.method, cx)))
-            .collect();
-        let entry_indices: std::collections::HashMap<Uuid, usize> = filtered_entries
-            .iter()
-            .enumerate()
-            .map(|(i, e)| (e.id, i))
-            .collect();
-
         let theme = cx.theme();
 
         let on_load = self.on_load_request.clone();
@@ -427,97 +420,74 @@ impl RenderOnce for HistoryPanel {
         let current_filter = self.filter;
         let current_group_by = self.group_by;
 
-        let content = if is_empty {
-            Self::render_empty_state(&theme, has_query)
-        } else {
-            let mut items: Vec<AnyElement> = Vec::new();
-
-            match self.group_by {
-                HistoryGroupBy::Time => {
-                    let grouped = history.grouped_entries();
-                    for (group, group_entries) in grouped {
-                        let matching_entries: Vec<_> = group_entries
-                            .iter()
-                            .filter(|e| filtered_entries.iter().any(|fe| fe.id == e.id))
-                            .collect();
-
-                        if matching_entries.is_empty() {
-                            continue;
-                        }
-
-                        let is_collapsed = history.is_group_collapsed(&group);
-                        items.push(Self::render_group_header(
-                            group,
-                            is_collapsed,
-                            matching_entries.len(),
-                            &theme,
-                            self.history.clone(),
-                        ));
-
-                        if !is_collapsed {
-                            for entry in matching_entries.iter() {
-                                let m_color = entry_colors
-                                    .iter()
-                                    .find(|(id, _)| *id == entry.id)
-                                    .map(|(_, c)| *c)
-                                    .unwrap_or(theme.foreground);
-                                let entry_key = *entry_indices.get(&entry.id).unwrap_or(&0);
-
-                                items.push(Self::render_history_item(
-                                    entry_key,
-                                    entry,
-                                    &theme,
-                                    m_color,
-                                    on_load.clone(),
-                                    on_delete.clone(),
-                                    on_star.clone(),
-                                ));
-                            }
-                        }
-                    }
-                }
-                HistoryGroupBy::Url => {
-                    let grouped = history.grouped_by_url();
-                    for (domain, group_entries) in grouped {
-                        let matching_entries: Vec<_> = group_entries
-                            .iter()
-                            .filter(|e| filtered_entries.iter().any(|fe| fe.id == e.id))
-                            .collect();
-
-                        if matching_entries.is_empty() {
-                            continue;
-                        }
-
-                        items.push(Self::render_url_group_header(
-                            &domain,
-                            false,
-                            matching_entries.len(),
-                            &theme,
-                        ));
-
-                        for entry in matching_entries.iter() {
-                            let m_color = entry_colors
-                                .iter()
-                                .find(|(id, _)| *id == entry.id)
-                                .map(|(_, c)| *c)
-                                .unwrap_or(theme.foreground);
-                            let entry_key = *entry_indices.get(&entry.id).unwrap_or(&0);
-
-                            items.push(Self::render_history_item(
-                                entry_key,
+        let content = match load_state {
+            SidebarLoadState::Loading => div()
+                .flex()
+                .h_full()
+                .items_center()
+                .justify_center()
+                .child(Spinner::new().small())
+                .into_any_element(),
+            SidebarLoadState::Error(error) => div()
+                .flex()
+                .flex_col()
+                .h_full()
+                .items_center()
+                .justify_center()
+                .gap(px(6.0))
+                .text_color(theme.muted_foreground)
+                .child(Icon::new(IconName::TriangleAlert).size(px(20.0)))
+                .child(div().text_size(px(11.0)).child("Could not load history"))
+                .child(div().text_size(px(10.0)).child(error.to_string()))
+                .into_any_element(),
+            SidebarLoadState::Ready if is_empty => Self::render_empty_state(&theme, has_query),
+            SidebarLoadState::Ready => {
+                let rows = std::sync::Arc::new(rows);
+                let row_count = rows.len();
+                let list_theme = theme.clone();
+                let history = self.history.clone();
+                uniform_list("history-rows", row_count, move |range, _window, cx| {
+                    range
+                        .map(|row_index| match &rows[row_index] {
+                            HistoryRow::Group {
+                                key: HistoryGroupKey::Time(group),
+                                count,
+                                collapsed,
+                                ..
+                            } => Self::render_group_header(
+                                *group,
+                                *collapsed,
+                                *count,
+                                &list_theme,
+                                history.clone(),
+                            ),
+                            HistoryRow::Group {
+                                key: HistoryGroupKey::Url(domain),
+                                count,
+                                collapsed,
+                                ..
+                            } => Self::render_url_group_header(
+                                domain,
+                                *collapsed,
+                                *count,
+                                &list_theme,
+                                history.clone(),
+                            ),
+                            HistoryRow::Entry(entry) => Self::render_history_item(
+                                row_index,
                                 entry,
-                                &theme,
-                                m_color,
+                                &list_theme,
+                                method_color(&entry.request.method, cx),
                                 on_load.clone(),
                                 on_delete.clone(),
                                 on_star.clone(),
-                            ));
-                        }
-                    }
-                }
+                            ),
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .h_full()
+                .into_any_element()
             }
-
-            div().flex().flex_col().children(items).into_any_element()
         };
 
         let mut clear_btn = div();
@@ -676,7 +646,7 @@ impl RenderOnce for HistoryPanel {
                 div()
                     .id("history-scroll-container")
                     .flex_1()
-                    .overflow_y_scroll()
+                    .overflow_hidden()
                     .px(px(4.0))
                     .child(content),
             )

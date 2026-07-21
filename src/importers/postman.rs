@@ -1,6 +1,6 @@
-use anyhow::{anyhow, Result};
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use anyhow::{Result, anyhow};
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -1254,10 +1254,12 @@ mod tests {
             ImportedNode::Request { request } => request,
             ImportedNode::Folder { .. } => panic!("expected request"),
         };
-        assert!(graphql_request
-            .headers
-            .iter()
-            .any(|header| header.key == "X-Trace" && header.value == "abc123"));
+        assert!(
+            graphql_request
+                .headers
+                .iter()
+                .any(|header| header.key == "X-Trace" && header.value == "abc123")
+        );
         match &graphql_request.body {
             RequestBody::Json(body) => {
                 let value: Value = serde_json::from_str(body).expect("graphql body is json");
@@ -1331,10 +1333,12 @@ mod tests {
             ImportedNode::Request { request } => request,
             ImportedNode::Folder { .. } => panic!("expected request"),
         };
-        assert!(!public
-            .headers
-            .iter()
-            .any(|header| header.key.eq_ignore_ascii_case("authorization")));
+        assert!(
+            !public
+                .headers
+                .iter()
+                .any(|header| header.key.eq_ignore_ascii_case("authorization"))
+        );
 
         let pinned = match &result.collection.nodes[1] {
             ImportedNode::Request { request } => request,
@@ -1347,9 +1351,11 @@ mod tests {
             .collect();
         assert_eq!(auth_headers.len(), 1);
         assert_eq!(auth_headers[0].value, "Bearer explicit-token");
-        assert!(result.warnings.iter().any(|warning| warning
-            .message
-            .contains("Auth header `Authorization` was not added")));
+        assert!(result.warnings.iter().any(|warning| {
+            warning
+                .message
+                .contains("Auth header `Authorization` was not added")
+        }));
     }
 
     #[test]
@@ -1416,9 +1422,11 @@ mod tests {
             skip_duplicate.url,
             "https://api.example.com/users?api_key=existing"
         );
-        assert!(result.warnings.iter().any(|warning| warning
-            .message
-            .contains("API key query parameter `api_key` was not added")));
+        assert!(result.warnings.iter().any(|warning| {
+            warning
+                .message
+                .contains("API key query parameter `api_key` was not added")
+        }));
     }
 
     #[test]
@@ -1456,17 +1464,23 @@ mod tests {
             ImportedNode::Request { request } => request,
             ImportedNode::Folder { .. } => panic!("expected request"),
         };
-        assert!(request
-            .headers
-            .iter()
-            .any(|header| header.key == "Content-Type" && header.value == "text/plain"));
+        assert!(
+            request
+                .headers
+                .iter()
+                .any(|header| header.key == "Content-Type" && header.value == "text/plain")
+        );
         assert!(matches!(request.body, RequestBody::None));
-        assert!(result.warnings.iter().any(|warning| warning
-            .message
-            .contains("raw header line could not be parsed")));
-        assert!(result.warnings.iter().any(|warning| warning
-            .message
-            .contains("cannot retain Postman file references")));
+        assert!(result.warnings.iter().any(|warning| {
+            warning
+                .message
+                .contains("raw header line could not be parsed")
+        }));
+        assert!(result.warnings.iter().any(|warning| {
+            warning
+                .message
+                .contains("cannot retain Postman file references")
+        }));
     }
 
     #[test]
@@ -1543,16 +1557,22 @@ mod tests {
 
         assert_eq!(result.collection.request_count(), 1);
         assert!(result.warnings.len() >= 3);
-        assert!(result
-            .warnings
-            .iter()
-            .any(|warning| warning.message.contains("Collection scripts")));
-        assert!(result
-            .warnings
-            .iter()
-            .any(|warning| warning.message.contains("auth type `digest`")));
-        assert!(result.warnings.iter().any(|warning| warning
-            .message
-            .contains("Duplicate x-www-form-urlencoded key")));
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|warning| warning.message.contains("Collection scripts"))
+        );
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|warning| warning.message.contains("auth type `digest`"))
+        );
+        assert!(result.warnings.iter().any(|warning| {
+            warning
+                .message
+                .contains("Duplicate x-www-form-urlencoded key")
+        }));
     }
 }

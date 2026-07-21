@@ -1,5 +1,5 @@
-use gpui::{hsla, App, Hsla};
-use gpui_component::{highlighter::HighlightTheme, Theme as GpuiTheme};
+use gpui::{App, Hsla, hsla, px};
+use gpui_component::{Theme as GpuiTheme, highlighter::HighlightTheme};
 
 pub fn init_theme(cx: &mut App) {
     apply_setu_teal_theme(cx);
@@ -56,24 +56,24 @@ impl SetuColors {
     fn teal() -> Self {
         Self {
             // Backgrounds
-            bg_primary: hsla(240.0 / 360.0, 0.10, 0.08, 1.0), // #111318
-            bg_secondary: hsla(240.0 / 360.0, 0.08, 0.10, 1.0), // #16181d
-            bg_tertiary: hsla(240.0 / 360.0, 0.08, 0.12, 1.0), // #1c1e24
-            bg_elevated: hsla(240.0 / 360.0, 0.10, 0.14, 1.0), // #21242b
+            bg_primary: hsla(240.0 / 360.0, 0.10, 0.08, 1.0),
+            bg_secondary: hsla(240.0 / 360.0, 0.08, 0.10, 1.0),
+            bg_tertiary: hsla(240.0 / 360.0, 0.08, 0.12, 1.0),
+            bg_elevated: hsla(240.0 / 360.0, 0.10, 0.14, 1.0),
             bg_overlay: hsla(0.0, 0.0, 0.0, 0.6),
 
             // Foregrounds
-            text_primary: hsla(0.0, 0.0, 0.93, 1.0), // #ededed
-            text_secondary: hsla(240.0 / 360.0, 0.05, 0.65, 1.0), // #a0a4ad
-            text_muted: hsla(240.0 / 360.0, 0.04, 0.45, 1.0), // #6e7179
+            text_primary: hsla(0.0, 0.0, 0.93, 1.0),
+            text_secondary: hsla(240.0 / 360.0, 0.05, 0.65, 1.0),
+            text_muted: hsla(240.0 / 360.0, 0.04, 0.45, 1.0),
 
             // Borders
-            border_primary: hsla(240.0 / 360.0, 0.06, 0.18, 1.0), // #2a2d35
-            border_secondary: hsla(240.0 / 360.0, 0.05, 0.22, 1.0), // #353840
-            border_focus: hsla(165.0 / 360.0, 0.80, 0.50, 1.0),   // teal accent
+            border_primary: hsla(240.0 / 360.0, 0.06, 0.18, 1.0),
+            border_secondary: hsla(240.0 / 360.0, 0.05, 0.22, 1.0),
+            border_focus: hsla(165.0 / 360.0, 0.80, 0.50, 1.0),
 
             // Accent - teal/cyan
-            accent: hsla(165.0 / 360.0, 0.80, 0.45, 1.0), // #1db883
+            accent: hsla(165.0 / 360.0, 0.80, 0.45, 1.0),
             accent_hover: hsla(165.0 / 360.0, 0.80, 0.52, 1.0),
             accent_muted: hsla(165.0 / 360.0, 0.40, 0.25, 1.0),
 
@@ -202,6 +202,9 @@ fn apply_setu_teal_theme(cx: &mut App) {
 
     // Caret
     theme.caret = colors.accent;
+
+    theme.radius = px(4.0);
+    theme.radius_lg = px(6.0);
 
     // Highlight theme for code editor
     theme.highlight_theme = HighlightTheme::default_dark();

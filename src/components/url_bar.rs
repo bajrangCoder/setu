@@ -1,9 +1,9 @@
 use gpui::prelude::*;
-use gpui::{div, hsla, px, App, ClickEvent, Entity, IntoElement, Styled, Window};
+use gpui::{App, ClickEvent, Entity, IntoElement, Styled, Window, div, hsla, px};
+use gpui_component::ActiveTheme;
 use gpui_component::button::{Button, ButtonCustomVariant, ButtonVariants, DropdownButton};
 use gpui_component::input::{Input, InputState};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
-use gpui_component::ActiveTheme;
 use std::rc::Rc;
 
 use crate::components::{MethodDropdown, MethodDropdownState};

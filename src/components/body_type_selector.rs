@@ -1,7 +1,7 @@
 use gpui::prelude::*;
 use gpui::{
-    div, px, App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, Render,
-    SharedString, Styled, Window,
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, Render, SharedString,
+    Styled, Window, div, px,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::select::{Select, SelectEvent, SelectItem, SelectState};

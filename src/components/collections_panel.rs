@@ -1,16 +1,21 @@
 use gpui::prelude::*;
 use gpui::{
-    anchored, deferred, div, px, AnyElement, App, Context, Corner, DismissEvent, Entity, Focusable,
-    IntoElement, MouseButton, Point, SharedString, Styled, Subscription, Window,
+    AnyElement, App, Context, Corner, DismissEvent, Entity, Focusable, IntoElement, MouseButton,
+    Point, SharedString, Styled, Subscription, Window, anchored, deferred, div, px,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputState};
+use gpui_component::list::ListItem;
 use gpui_component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
+use gpui_component::spinner::Spinner;
+use gpui_component::tree::{TreeItem, TreeState, tree};
 use gpui_component::{ActiveTheme, Icon, IconName as ComponentIconName, Sizable};
+use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::entities::{Collection, CollectionNode, CollectionsEntity};
+use crate::entities::{CollectionNode, CollectionsEntity, HttpMethod, SidebarLoadState};
 use crate::icons::IconName;
 use crate::theme::method_color;
 
@@ -35,6 +40,37 @@ struct RowContextMenuState {
     open: bool,
     position: Point<gpui::Pixels>,
     subscription: Option<Subscription>,
+}
+
+#[derive(Clone)]
+enum CollectionTreeRow {
+    Collection {
+        id: Uuid,
+        name: String,
+        expanded: bool,
+        request_count: usize,
+    },
+    Folder {
+        collection_id: Uuid,
+        id: Uuid,
+        name: String,
+        expanded: bool,
+        has_children: bool,
+    },
+    Request {
+        collection_id: Uuid,
+        id: Uuid,
+        name: String,
+        method: HttpMethod,
+    },
+}
+
+#[derive(Default)]
+struct CollectionsTreeSyncState {
+    initialized: bool,
+    revision: u64,
+    query: String,
+    rows: Arc<HashMap<SharedString, CollectionTreeRow>>,
 }
 
 #[derive(IntoElement)]
@@ -150,6 +186,95 @@ impl CollectionsPanel {
     ) -> Self {
         self.on_toggle_node_expand = Some(Rc::new(f));
         self
+    }
+
+    fn collection_tree_id(collection_id: Uuid) -> SharedString {
+        format!("collection:{collection_id}").into()
+    }
+
+    fn folder_tree_id(collection_id: Uuid, node_id: Uuid) -> SharedString {
+        format!("folder:{collection_id}:{node_id}").into()
+    }
+
+    fn request_tree_id(collection_id: Uuid, node_id: Uuid) -> SharedString {
+        format!("request:{collection_id}:{node_id}").into()
+    }
+
+    fn build_node_snapshot(
+        collection_id: Uuid,
+        node: &CollectionNode,
+        rows: &mut HashMap<SharedString, CollectionTreeRow>,
+    ) -> TreeItem {
+        match node {
+            CollectionNode::Folder(folder) => {
+                let id = Self::folder_tree_id(collection_id, folder.id);
+                let children = folder
+                    .children
+                    .iter()
+                    .map(|child| Self::build_node_snapshot(collection_id, child, rows))
+                    .collect::<Vec<_>>();
+                rows.insert(
+                    id.clone(),
+                    CollectionTreeRow::Folder {
+                        collection_id,
+                        id: folder.id,
+                        name: folder.name.clone(),
+                        expanded: folder.expanded,
+                        has_children: !folder.children.is_empty(),
+                    },
+                );
+                TreeItem::new(id, folder.name.clone())
+                    .expanded(folder.expanded)
+                    .children(children)
+            }
+            CollectionNode::Request(request) => {
+                let id = Self::request_tree_id(collection_id, request.id);
+                let name = request.display_name();
+                rows.insert(
+                    id.clone(),
+                    CollectionTreeRow::Request {
+                        collection_id,
+                        id: request.id,
+                        name: name.clone(),
+                        method: request.request.method,
+                    },
+                );
+                TreeItem::new(id, name)
+            }
+        }
+    }
+
+    fn build_tree_snapshot(
+        collections: &CollectionsEntity,
+        query: &str,
+    ) -> (Vec<TreeItem>, Arc<HashMap<SharedString, CollectionTreeRow>>) {
+        let mut rows = HashMap::new();
+        let items = collections
+            .filtered_collections(query)
+            .into_iter()
+            .map(|collection| {
+                let id = Self::collection_tree_id(collection.id);
+                let children = collection
+                    .nodes
+                    .iter()
+                    .map(|node| Self::build_node_snapshot(collection.id, node, &mut rows))
+                    .collect::<Vec<_>>();
+                rows.insert(
+                    id.clone(),
+                    CollectionTreeRow::Collection {
+                        id: collection.id,
+                        name: collection.name.clone(),
+                        expanded: collection.expanded,
+                        request_count: collection.request_count(),
+                    },
+                );
+                TreeItem::new(id, collection.name)
+                    .expanded(collection.expanded)
+                    .children(children)
+            })
+            .collect();
+
+        (items, Arc::new(rows))
     }
 
     fn callbacks(&self) -> PanelCallbacks {
@@ -398,7 +523,7 @@ impl CollectionsPanel {
         tooltip: &'static str,
         right_offset: gpui::Pixels,
         menu_builder: impl Fn(PopupMenu, &mut Window, &mut gpui::Context<PopupMenu>) -> PopupMenu
-            + 'static,
+        + 'static,
     ) -> AnyElement {
         div()
             .absolute()
@@ -528,21 +653,22 @@ impl CollectionsPanel {
     fn render_collection_row(
         window: &mut Window,
         cx: &mut App,
-        collection: &Collection,
+        collection_id: Uuid,
+        name: &str,
+        is_expanded: bool,
+        request_count: usize,
         theme: &gpui_component::theme::ThemeColor,
         callbacks: &PanelCallbacks,
     ) -> AnyElement {
-        let group_id = SharedString::from(format!("collection-row-{}", collection.id));
-        let action_id = SharedString::from(format!("collection-actions-{}", collection.id));
-        let row_name = collection.name.clone();
+        let group_id = SharedString::from(format!("collection-row-{collection_id}"));
+        let action_id = SharedString::from(format!("collection-actions-{collection_id}"));
+        let row_name = name.to_string();
         let callbacks_for_toggle = callbacks.clone();
         let callbacks_for_menu = callbacks.clone();
         let callbacks_for_action = callbacks.clone();
-        let collection_id = collection.id;
-        let action_name = collection.name.clone();
-        let action_collection_id = collection.id;
-        let is_expanded = collection.expanded;
-        let row_id = SharedString::from(format!("collection-row-{}", collection.id));
+        let action_name = name.to_string();
+        let action_collection_id = collection_id;
+        let row_id = SharedString::from(format!("collection-row-{collection_id}"));
 
         let row = div()
             .id(row_id.clone())
@@ -590,9 +716,9 @@ impl CollectionsPanel {
                     .text_size(px(11.5))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_ellipsis()
-                    .child(collection.name.clone()),
+                    .child(name.to_string()),
             )
-            .child(Self::render_count_text(theme, collection.request_count()))
+            .child(Self::render_count_text(theme, request_count))
             .child(Self::render_action_button(
                 theme,
                 group_id,
@@ -624,23 +750,23 @@ impl CollectionsPanel {
         window: &mut Window,
         cx: &mut App,
         collection_id: Uuid,
-        folder: &crate::entities::CollectionFolderNode,
+        node_id: Uuid,
+        name: &str,
+        is_expanded: bool,
+        has_children: bool,
+        depth: usize,
         theme: &gpui_component::theme::ThemeColor,
         callbacks: &PanelCallbacks,
     ) -> AnyElement {
-        let has_children = !folder.children.is_empty();
-        let group_id = SharedString::from(format!("folder-row-{}-{}", collection_id, folder.id));
-        let action_id =
-            SharedString::from(format!("folder-actions-{}-{}", collection_id, folder.id));
-        let row_name = folder.name.clone();
-        let node_id = folder.id;
+        let group_id = SharedString::from(format!("folder-row-{collection_id}-{node_id}"));
+        let action_id = SharedString::from(format!("folder-actions-{collection_id}-{node_id}"));
+        let row_name = name.to_string();
         let callbacks_for_toggle = callbacks.clone();
         let callbacks_for_menu = callbacks.clone();
         let callbacks_for_action = callbacks.clone();
-        let action_name = folder.name.clone();
-        let action_node_id = folder.id;
-        let is_expanded = folder.expanded;
-        let row_id = SharedString::from(format!("folder-row-{}-{}", collection_id, folder.id));
+        let action_name = name.to_string();
+        let action_node_id = node_id;
+        let row_id = SharedString::from(format!("folder-row-{collection_id}-{node_id}"));
 
         let row = div()
             .id(row_id.clone())
@@ -650,7 +776,8 @@ impl CollectionsPanel {
             .items_center()
             .w_full()
             .gap(px(8.0))
-            .px(px(12.0))
+            .pl(px(8.0 + depth as f32 * 14.0))
+            .pr(px(12.0))
             .py(px(5.0))
             .cursor_pointer()
             .rounded(px(6.0))
@@ -687,7 +814,7 @@ impl CollectionsPanel {
                     .text_color(theme.foreground)
                     .text_size(px(11.5))
                     .text_ellipsis()
-                    .child(folder.name.clone()),
+                    .child(name.to_string()),
             )
             .child(Self::render_action_button(
                 theme,
@@ -722,22 +849,23 @@ impl CollectionsPanel {
         window: &mut Window,
         cx: &mut App,
         collection_id: Uuid,
-        request: &crate::entities::CollectionRequestNode,
+        request_id: Uuid,
+        name: &str,
+        method: HttpMethod,
+        depth: usize,
         theme: &gpui_component::theme::ThemeColor,
         callbacks: &PanelCallbacks,
     ) -> AnyElement {
-        let group_id = SharedString::from(format!("request-row-{}-{}", collection_id, request.id));
-        let action_id =
-            SharedString::from(format!("request-actions-{}-{}", collection_id, request.id));
-        let m_color = method_color(&request.request.method, cx);
-        let request_id = request.id;
+        let group_id = SharedString::from(format!("request-row-{collection_id}-{request_id}"));
+        let action_id = SharedString::from(format!("request-actions-{collection_id}-{request_id}"));
+        let m_color = method_color(&method, cx);
         let callbacks_for_load = callbacks.clone();
         let callbacks_for_menu = callbacks.clone();
         let callbacks_for_action = callbacks.clone();
-        let context_name = request.display_name();
-        let action_name = request.display_name();
-        let method_str = request.request.method.as_str();
-        let row_id = SharedString::from(format!("request-row-{}-{}", collection_id, request.id));
+        let context_name = name.to_string();
+        let action_name = name.to_string();
+        let method_str = method.as_str();
+        let row_id = SharedString::from(format!("request-row-{collection_id}-{request_id}"));
 
         let row = div()
             .id(row_id.clone())
@@ -747,7 +875,7 @@ impl CollectionsPanel {
             .items_center()
             .w_full()
             .gap(px(8.0))
-            .pl(px(22.0))
+            .pl(px(22.0 + depth as f32 * 14.0))
             .pr(px(12.0))
             .py(px(5.0))
             .cursor_pointer()
@@ -767,7 +895,7 @@ impl CollectionsPanel {
                     .text_color(theme.foreground.opacity(0.9))
                     .text_size(px(11.5))
                     .text_ellipsis()
-                    .child(request.display_name()),
+                    .child(name.to_string()),
             )
             .child(Self::render_action_button(
                 theme,
@@ -798,92 +926,65 @@ impl CollectionsPanel {
         })
     }
 
-    fn render_node_tree(
+    fn render_tree_row(
         window: &mut Window,
         cx: &mut App,
-        collection_id: Uuid,
-        node: &CollectionNode,
+        row: &CollectionTreeRow,
+        depth: usize,
         theme: &gpui_component::theme::ThemeColor,
         callbacks: &PanelCallbacks,
     ) -> AnyElement {
-        match node {
-            CollectionNode::Folder(folder) => {
-                let mut branch = div()
-                    .flex()
-                    .flex_col()
-                    .w_full()
-                    .child(Self::render_folder_row(
-                        window,
-                        cx,
-                        collection_id,
-                        folder,
-                        theme,
-                        callbacks,
-                    ));
-
-                if folder.expanded && !folder.children.is_empty() {
-                    branch = branch.child(
-                        div()
-                            .ml(px(12.0))
-                            .pl(px(10.0))
-                            .border_l_1()
-                            .border_color(theme.border.opacity(0.2))
-                            .flex()
-                            .flex_col()
-                            .overflow_hidden()
-                            .children(folder.children.iter().map(|child| {
-                                Self::render_node_tree(
-                                    window,
-                                    cx,
-                                    collection_id,
-                                    child,
-                                    theme,
-                                    callbacks,
-                                )
-                            })),
-                    );
-                }
-
-                branch.into_any_element()
-            }
-            CollectionNode::Request(request) => {
-                Self::render_request_row(window, cx, collection_id, request, theme, callbacks)
-            }
+        match row {
+            CollectionTreeRow::Collection {
+                id,
+                name,
+                expanded,
+                request_count,
+            } => Self::render_collection_row(
+                window,
+                cx,
+                *id,
+                name,
+                *expanded,
+                *request_count,
+                theme,
+                callbacks,
+            ),
+            CollectionTreeRow::Folder {
+                collection_id,
+                id,
+                name,
+                expanded,
+                has_children,
+            } => Self::render_folder_row(
+                window,
+                cx,
+                *collection_id,
+                *id,
+                name,
+                *expanded,
+                *has_children,
+                depth,
+                theme,
+                callbacks,
+            ),
+            CollectionTreeRow::Request {
+                collection_id,
+                id,
+                name,
+                method,
+            } => Self::render_request_row(
+                window,
+                cx,
+                *collection_id,
+                *id,
+                name,
+                *method,
+                depth,
+                theme,
+                callbacks,
+            ),
         }
-    }
-
-    fn render_collection_tree(
-        window: &mut Window,
-        cx: &mut App,
-        collection: &Collection,
-        theme: &gpui_component::theme::ThemeColor,
-        callbacks: &PanelCallbacks,
-    ) -> AnyElement {
-        let mut tree = div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .child(Self::render_collection_row(
-                window, cx, collection, theme, callbacks,
-            ));
-
-        if collection.expanded && !collection.nodes.is_empty() {
-            tree = tree.child(
-                div()
-                    .ml(px(8.0))
-                    .pl(px(8.0))
-                    .border_l_1()
-                    .border_color(theme.border.opacity(0.2))
-                    .flex()
-                    .flex_col()
-                    .overflow_hidden()
-                    .children(collection.nodes.iter().map(|node| {
-                        Self::render_node_tree(window, cx, collection.id, node, theme, callbacks)
-                    })),
-            );
-        }
-
-        tree.into_any_element()
     }
 }
 
@@ -892,33 +993,87 @@ impl RenderOnce for CollectionsPanel {
         let theme = cx.theme().clone();
         let search_query = self.search_input.read(cx).text().to_string();
         let collections_data = self.collections.read(cx);
-        let filtered_collections = collections_data.filtered_collections(&search_query);
         let is_empty = collections_data.is_empty();
+        let revision = collections_data.revision();
+        let load_state = collections_data.load_state.clone();
         let callbacks = self.callbacks();
 
-        let content = if is_empty {
+        let tree_state = window.use_keyed_state("collections-tree", cx, |_, cx| TreeState::new(cx));
+        let sync_state = window.use_keyed_state("collections-tree-sync", cx, |_, _| {
+            CollectionsTreeSyncState::default()
+        });
+        let needs_tree_sync = {
+            let sync = sync_state.read(cx);
+            !sync.initialized || sync.revision != revision || sync.query != search_query
+        };
+        if needs_tree_sync {
+            let (items, rows) = Self::build_tree_snapshot(self.collections.read(cx), &search_query);
+            tree_state.update(cx, |state, cx| state.set_items(items, cx));
+            sync_state.update(cx, |sync, _| {
+                sync.initialized = true;
+                sync.revision = revision;
+                sync.query.clone_from(&search_query);
+                sync.rows = rows;
+            });
+        }
+        let tree_rows = sync_state.read(cx).rows.clone();
+        let has_tree_rows = !tree_rows.is_empty();
+
+        let content = if matches!(load_state, SidebarLoadState::Loading) {
+            div()
+                .flex()
+                .h_full()
+                .items_center()
+                .justify_center()
+                .child(Spinner::new().small())
+                .into_any_element()
+        } else if let SidebarLoadState::Error(error) = load_state {
+            div()
+                .flex()
+                .flex_col()
+                .h_full()
+                .items_center()
+                .justify_center()
+                .gap(px(6.0))
+                .text_color(theme.muted_foreground)
+                .child(Icon::new(IconName::TriangleAlert).size(px(20.0)))
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .child("Could not load collections"),
+                )
+                .child(div().text_size(px(10.0)).child(error.to_string()))
+                .into_any_element()
+        } else if is_empty {
             Self::render_empty_state(
                 &theme,
                 callbacks.on_new_collection.as_ref().map(Rc::clone),
                 callbacks.on_import_collection.as_ref().map(Rc::clone),
             )
-        } else if filtered_collections.is_empty() {
+        } else if !has_tree_rows {
             Self::render_search_empty_state(&theme)
         } else {
-            let rows = filtered_collections
-                .iter()
-                .map(|collection| {
-                    Self::render_collection_tree(window, cx, collection, &theme, &callbacks)
-                })
-                .collect::<Vec<_>>();
-
-            div()
-                .flex()
-                .flex_col()
-                .w_full()
-                .gap(px(4.0))
-                .children(rows)
-                .into_any_element()
+            let list_theme = theme.clone();
+            let tree_callbacks = callbacks.clone();
+            tree(&tree_state, move |index, entry, selected, window, cx| {
+                let row = tree_rows
+                    .get(&entry.item().id)
+                    .expect("collection tree rows stay synchronized with TreeState");
+                ListItem::new(index)
+                    .selected(selected)
+                    .p_0()
+                    .h(px(32.0))
+                    .child(Self::render_tree_row(
+                        window,
+                        cx,
+                        row,
+                        entry.depth(),
+                        &list_theme,
+                        &tree_callbacks,
+                    ))
+            })
+            .size_full()
+            .into_any_element()
         };
 
         let mut actions = div().flex().flex_row().items_center().gap(px(2.0));
@@ -1001,7 +1156,6 @@ impl RenderOnce for CollectionsPanel {
                 div()
                     .id("collections-scroll-container")
                     .flex_1()
-                    .overflow_y_scroll()
                     .overflow_x_hidden()
                     .pl(px(6.0))
                     .pr(px(4.0))

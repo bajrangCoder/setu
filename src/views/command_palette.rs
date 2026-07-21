@@ -1,11 +1,11 @@
 use gpui::prelude::*;
 use gpui::{
-    div, px, App, ElementId, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, Render,
-    ScrollHandle, SharedString, Styled, Window,
+    App, ElementId, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, Render,
+    ScrollHandle, SharedString, Styled, Window, div, px,
 };
 
 use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::{ActiveTheme, Icon, Sizable};
+use gpui_component::{ActiveTheme, WindowExt};
 
 use crate::icons::IconName;
 
@@ -55,22 +55,49 @@ pub struct Command {
     pub id: CommandId,
     pub label: &'static str,
     pub shortcut: Option<&'static str>,
-    pub icon: IconName,
 }
 
 impl Command {
-    pub const fn new(id: CommandId, label: &'static str, icon: IconName) -> Self {
+    pub const fn new(id: CommandId, label: &'static str, _icon: IconName) -> Self {
         Self {
             id,
             label,
             shortcut: None,
-            icon,
         }
     }
 
     pub const fn with_shortcut(mut self, shortcut: &'static str) -> Self {
         self.shortcut = Some(shortcut);
         self
+    }
+
+    fn namespace(&self) -> &'static str {
+        match self.id {
+            CommandId::CloseTab
+            | CommandId::CloseAllTabs
+            | CommandId::CloseOtherTabs
+            | CommandId::NextTab
+            | CommandId::PreviousTab
+            | CommandId::GoToTab1
+            | CommandId::GoToTab2
+            | CommandId::GoToTab3
+            | CommandId::GoToTab4
+            | CommandId::GoToTab5
+            | CommandId::GoToTab6
+            | CommandId::GoToTab7
+            | CommandId::GoToTab8
+            | CommandId::GoToLastTab => "tabs",
+            CommandId::ToggleSidebar | CommandId::ToggleRequestResponseLayout => "view",
+            CommandId::ClearHistory => "history",
+            CommandId::ImportCollection | CommandId::SaveToCollection => "collections",
+            CommandId::SwitchToResponseBody | CommandId::SwitchToResponseHeaders => "response",
+            _ => "request",
+        }
+    }
+
+    fn palette_label(&self) -> String {
+        let action = self.label.to_ascii_lowercase().replace(": ", " ");
+        format!("{}: {action}", self.namespace())
     }
 }
 
@@ -224,6 +251,7 @@ pub enum CommandPaletteEvent {
 pub struct CommandPaletteView {
     is_open: bool,
     commands: Vec<Command>,
+    command_labels: Vec<SharedString>,
     command_labels_lower: Vec<String>,
     filtered_indices: Vec<usize>,
     selected_index: usize,
@@ -236,15 +264,20 @@ pub struct CommandPaletteView {
 impl CommandPaletteView {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let commands = default_commands();
-        let command_labels_lower = commands
+        let command_labels = commands
             .iter()
-            .map(|command| command.label.to_ascii_lowercase())
+            .map(|command| SharedString::from(command.palette_label()))
+            .collect::<Vec<_>>();
+        let command_labels_lower = command_labels
+            .iter()
+            .map(|label| label.to_ascii_lowercase())
             .collect::<Vec<_>>();
         let filtered_indices = (0..commands.len()).collect::<Vec<_>>();
 
         Self {
             is_open: false,
             commands,
+            command_labels,
             command_labels_lower,
             filtered_indices,
             selected_index: 0,
@@ -258,7 +291,7 @@ impl CommandPaletteView {
     fn ensure_input_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.input_state.is_none() {
             let input_state =
-                cx.new(|cx| InputState::new(window, cx).placeholder("Type a command..."));
+                cx.new(|cx| InputState::new(window, cx).placeholder("Execute a command…"));
 
             cx.subscribe_in(&input_state, window, |this, state, event, _window, cx| {
                 if matches!(event, InputEvent::Change) {
@@ -290,6 +323,10 @@ impl CommandPaletteView {
             }
         }
         cx.notify();
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.is_open
     }
 
     pub fn close(&mut self, cx: &mut Context<Self>) {
@@ -341,19 +378,26 @@ impl CommandPaletteView {
         false
     }
 
-    fn execute_selected(&mut self, cx: &mut Context<Self>) {
+    fn execute_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(command_index) = self.filtered_indices.get(self.selected_index) {
             let cmd_id = self.commands[*command_index].id;
             self.is_open = false;
             cx.emit(CommandPaletteEvent::ExecuteCommand(cmd_id));
             cx.notify();
+            window.close_dialog(cx);
         }
     }
 
-    fn execute_command(&mut self, command_id: CommandId, cx: &mut Context<Self>) {
+    fn execute_command(
+        &mut self,
+        command_id: CommandId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.is_open = false;
         cx.emit(CommandPaletteEvent::ExecuteCommand(command_id));
         cx.notify();
+        window.close_dialog(cx);
     }
 }
 
@@ -382,205 +426,169 @@ impl Render for CommandPaletteView {
         let input_element = self
             .input_state
             .as_ref()
-            .map(|input| Input::new(input).xsmall().appearance(false));
+            .map(|input| Input::new(input).appearance(false));
 
-        let item_bg = theme.secondary.opacity(0.4);
+        let hover_bg = theme.list_hover;
+        let selected_bg = theme.list_active;
+        let is_empty = self.filtered_indices.is_empty();
 
         div()
-            .id("command-palette-overlay")
-            .absolute()
-            .inset_0()
-            .flex()
-            .items_start()
-            .justify_center()
-            .pt(px(80.0))
-            .bg(theme.overlay)
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.close(cx);
+            .id("command-palette-container")
+            .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                let key = event.keystroke.key.as_str();
+                match key {
+                    "escape" => {
+                        this.close(cx);
+                        window.close_dialog(cx);
+                    }
+                    "down" => {
+                        if this.select_next() {
+                            cx.notify();
+                        }
+                    }
+                    "up" => {
+                        if this.select_prev() {
+                            cx.notify();
+                        }
+                    }
+                    "enter" => {
+                        this.execute_selected(window, cx);
+                    }
+                    _ => {}
+                }
             }))
+            .flex()
+            .flex_col()
+            .w_full()
+            .max_h(px(460.0))
+            .overflow_hidden()
+            .font_family(theme.font_family.clone())
             .child(
                 div()
-                    .id("command-palette-container")
-                    .track_focus(&self.focus_handle)
-                    .on_click(|_, _, _| {})
-                    .on_key_down(
-                        cx.listener(|this, event: &gpui::KeyDownEvent, _window, cx| {
-                            let key = event.keystroke.key.as_str();
-                            match key {
-                                "escape" => {
-                                    this.close(cx);
-                                }
-                                "down" => {
-                                    if this.select_next() {
-                                        cx.notify();
-                                    }
-                                }
-                                "up" => {
-                                    if this.select_prev() {
-                                        cx.notify();
-                                    }
-                                }
-                                "enter" => {
-                                    this.execute_selected(cx);
-                                }
-                                _ => {}
-                            }
-                        }),
-                    )
+                    .flex()
+                    .items_center()
+                    .px(px(12.0))
+                    .h(px(46.0))
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .child(div().flex_1().w_full().min_w_0().children(input_element)),
+            )
+            .child(
+                div()
+                    .id("command-list")
                     .flex()
                     .flex_col()
-                    .w(px(520.0))
-                    .max_h(px(450.0))
-                    .bg(theme.popover)
-                    .rounded(px(12.0))
-                    .border_1()
-                    .border_color(theme.border)
-                    .shadow_lg()
-                    .overflow_hidden()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(12.0))
-                            .px(px(16.0))
-                            .h(px(52.0))
-                            .border_b_1()
-                            .border_color(theme.border)
-                            .child(
-                                Icon::new(IconName::Search)
-                                    .small()
-                                    .text_color(theme.muted_foreground),
-                            )
-                            .child(div().flex_1().w_full().min_w_0().children(input_element)),
-                    )
-                    .child(
-                        div()
-                            .id("command-list")
-                            .flex()
-                            .flex_col()
-                            .overflow_y_scroll()
-                            .track_scroll(&self.scroll_handle)
-                            .py(px(6.0))
-                            .max_h(px(350.0))
-                            .children(self.filtered_indices.iter().enumerate().map(
-                                |(i, cmd_index)| {
-                                    let cmd = &self.commands[*cmd_index];
-                                    let is_selected = i == selected_index;
-                                    let cmd_id = cmd.id;
-                                    let item_id: ElementId =
-                                        SharedString::from(format!("cmd-{}", i)).into();
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll_handle)
+                    .py(px(5.0))
+                    .max_h(px(380.0))
+                    .children(
+                        self.filtered_indices
+                            .iter()
+                            .enumerate()
+                            .map(|(i, cmd_index)| {
+                                let cmd = &self.commands[*cmd_index];
+                                let command_label = self.command_labels[*cmd_index].clone();
+                                let is_selected = i == selected_index;
+                                let cmd_id = cmd.id;
+                                let item_id: ElementId =
+                                    SharedString::from(format!("cmd-{}", i)).into();
 
-                                    div()
-                                        .id(item_id)
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(12.0))
-                                        .px(px(14.0))
-                                        .py(px(10.0))
-                                        .mx(px(6.0))
-                                        .rounded(px(8.0))
-                                        .cursor_pointer()
-                                        .when(is_selected, |s| s.bg(item_bg))
-                                        .hover(|s| s.bg(item_bg))
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.execute_command(cmd_id, cx);
-                                        }))
-                                        .child(
+                                div()
+                                    .id(item_id)
+                                    .flex()
+                                    .items_center()
+                                    .h(px(38.0))
+                                    .px(px(12.0))
+                                    .mx(px(6.0))
+                                    .rounded(px(4.0))
+                                    .cursor_pointer()
+                                    .when(is_selected, |style| style.bg(selected_bg))
+                                    .hover(|style| style.bg(hover_bg))
+                                    .on_mouse_move(cx.listener(move |this, _, _, cx| {
+                                        if this.selected_index != i {
+                                            this.selected_index = i;
+                                            cx.notify();
+                                        }
+                                    }))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.execute_command(cmd_id, window, cx);
+                                    }))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .text_color(if is_selected {
+                                                theme.foreground
+                                            } else {
+                                                theme.secondary_foreground
+                                            })
+                                            .text_size(px(13.0))
+                                            .font_weight(if is_selected {
+                                                gpui::FontWeight::MEDIUM
+                                            } else {
+                                                gpui::FontWeight::NORMAL
+                                            })
+                                            .child(command_label),
+                                    )
+                                    .when_some(cmd.shortcut, |el, shortcut| {
+                                        el.child(
                                             div()
-                                                .flex()
-                                                .items_center()
-                                                .justify_center()
-                                                .w(px(28.0))
-                                                .h(px(28.0))
-                                                .rounded(px(6.0))
-                                                .bg(theme.secondary.opacity(0.5))
-                                                .child(
-                                                    Icon::new(cmd.icon)
-                                                        .xsmall()
-                                                        .text_color(theme.primary),
-                                                ),
+                                                .ml(px(12.0))
+                                                .text_color(theme.muted_foreground)
+                                                .text_size(px(11.0))
+                                                .child(shortcut),
                                         )
-                                        .child(
-                                            div()
-                                                .flex_1()
-                                                .text_color(theme.foreground)
-                                                .text_size(px(14.0))
-                                                .child(cmd.label),
-                                        )
-                                        .when_some(cmd.shortcut, |el, shortcut| {
-                                            el.child(
-                                                div()
-                                                    .px(px(8.0))
-                                                    .py(px(4.0))
-                                                    .bg(theme.secondary)
-                                                    .rounded(px(5.0))
-                                                    .text_color(theme.muted_foreground)
-                                                    .text_size(px(11.0))
-                                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                                    .child(shortcut),
-                                            )
-                                        })
-                                },
-                            )),
+                                    })
+                            }),
                     )
+                    .when(is_empty, |list| {
+                        list.child(
+                            div()
+                                .h(px(156.0))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_color(theme.muted_foreground)
+                                .child(div().text_size(px(13.0)).child("No matching commands")),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .h(px(34.0))
+                    .px(px(12.0))
+                    .border_t_1()
+                    .border_color(theme.border)
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .justify_between()
-                            .px(px(16.0))
-                            .py(px(10.0))
-                            .border_t_1()
-                            .border_color(theme.border)
-                            .bg(theme.muted.opacity(0.3))
+                            .gap(px(14.0))
+                            .text_size(px(11.0))
+                            .text_color(theme.muted_foreground)
                             .child(
                                 div()
                                     .flex()
                                     .items_center()
-                                    .gap(px(16.0))
-                                    .text_size(px(11.0))
-                                    .text_color(theme.muted_foreground)
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(4.0))
-                                            .child("↑↓")
-                                            .child("navigate"),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(4.0))
-                                            .child("↵")
-                                            .child("select"),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(4.0))
-                                            .child("esc")
-                                            .child("close"),
-                                    ),
+                                    .gap(px(4.0))
+                                    .child("Close")
+                                    .child("esc"),
                             )
                             .child(
                                 div()
                                     .flex()
                                     .items_center()
                                     .gap(px(4.0))
-                                    .child(
-                                        Icon::new(IconName::Command)
-                                            .xsmall()
-                                            .text_color(theme.muted_foreground),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(px(11.0))
-                                            .text_color(theme.muted_foreground)
-                                            .child("Setu"),
-                                    ),
+                                    .text_color(theme.secondary_foreground)
+                                    .child("Run")
+                                    .child("↵"),
                             ),
                     ),
             )
@@ -590,16 +598,36 @@ impl Render for CommandPaletteView {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_commands, CommandId};
+    use super::{CommandId, default_commands};
 
     #[test]
     fn includes_collection_commands() {
         let commands = default_commands();
-        assert!(commands
+        assert!(
+            commands
+                .iter()
+                .any(|command| matches!(command.id, CommandId::SaveToCollection))
+        );
+        assert!(
+            commands
+                .iter()
+                .any(|command| matches!(command.id, CommandId::ImportCollection))
+        );
+    }
+
+    #[test]
+    fn labels_commands_with_searchable_namespaces() {
+        let commands = default_commands();
+        let send = commands
             .iter()
-            .any(|command| matches!(command.id, CommandId::SaveToCollection)));
-        assert!(commands
+            .find(|command| command.id == CommandId::SendRequest)
+            .expect("send command");
+        let close = commands
             .iter()
-            .any(|command| matches!(command.id, CommandId::ImportCollection)));
+            .find(|command| command.id == CommandId::CloseTab)
+            .expect("close command");
+
+        assert_eq!(send.palette_label(), "request: send request");
+        assert_eq!(close.palette_label(), "tabs: close tab");
     }
 }

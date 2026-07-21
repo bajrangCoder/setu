@@ -1,15 +1,14 @@
 use gpui::{Context, EventEmitter};
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 use uuid::Uuid;
 
 use crate::importers::{ImportedCollection, ImportedNode};
-use crate::utils::DebouncedJsonWriter;
+use crate::utils::{DebouncedJsonWriter, shared_tokio_runtime};
 
-use super::RequestData;
+use super::{RequestData, SidebarLoadState};
 
 const COLLECTIONS_STORAGE_VERSION: u32 = 1;
 const SAVE_DEBOUNCE: Duration = Duration::from_secs(1);
@@ -335,6 +334,8 @@ pub enum CollectionsEvent {
 
 pub struct CollectionsEntity {
     pub collections: Vec<Collection>,
+    pub load_state: SidebarLoadState,
+    revision: u64,
     persistor: Option<DebouncedJsonWriter<CollectionsStore>>,
 }
 
@@ -342,16 +343,14 @@ pub struct CollectionsEntity {
 impl CollectionsEntity {
     pub fn new() -> Self {
         let storage_path = Self::get_storage_path();
-        let mut entity = Self {
+        let entity = Self {
             collections: Vec::new(),
+            load_state: SidebarLoadState::Loading,
+            revision: 0,
             persistor: storage_path
                 .clone()
                 .map(|path| DebouncedJsonWriter::new("collections", path, SAVE_DEBOUNCE)),
         };
-
-        if let Some(ref path) = storage_path {
-            entity.load_from_file(path);
-        }
 
         entity
     }
@@ -364,32 +363,46 @@ impl CollectionsEntity {
         })
     }
 
-    fn load_from_file(&mut self, path: &PathBuf) {
-        if !path.exists() {
-            return;
-        }
+    pub fn spawn_storage_load()
+    -> tokio::sync::oneshot::Receiver<Result<(Vec<Collection>, bool), String>> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let path = Self::get_storage_path();
+        shared_tokio_runtime().spawn(async move {
+            let result = async {
+                let Some(path) = path else {
+                    return Ok((Vec::new(), false));
+                };
+                match tokio::fs::read_to_string(path).await {
+                    Ok(contents) => deserialize_store(&contents).map_err(|error| error.to_string()),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        Ok((Vec::new(), false))
+                    }
+                    Err(error) => Err(error.to_string()),
+                }
+            }
+            .await;
+            let _ = tx.send(result);
+        });
+        rx
+    }
 
-        let Ok(contents) = fs::read_to_string(path) else {
-            return;
-        };
-
-        match deserialize_store(&contents) {
+    pub fn apply_storage_load(
+        &mut self,
+        result: Result<(Vec<Collection>, bool), String>,
+        cx: &mut Context<Self>,
+    ) {
+        match result {
             Ok((collections, migrated)) => {
                 self.collections = collections;
-                log::info!(
-                    "Loaded {} collections from {:?}",
-                    self.collections.len(),
-                    path
-                );
-
+                self.load_state = SidebarLoadState::Ready;
+                self.bump_revision();
                 if migrated {
                     self.save_to_file();
                 }
             }
-            Err(err) => {
-                log::error!("Failed to parse collections store: {}", err);
-            }
+            Err(error) => self.load_state = SidebarLoadState::Error(error.into()),
         }
+        cx.notify();
     }
 
     fn save_to_file(&self) {
@@ -402,10 +415,21 @@ impl CollectionsEntity {
         }
     }
 
+    fn bump_revision(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Monotonically changes whenever the collection tree changes. Views use this
+    /// to rebuild their virtualized snapshots only when the source data changes.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
     pub fn create_collection(&mut self, name: &str, cx: &mut Context<Self>) -> Uuid {
         let collection = Collection::new(name);
         let id = collection.id;
         self.collections.push(collection);
+        self.bump_revision();
         self.save_to_file();
         cx.emit(CollectionsEvent::CollectionAdded(id));
         cx.notify();
@@ -429,6 +453,7 @@ impl CollectionsEntity {
         };
         let id = collection.id;
         self.collections.push(collection);
+        self.bump_revision();
         self.save_to_file();
         cx.emit(CollectionsEvent::CollectionAdded(id));
         cx.notify();
@@ -438,6 +463,7 @@ impl CollectionsEntity {
     pub fn remove_collection(&mut self, id: Uuid, cx: &mut Context<Self>) {
         if let Some(pos) = self.collections.iter().position(|c| c.id == id) {
             self.collections.remove(pos);
+            self.bump_revision();
             self.save_to_file();
             cx.emit(CollectionsEvent::CollectionRemoved(id));
             cx.notify();
@@ -447,6 +473,7 @@ impl CollectionsEntity {
     pub fn rename_collection(&mut self, id: Uuid, new_name: &str, cx: &mut Context<Self>) {
         if let Some(collection) = self.collections.iter_mut().find(|c| c.id == id) {
             collection.name = new_name.to_string();
+            self.bump_revision();
             self.save_to_file();
             cx.emit(CollectionsEvent::CollectionUpdated(id));
             cx.notify();
@@ -473,6 +500,7 @@ impl CollectionsEntity {
             CollectionNode::Request(request) => request.request.name = new_name.to_string(),
         }
 
+        self.bump_revision();
         self.save_to_file();
         cx.emit(CollectionsEvent::CollectionUpdated(collection_id));
         cx.notify();
@@ -482,6 +510,7 @@ impl CollectionsEntity {
     pub fn toggle_collection_expanded(&mut self, id: Uuid, cx: &mut Context<Self>) {
         if let Some(collection) = self.collections.iter_mut().find(|c| c.id == id) {
             collection.expanded = !collection.expanded;
+            self.bump_revision();
             self.save_to_file();
             cx.emit(CollectionsEvent::CollectionUpdated(id));
             cx.notify();
@@ -507,6 +536,7 @@ impl CollectionsEntity {
         };
 
         folder.expanded = !folder.expanded;
+        self.bump_revision();
         self.save_to_file();
         cx.emit(CollectionsEvent::CollectionUpdated(collection_id));
         cx.notify();
@@ -532,6 +562,7 @@ impl CollectionsEntity {
             return None;
         }
 
+        self.bump_revision();
         self.save_to_file();
         cx.emit(CollectionsEvent::NodeAdded(collection_id, folder_id));
         cx.notify();
@@ -556,6 +587,7 @@ impl CollectionsEntity {
             return None;
         }
 
+        self.bump_revision();
         self.save_to_file();
         cx.emit(CollectionsEvent::NodeAdded(collection_id, node_id));
         cx.notify();
@@ -576,6 +608,7 @@ impl CollectionsEntity {
             return false;
         }
 
+        self.bump_revision();
         self.save_to_file();
         cx.emit(CollectionsEvent::NodeRemoved(collection_id, node_id));
         cx.notify();
@@ -598,6 +631,7 @@ impl CollectionsEntity {
             target_parent_folder_id,
         )?;
 
+        self.bump_revision();
         self.save_to_file();
         cx.emit(CollectionsEvent::NodeMoved {
             source_collection_id,
@@ -1053,5 +1087,36 @@ mod tests {
         assert!(collections[0].nodes.is_empty());
         assert_eq!(collections[1].nodes.len(), 1);
         assert_eq!(collections[1].nodes[0].id(), request_node_id);
+    }
+
+    #[test]
+    fn search_preserves_ancestors_and_expands_only_the_filtered_path() {
+        let matching_request = CollectionRequestNode::new(sample_request(
+            "Health Check",
+            "https://example.com/health",
+        ));
+        let collection = Collection {
+            id: Uuid::new_v4(),
+            name: "Production".to_string(),
+            expanded: false,
+            nodes: vec![CollectionNode::Folder(CollectionFolderNode {
+                id: Uuid::new_v4(),
+                name: "Operations".to_string(),
+                expanded: false,
+                children: vec![CollectionNode::Request(matching_request.clone())],
+            })],
+        };
+
+        let filtered = collection.filtered_clone("health").expect("matching tree");
+        assert!(filtered.expanded);
+        assert_eq!(filtered.nodes.len(), 1);
+        let folder = filtered.nodes[0].folder().expect("ancestor folder");
+        assert!(folder.expanded);
+        assert_eq!(folder.children.len(), 1);
+        assert_eq!(folder.children[0].id(), matching_request.id);
+
+        let unfiltered = collection.filtered_clone("").expect("unfiltered tree");
+        assert!(!unfiltered.expanded);
+        assert!(!unfiltered.nodes[0].folder().expect("folder").expanded);
     }
 }

@@ -1,5 +1,5 @@
 use gpui::prelude::*;
-use gpui::{div, px, AnyElement, App, Entity, IntoElement, Styled, Window};
+use gpui::{AnyElement, App, Entity, IntoElement, Styled, Window, div, px};
 use gpui_component::input::InputState;
 use gpui_component::{ActiveTheme, Icon};
 use std::rc::Rc;

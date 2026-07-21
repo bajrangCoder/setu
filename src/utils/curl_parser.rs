@@ -1,3 +1,4 @@
+use base64::Engine as _;
 use std::collections::HashMap;
 
 use crate::entities::{Header, HttpMethod, RequestBody};
@@ -110,9 +111,28 @@ pub fn parse_curl(input: &str) -> Result<ParsedCurl, String> {
                 force_get = true;
             }
             // Flags we silently ignore (no value).
-            "--location" | "-L" | "--compressed" | "--insecure" | "-k" | "--silent" | "-s"
-            | "--verbose" | "-v" | "--fail" | "-f" | "--http1.1" | "--http2" | "--http2-prior-knowledge"
-            | "--no-buffer" | "-N" | "--include" | "-i" | "--head" | "-I" | "--globoff" | "-g" => {}
+            "--location"
+            | "-L"
+            | "--compressed"
+            | "--insecure"
+            | "-k"
+            | "--silent"
+            | "-s"
+            | "--verbose"
+            | "-v"
+            | "--fail"
+            | "-f"
+            | "--http1.1"
+            | "--http2"
+            | "--http2-prior-knowledge"
+            | "--no-buffer"
+            | "-N"
+            | "--include"
+            | "-i"
+            | "--head"
+            | "-I"
+            | "--globoff"
+            | "-g" => {}
             // Flags we ignore but consume their value.
             "-o" | "--output" | "--max-time" | "--connect-timeout" | "--retry"
             | "--retry-delay" | "--retry-max-time" | "-w" | "--write-out" | "--cacert"
@@ -141,7 +161,7 @@ pub fn parse_curl(input: &str) -> Result<ParsedCurl, String> {
     let mut url = url.ok_or("Could not find URL in curl command")?;
 
     if let Some(creds) = basic_auth {
-        let encoded = base64_encode(creds.as_bytes());
+        let encoded = base64::engine::general_purpose::STANDARD.encode(creds.as_bytes());
         headers.push(Header::new("Authorization", format!("Basic {}", encoded)));
     }
 
@@ -358,36 +378,6 @@ fn tokenize(input: &str) -> Result<Vec<String>, String> {
     Ok(tokens)
 }
 
-/// Minimal RFC 4648 base64 encoder (no external dependency).
-fn base64_encode(input: &[u8]) -> String {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(((input.len() + 2) / 3) * 4);
-    let mut i = 0;
-    while i + 3 <= input.len() {
-        let n = ((input[i] as u32) << 16) | ((input[i + 1] as u32) << 8) | input[i + 2] as u32;
-        out.push(ALPHABET[((n >> 18) & 0x3f) as usize] as char);
-        out.push(ALPHABET[((n >> 12) & 0x3f) as usize] as char);
-        out.push(ALPHABET[((n >> 6) & 0x3f) as usize] as char);
-        out.push(ALPHABET[(n & 0x3f) as usize] as char);
-        i += 3;
-    }
-    let rem = input.len() - i;
-    if rem == 1 {
-        let n = (input[i] as u32) << 16;
-        out.push(ALPHABET[((n >> 18) & 0x3f) as usize] as char);
-        out.push(ALPHABET[((n >> 12) & 0x3f) as usize] as char);
-        out.push('=');
-        out.push('=');
-    } else if rem == 2 {
-        let n = ((input[i] as u32) << 16) | ((input[i + 1] as u32) << 8);
-        out.push(ALPHABET[((n >> 18) & 0x3f) as usize] as char);
-        out.push(ALPHABET[((n >> 12) & 0x3f) as usize] as char);
-        out.push(ALPHABET[((n >> 6) & 0x3f) as usize] as char);
-        out.push('=');
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -456,10 +446,9 @@ mod tests {
 
     #[test]
     fn parses_multipart_form() {
-        let parsed = parse_curl(
-            "curl https://api.example.com -F 'name=alice' -F 'email=alice@example.com'",
-        )
-        .unwrap();
+        let parsed =
+            parse_curl("curl https://api.example.com -F 'name=alice' -F 'email=alice@example.com'")
+                .unwrap();
         match &parsed.body {
             RequestBody::MultipartFormData(fields) => {
                 assert_eq!(fields.len(), 2);
@@ -483,8 +472,7 @@ mod tests {
 
     #[test]
     fn handles_location_flag() {
-        let parsed =
-            parse_curl("curl --location 'https://ssp.veonadx.com/bid/prebid'").unwrap();
+        let parsed = parse_curl("curl --location 'https://ssp.veonadx.com/bid/prebid'").unwrap();
         assert_eq!(parsed.url, "https://ssp.veonadx.com/bid/prebid");
     }
 

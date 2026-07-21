@@ -1,6 +1,6 @@
 use gpui::prelude::*;
 use gpui::{
-    anchored, deferred, div, px, App, Corner, Entity, IntoElement, SharedString, Styled, Window,
+    App, Corner, Entity, IntoElement, SharedString, Styled, Window, anchored, deferred, div, px,
 };
 use gpui_component::ActiveTheme;
 
@@ -188,8 +188,7 @@ impl RenderOnce for MethodDropdown {
                                         .hover(|s| s.bg(theme.muted))
                                         .on_click(move |_event, _window, cx| {
                                             request.update(cx, |req, cx| {
-                                                req.data.method = method;
-                                                cx.notify();
+                                                req.set_method(method, cx);
                                             });
                                             state.update(cx, |s, cx| s.select(method, cx));
                                         })

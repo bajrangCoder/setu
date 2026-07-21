@@ -1,11 +1,11 @@
 use gpui::prelude::*;
 use gpui::{
-    div, px, AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
-    PathPromptOptions, Render, Styled, Window,
+    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
+    PathPromptOptions, Render, Styled, Window, div, px,
 };
+use gpui_component::WindowExt;
 use gpui_component::input::{Input, InputState};
 use gpui_component::notification::NotificationType;
-use gpui_component::WindowExt;
 
 use crate::components::{
     AuthEditor, BodyType, BodyTypeSelector, BodyTypeSelectorEvent, FormDataEditor, HeaderEditor,

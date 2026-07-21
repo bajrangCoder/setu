@@ -1,12 +1,13 @@
-use base64::{engine::general_purpose::STANDARD, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD};
+use bytes::Bytes;
 use gpui::{Context, EventEmitter};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-fn serialize_bytes_as_base64<S>(bytes: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error>
+fn serialize_bytes_as_base64<S>(bytes: &Bytes, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
@@ -17,14 +18,17 @@ where
     }
 }
 
-fn deserialize_bytes_from_base64<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+fn deserialize_bytes_from_base64<'de, D>(deserializer: D) -> Result<Bytes, D::Error>
 where
     D: Deserializer<'de>,
 {
     let opt: Option<String> = Option::deserialize(deserializer)?;
     match opt {
-        Some(s) => STANDARD.decode(&s).map_err(serde::de::Error::custom),
-        None => Ok(Vec::new()),
+        Some(s) => STANDARD
+            .decode(&s)
+            .map(Bytes::from)
+            .map_err(serde::de::Error::custom),
+        None => Ok(Bytes::new()),
     }
 }
 
@@ -35,6 +39,7 @@ pub enum ResponseState {
     Idle,
     Loading,
     Success,
+    Cancelled,
     Error(String),
 }
 
@@ -89,33 +94,53 @@ pub enum ResponseEvent {
     Cleared,
 }
 
-/// HTTP Response data
+/// Shared response body storage. Cloning this value never copies the payload.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResponseData {
-    pub status_code: u16,
-    pub status_text: String,
-    pub headers: HashMap<String, String>,
+pub struct ResponsePayload {
     /// Text body (for text-based responses)
-    pub body: String,
+    #[serde(default)]
+    body: Arc<str>,
     /// Raw bytes body (for binary responses like images)
     #[serde(
         serialize_with = "serialize_bytes_as_base64",
         deserialize_with = "deserialize_bytes_from_base64",
         default
     )]
-    pub body_bytes: Vec<u8>,
+    body_bytes: Bytes,
+    /// Cached raw text, decoded from bytes only when needed.
+    #[serde(skip)]
+    cached_raw_body: Option<Arc<str>>,
+    /// Cached pretty-printed representation, independent from the raw cache.
+    #[serde(skip)]
+    cached_formatted_body: Option<Arc<str>>,
+    /// Hash of body content for efficient change detection.
+    #[serde(skip)]
+    body_hash: u64,
+}
+
+/// HTTP Response data
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResponseData {
+    pub status_code: u16,
+    pub status_text: String,
+    pub headers: HashMap<String, String>,
+    #[serde(flatten)]
+    pub payload: ResponsePayload,
     pub body_size_bytes: usize,
     pub duration_ms: u64,
     pub content_type: Option<String>,
-    /// Cached formatted body
-    #[serde(skip)]
-    cached_formatted_body: Option<Arc<String>>,
-    /// Whether `body` already contains the decoded text representation.
-    #[serde(skip)]
-    body_text_cached: bool,
-    /// Hash of body content for efficient change detection
-    #[serde(skip)]
-    body_hash: u64,
+}
+
+impl Default for ResponsePayload {
+    fn default() -> Self {
+        Self {
+            body: Arc::from(""),
+            body_bytes: Bytes::new(),
+            cached_raw_body: None,
+            cached_formatted_body: None,
+            body_hash: 0,
+        }
+    }
 }
 
 impl Default for ResponseData {
@@ -124,14 +149,10 @@ impl Default for ResponseData {
             status_code: 0,
             status_text: String::new(),
             headers: HashMap::new(),
-            body: String::new(),
-            body_bytes: Vec::new(),
+            payload: ResponsePayload::default(),
             body_size_bytes: 0,
             duration_ms: 0,
             content_type: None,
-            cached_formatted_body: None,
-            body_text_cached: true,
-            body_hash: 0,
         }
     }
 }
@@ -227,16 +248,21 @@ impl ResponseData {
             status_code,
             status_text,
             headers,
-            body,
-            body_bytes,
+            payload: ResponsePayload {
+                body: Arc::from(body),
+                body_bytes: Bytes::from(body_bytes),
+                ..ResponsePayload::default()
+            },
             body_size_bytes,
             duration_ms,
             content_type,
-            cached_formatted_body: None,
-            body_text_cached: false,
-            body_hash: 0,
         };
         response.compact_storage();
+        // HTTP responses are constructed on the Tokio worker, so eagerly populate the
+        // expensive JSON display cache before handing the payload to GPUI.
+        if response.is_json() {
+            let _ = response.formatted_body();
+        }
         response
     }
 
@@ -244,7 +270,7 @@ impl ResponseData {
         status_code: u16,
         status_text: String,
         headers: HashMap<String, String>,
-        body_bytes: Vec<u8>,
+        body_bytes: Bytes,
         duration_ms: u64,
         content_type: Option<String>,
     ) -> Self {
@@ -252,27 +278,29 @@ impl ResponseData {
         let should_decode = Self::should_eagerly_decode_body(content_type.as_deref(), &body_bytes);
 
         let (body, stored_body_bytes) = if should_decode {
-            match String::from_utf8(body_bytes) {
-                Ok(body) => (body, Vec::new()),
-                Err(err) => (
-                    String::from_utf8_lossy(&err.into_bytes()).into_owned(),
-                    Vec::new(),
-                ),
-            }
+            (
+                String::from_utf8_lossy(&body_bytes).into_owned(),
+                Bytes::new(),
+            )
         } else {
             (String::new(), body_bytes)
         };
 
-        Self::new(
+        let mut response = Self {
             status_code,
             status_text,
             headers,
-            body,
-            stored_body_bytes,
+            payload: ResponsePayload {
+                body: Arc::from(body),
+                body_bytes: stored_body_bytes,
+                ..ResponsePayload::default()
+            },
             body_size_bytes,
             duration_ms,
             content_type,
-        )
+        };
+        response.compact_storage();
+        response
     }
 
     /// Compute hash for content change detection
@@ -333,59 +361,66 @@ impl ResponseData {
 
     /// Get the body hash for efficient change detection
     pub fn body_hash(&self) -> u64 {
-        self.body_hash
+        self.payload.body_hash
+    }
+
+    pub fn body(&self) -> &str {
+        &self.payload.body
+    }
+
+    pub fn body_bytes(&self) -> &Bytes {
+        &self.payload.body_bytes
     }
 
     /// Drop redundant raw bytes for text-like responses and recompute cached metadata.
     pub fn compact_storage(&mut self) -> bool {
-        let had_body_bytes = !self.body_bytes.is_empty();
+        let had_body_bytes = !self.payload.body_bytes.is_empty();
 
         if had_body_bytes
-            && !self.body.is_empty()
+            && !self.payload.body.is_empty()
             && matches!(
-                Self::classify_content(self.content_type.as_deref(), &self.body_bytes),
+                Self::classify_content(self.content_type.as_deref(), &self.payload.body_bytes),
                 ContentCategory::Json
                     | ContentCategory::Html
                     | ContentCategory::Xml
                     | ContentCategory::Text
             )
         {
-            self.body_bytes.clear();
+            self.payload.body_bytes = Bytes::new();
         }
 
         if self.body_size_bytes == 0 {
-            self.body_size_bytes = if self.body_bytes.is_empty() {
-                self.body.len()
+            self.body_size_bytes = if self.payload.body_bytes.is_empty() {
+                self.payload.body.len()
             } else {
-                self.body_bytes.len()
+                self.payload.body_bytes.len()
             };
         }
 
-        self.cached_formatted_body = None;
-        self.body_text_cached = !self.body.is_empty() || self.body_bytes.is_empty();
-        self.body_hash = Self::compute_stored_hash(&self.body, &self.body_bytes);
+        self.payload.cached_formatted_body = None;
+        self.payload.cached_raw_body = None;
+        self.payload.body_hash =
+            Self::compute_stored_hash(&self.payload.body, &self.payload.body_bytes);
 
-        had_body_bytes && self.body_bytes.is_empty()
+        had_body_bytes && self.payload.body_bytes.is_empty()
     }
 
     /// Detect content category from content-type header
     pub fn content_category(&self) -> ContentCategory {
-        Self::classify_content(self.content_type.as_deref(), &self.body_bytes)
+        Self::classify_content(self.content_type.as_deref(), &self.payload.body_bytes)
     }
 
-    fn ensure_body_text(&mut self) -> &str {
-        if self.body_text_cached {
-            return &self.body;
+    fn raw_body_arc(&mut self) -> Arc<str> {
+        if !self.payload.body.is_empty() || self.payload.body_bytes.is_empty() {
+            return self.payload.body.clone();
         }
-
-        if !self.body.is_empty() {
-            self.body_text_cached = true;
-            return &self.body;
+        if let Some(raw) = &self.payload.cached_raw_body {
+            return raw.clone();
         }
-
-        self.body = String::from_utf8_lossy(&self.body_bytes).to_string();
-        self.body_text_cached = true;
-        &self.body
+        let raw: Arc<str> =
+            Arc::from(String::from_utf8_lossy(&self.payload.body_bytes).into_owned());
+        self.payload.cached_raw_body = Some(raw.clone());
+        raw
     }
 
     /// Check if response is JSON based on content-type
@@ -408,29 +443,30 @@ impl ResponseData {
     }
 
     /// Get formatted body if JSON, otherwise raw
-    pub fn formatted_body(&mut self) -> Arc<String> {
-        if let Some(ref cached) = self.cached_formatted_body {
+    pub fn formatted_body(&mut self) -> Arc<str> {
+        if let Some(ref cached) = self.payload.cached_formatted_body {
             return cached.clone();
         }
 
-        let body = self.ensure_body_text().to_string();
+        let body = self.raw_body_arc();
         let formatted = if self.is_json() {
             // Try to pretty-print JSON
             match serde_json::from_str::<serde_json::Value>(&body) {
-                Ok(value) => serde_json::to_string_pretty(&value).unwrap_or(body.clone()),
-                Err(_) => body,
+                Ok(value) => serde_json::to_string_pretty(&value)
+                    .map(Arc::<str>::from)
+                    .unwrap_or_else(|_| body.clone()),
+                Err(_) => body.clone(),
             }
         } else {
-            body
+            body.clone()
         };
 
-        let arc = Arc::new(formatted);
-        self.cached_formatted_body = Some(arc.clone());
-        arc
+        self.payload.cached_formatted_body = Some(formatted.clone());
+        formatted
     }
 
-    pub fn raw_body(&mut self) -> &str {
-        self.ensure_body_text()
+    pub fn raw_body(&mut self) -> Arc<str> {
+        self.raw_body_arc()
     }
 
     /// Get status category (1xx, 2xx, etc.)
@@ -501,6 +537,13 @@ impl ResponseEntity {
         cx.notify();
     }
 
+    pub fn set_cancelled(&mut self, cx: &mut Context<Self>) {
+        self.state = ResponseState::Cancelled;
+        self.data = None;
+        cx.emit(ResponseEvent::Cleared);
+        cx.notify();
+    }
+
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.state = ResponseState::Idle;
         self.data = None;
@@ -533,7 +576,9 @@ impl EventEmitter<ResponseEvent> for ResponseEntity {}
 #[cfg(test)]
 mod tests {
     use super::{ContentCategory, ResponseData};
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     fn response_with(content_type: Option<&str>, body_bytes: Vec<u8>) -> ResponseData {
         let body = String::from_utf8_lossy(&body_bytes).to_string();
@@ -573,8 +618,8 @@ mod tests {
     #[test]
     fn compacts_text_responses_by_dropping_duplicate_raw_bytes() {
         let data = response_with(Some("application/json"), br#"{"ok":true}"#.to_vec());
-        assert!(data.body_bytes.is_empty());
-        assert_eq!(data.body, r#"{"ok":true}"#);
+        assert!(data.body_bytes().is_empty());
+        assert_eq!(data.body(), r#"{"ok":true}"#);
         assert_ne!(data.body_hash(), 0);
     }
 
@@ -583,6 +628,60 @@ mod tests {
         let png = b"\x89PNG\r\n\x1A\n\x00\x00\x00\x0DIHDR".to_vec();
         let data = response_with(Some("image/png"), png.clone());
         assert_eq!(data.content_category(), ContentCategory::Image);
-        assert_eq!(data.body_bytes, png);
+        assert_eq!(data.body_bytes().as_ref(), png);
+    }
+
+    #[test]
+    fn decodes_legacy_text_history_shape() {
+        let mut data: ResponseData = serde_json::from_value(serde_json::json!({
+            "status_code": 200,
+            "status_text": "OK",
+            "headers": {},
+            "body": "{\"ok\":true}",
+            "body_bytes": null,
+            "body_size_bytes": 11,
+            "duration_ms": 4,
+            "content_type": "application/json"
+        }))
+        .expect("legacy response should deserialize");
+        data.compact_storage();
+        assert_eq!(data.body(), "{\"ok\":true}");
+        assert!(data.body_bytes().is_empty());
+    }
+
+    #[test]
+    fn decodes_legacy_binary_history_shape() {
+        let bytes = b"\x89PNG\r\n\x1a\n";
+        let mut data: ResponseData = serde_json::from_value(serde_json::json!({
+            "status_code": 200,
+            "status_text": "OK",
+            "headers": {},
+            "body": "",
+            "body_bytes": STANDARD.encode(bytes),
+            "body_size_bytes": bytes.len(),
+            "duration_ms": 4,
+            "content_type": "image/png"
+        }))
+        .expect("legacy response should deserialize");
+        data.compact_storage();
+        assert_eq!(data.body_bytes().as_ref(), bytes);
+    }
+
+    #[test]
+    fn response_payload_clones_are_shallow() {
+        let data = response_with(Some("image/png"), b"\x89PNG\r\n\x1a\nshared".to_vec());
+        let clone = data.clone();
+        assert!(Arc::ptr_eq(&data.payload.body, &clone.payload.body));
+        assert_eq!(data.body_bytes().as_ptr(), clone.body_bytes().as_ptr());
+    }
+
+    #[test]
+    fn raw_and_formatted_caches_are_independent() {
+        let mut data = response_with(Some("application/json"), br#"{"a":1}"#.to_vec());
+        let raw = data.raw_body();
+        let formatted = data.formatted_body();
+        assert_eq!(&*raw, r#"{"a":1}"#);
+        assert_eq!(&*formatted, "{\n  \"a\": 1\n}");
+        assert_eq!(&*data.raw_body(), r#"{"a":1}"#);
     }
 }

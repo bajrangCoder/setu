@@ -1,5 +1,5 @@
 use gpui::prelude::*;
-use gpui::{px, App, Application, Bounds, KeyBinding, Point, Size, WindowBounds, WindowOptions};
+use gpui::{App, Application, Bounds, KeyBinding, Size, WindowBounds, WindowOptions, px};
 use gpui_component::Root;
 
 use crate::actions::*;
@@ -102,16 +102,18 @@ impl SetuApp {
 
     /// Create the main application window
     fn create_main_window(cx: &mut App) {
-        let window_bounds = WindowBounds::Windowed(Bounds {
-            origin: Point::default(),
-            size: Size {
-                width: px(1200.0),
-                height: px(800.0),
-            },
-        });
+        let initial_size = Size {
+            width: px(1280.0),
+            height: px(840.0),
+        };
+        let window_bounds = WindowBounds::Windowed(Bounds::centered(None, initial_size, cx));
 
         let options = WindowOptions {
             window_bounds: Some(window_bounds),
+            window_min_size: Some(Size {
+                width: px(840.0),
+                height: px(560.0),
+            }),
             titlebar: Some(gpui::TitlebarOptions {
                 title: Some("Setu".into()),
                 appears_transparent: false,

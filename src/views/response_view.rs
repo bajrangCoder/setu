@@ -1,25 +1,26 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
+use bytes::Bytes;
 use gpui::prelude::*;
 use gpui::{
-    div, img, px, size, AnyElement, App, Context, ElementId, Entity, FocusHandle, Focusable, Image,
-    ImageFormat, IntoElement, PathPromptOptions, Pixels, Render, SharedString, Size, Styled,
-    Window,
+    AnyElement, App, Context, ElementId, Entity, FocusHandle, Focusable, Image, ImageFormat,
+    IntoElement, PathPromptOptions, Pixels, Render, SharedString, Size, Styled, Window, div, img,
+    px, size,
 };
+use gpui_component::Selectable;
+use gpui_component::Sizable;
+use gpui_component::VirtualListScrollHandle;
+use gpui_component::WindowExt;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputState};
 use gpui_component::notification::NotificationType;
 use gpui_component::scroll::Scrollbar;
 use gpui_component::spinner::Spinner;
 use gpui_component::v_virtual_list;
-use gpui_component::Selectable;
-use gpui_component::Sizable;
-use gpui_component::VirtualListScrollHandle;
-use gpui_component::WindowExt;
 
-use crate::components::audio_player::AudioPlayer;
 use crate::components::StatusBadge;
+use crate::components::audio_player::AudioPlayer;
 use crate::entities::{
     ContentCategory, ResponseData, ResponseEntity, ResponseEvent, ResponseState,
 };
@@ -47,8 +48,9 @@ pub struct ResponseView {
     body_display: Option<Entity<InputState>>,
     /// Raw body display (plain text)
     raw_display: Option<Entity<InputState>>,
-    /// Hash of last displayed body content for efficient change detection
-    last_body_hash: u64,
+    /// Independent hashes prevent switching tabs from suppressing cache refreshes.
+    last_pretty_hash: u64,
+    last_raw_hash: u64,
     /// Last content category for pretty display
     last_content_category: ContentCategory,
     focus_handle: FocusHandle,
@@ -57,6 +59,7 @@ pub struct ResponseView {
     /// Whether to wrap lines in the editor
     wrap_lines: bool,
     audio_player: Option<Entity<AudioPlayer>>,
+    decoded_image: Option<(u64, Arc<Image>)>,
 }
 
 impl ResponseView {
@@ -72,12 +75,14 @@ impl ResponseView {
             active_tab: ResponseTab::Body,
             body_display: None,
             raw_display: None,
-            last_body_hash: 0,
+            last_pretty_hash: 0,
+            last_raw_hash: 0,
             last_content_category: ContentCategory::Text,
             focus_handle: cx.focus_handle(),
             headers_scroll_handle: VirtualListScrollHandle::new(),
             wrap_lines: true,
             audio_player: None,
+            decoded_image: None,
         }
     }
 
@@ -101,7 +106,7 @@ impl ResponseView {
         };
 
         let needs_update =
-            current_hash != self.last_body_hash || content_category != self.last_content_category;
+            current_hash != self.last_pretty_hash || content_category != self.last_content_category;
 
         if content_category == ContentCategory::Audio {
             if self.audio_player.is_none() || needs_update {
@@ -110,7 +115,7 @@ impl ResponseView {
                     .read(cx)
                     .data
                     .as_ref()
-                    .map(|d| d.body_bytes.clone())
+                    .map(|d| d.body_bytes().clone())
                     .unwrap_or_default();
                 let content_type_str = self
                     .response
@@ -125,7 +130,33 @@ impl ResponseView {
                     self.audio_player = Some(player);
                 }
 
-                self.last_body_hash = current_hash;
+                self.last_pretty_hash = current_hash;
+                self.last_content_category = content_category;
+            }
+            return;
+        }
+
+        if content_category == ContentCategory::Image {
+            if needs_update {
+                let image_data = self.response.read(cx).data.as_ref().and_then(|data| {
+                    if data.body_bytes().is_empty() {
+                        return None;
+                    }
+                    let format = match data.content_type.as_deref() {
+                        Some(ct) if ct.contains("jpeg") || ct.contains("jpg") => ImageFormat::Jpeg,
+                        Some(ct) if ct.contains("gif") => ImageFormat::Gif,
+                        Some(ct) if ct.contains("webp") => ImageFormat::Webp,
+                        Some(ct) if ct.contains("bmp") => ImageFormat::Bmp,
+                        Some(ct) if ct.contains("svg") => ImageFormat::Svg,
+                        _ => ImageFormat::Png,
+                    };
+                    Some(Arc::new(Image::from_bytes(
+                        format,
+                        data.body_bytes().to_vec(),
+                    )))
+                });
+                self.decoded_image = image_data.map(|image| (current_hash, image));
+                self.last_pretty_hash = current_hash;
                 self.last_content_category = content_category;
             }
             return;
@@ -135,12 +166,13 @@ impl ResponseView {
         if self.audio_player.is_some() && content_category != ContentCategory::Audio {
             self.audio_player = None;
         }
+        if self.decoded_image.is_some() {
+            self.decoded_image = None;
+        }
 
         if self.body_display.is_none() || needs_update {
             let lang = content_category.language();
-            let content = formatted_content
-                .map(|s| s.as_ref().clone())
-                .unwrap_or_default();
+            let content = formatted_content.map(|s| s.to_string()).unwrap_or_default();
 
             let wrap_lines = self.wrap_lines;
             let body_display = cx.new(|cx| {
@@ -152,7 +184,7 @@ impl ResponseView {
                     .default_value(&content)
             });
             self.body_display = Some(body_display);
-            self.last_body_hash = current_hash;
+            self.last_pretty_hash = current_hash;
             self.last_content_category = content_category;
         }
     }
@@ -180,14 +212,14 @@ impl ResponseView {
                     .default_value(&content)
             });
             self.raw_display = Some(raw_display);
-            self.last_body_hash = current_hash;
-        } else if current_hash != self.last_body_hash {
+            self.last_raw_hash = current_hash;
+        } else if current_hash != self.last_raw_hash {
             if let Some(ref raw_display) = self.raw_display {
                 let content = raw_body.unwrap_or_default();
                 raw_display.update(cx, |state, cx| {
                     state.set_value(content, window, cx);
                 });
-                self.last_body_hash = current_hash;
+                self.last_raw_hash = current_hash;
             }
         }
     }
@@ -225,7 +257,7 @@ impl ResponseView {
         let active_tab = self.active_tab;
         let content = self.response.update(cx, |resp, _cx| {
             resp.data.as_mut().map(|d| match active_tab {
-                ResponseTab::Body => d.formatted_body().as_ref().clone(),
+                ResponseTab::Body => d.formatted_body().to_string(),
                 ResponseTab::Raw => d.raw_body().to_string(),
                 ResponseTab::Headers => {
                     let headers_json: Vec<serde_json::Value> = d
@@ -258,7 +290,7 @@ impl ResponseView {
     fn save_to_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         enum SaveContent {
             Text(String),
-            Bytes(Vec<u8>),
+            Bytes(Bytes),
         }
 
         let active_tab = self.active_tab;
@@ -287,10 +319,10 @@ impl ResponseView {
                             .unwrap_or_else(|_| "[]".to_string()),
                     )
                 }
-                _ if is_binary && !data.body_bytes.is_empty() => {
-                    SaveContent::Bytes(data.body_bytes.clone())
+                _ if is_binary && !data.body_bytes().is_empty() => {
+                    SaveContent::Bytes(data.body_bytes().clone())
                 }
-                ResponseTab::Body => SaveContent::Text(data.formatted_body().as_ref().clone()),
+                ResponseTab::Body => SaveContent::Text(data.formatted_body().to_string()),
                 ResponseTab::Raw => SaveContent::Text(data.raw_body().to_string()),
             };
 
@@ -452,6 +484,7 @@ impl ResponseView {
         match state {
             ResponseState::Idle => self.render_empty(theme).into_any_element(),
             ResponseState::Loading => self.render_loading(theme).into_any_element(),
+            ResponseState::Cancelled => self.render_cancelled(theme).into_any_element(),
             ResponseState::Error(msg) => self.render_error(theme, msg).into_any_element(),
             ResponseState::Success => {
                 if let Some(data) = data {
@@ -461,6 +494,19 @@ impl ResponseView {
                 }
             }
         }
+    }
+
+    fn render_cancelled(&self, theme: &gpui_component::theme::ThemeColor) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .items_center()
+            .justify_center()
+            .gap(px(8.0))
+            .text_color(theme.muted_foreground)
+            .child(Icon::new(IconName::CircleX).size(px(20.0)))
+            .child(div().text_size(px(12.0)).child("Request cancelled"))
     }
 
     fn render_empty(&self, theme: &gpui_component::theme::ThemeColor) -> impl IntoElement {
@@ -593,13 +639,11 @@ impl ResponseView {
         _theme: &gpui_component::theme::ThemeColor,
         this: Entity<ResponseView>,
     ) -> impl IntoElement {
-        use crate::components::PanelTab;
+        use crate::components::{PanelTab, PanelTabBar};
 
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(4.0))
+        PanelTabBar::new()
+            .bordered(false)
+            .align_end()
             .child(
                 PanelTab::new("Body")
                     .active(self.active_tab == ResponseTab::Body)
@@ -706,7 +750,7 @@ impl ResponseView {
                             .when(show_wrap_toggle, |el| {
                                 el.child(
                                     Button::new("find-in-response")
-                                        .icon(Icon::new(IconName::Funnel).size(px(14.0)))
+                                        .icon(Icon::new(IconName::Search).size(px(14.0)))
                                         .ghost()
                                         .xsmall()
                                         .tooltip("Find in response (Cmd+F)")
@@ -760,20 +804,16 @@ impl ResponseView {
         let content_type = data.content_category();
 
         if content_type == ContentCategory::Image {
-            // Detect image format from content-type
-            let format = match data.content_type.as_deref() {
-                Some(ct) if ct.contains("png") => ImageFormat::Png,
-                Some(ct) if ct.contains("jpeg") || ct.contains("jpg") => ImageFormat::Jpeg,
-                Some(ct) if ct.contains("gif") => ImageFormat::Gif,
-                Some(ct) if ct.contains("webp") => ImageFormat::Webp,
-                Some(ct) if ct.contains("bmp") => ImageFormat::Bmp,
-                Some(ct) if ct.contains("svg") => ImageFormat::Svg,
-                _ => ImageFormat::Png, // Default to PNG
-            };
-
             // Only render image if we have bytes
-            if !data.body_bytes.is_empty() {
-                let image = Arc::new(Image::from_bytes(format, data.body_bytes.clone()));
+            if !data.body_bytes().is_empty() {
+                let Some(image) = self
+                    .decoded_image
+                    .as_ref()
+                    .filter(|(hash, _)| *hash == data.body_hash())
+                    .map(|(_, image)| image.clone())
+                else {
+                    return div().into_any_element();
+                };
 
                 return div()
                     .id("body-image-container")
@@ -832,7 +872,7 @@ impl ResponseView {
         }
 
         if content_type == ContentCategory::Audio {
-            if !data.body_bytes.is_empty() {
+            if !data.body_bytes().is_empty() {
                 if let Some(ref player) = self.audio_player {
                     return div()
                         .id("body-audio-container")
