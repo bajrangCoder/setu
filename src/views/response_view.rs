@@ -921,7 +921,7 @@ impl ResponseView {
             .overflow_x_hidden()
             .bg(theme.muted)
             .when_some(self.body_display.as_ref(), |el, editor| {
-                el.child(Input::new(editor).appearance(false).size_full())
+                el.child(Input::new(editor).appearance(false).size_full().p_0())
             })
             .into_any_element()
     }
@@ -939,7 +939,7 @@ impl ResponseView {
             .overflow_x_hidden()
             .bg(theme.muted)
             .when_some(self.raw_display.as_ref(), |el, editor| {
-                el.child(Input::new(editor).appearance(false).size_full())
+                el.child(Input::new(editor).appearance(false).size_full().p_0())
             })
     }
 

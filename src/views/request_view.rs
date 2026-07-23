@@ -786,7 +786,7 @@ impl RequestView {
                             .overflow_y_scroll()
                             .bg(theme.muted)
                             .when_some(self.body_editor.as_ref(), |el, editor| {
-                                el.child(Input::new(editor).appearance(false).size_full())
+                                el.child(Input::new(editor).appearance(false).size_full().p_0())
                             }),
                     )
                 },
