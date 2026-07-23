@@ -382,7 +382,7 @@ impl AudioPlayer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        window.focus(&self.focus_handle);
+        window.focus(&self.focus_handle, cx);
         self.seek_to_pointer(event.position, cx);
     }
 

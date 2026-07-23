@@ -124,6 +124,7 @@ impl RequestView {
             let body_editor = cx.new(|cx| {
                 InputState::new(window, cx)
                     .code_editor(syntax_lang)
+                    .folding(true)
                     .line_number(true)
                     .searchable(true)
                     .soft_wrap(wrap_lines)

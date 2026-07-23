@@ -1,5 +1,5 @@
 use gpui::prelude::*;
-use gpui::{App, Application, Bounds, KeyBinding, Size, WindowBounds, WindowOptions, px};
+use gpui::{App, Bounds, KeyBinding, Size, WindowBounds, WindowOptions, px};
 use gpui_component::Root;
 
 use crate::actions::*;
@@ -15,23 +15,25 @@ impl SetuApp {
     pub fn run() {
         env_logger::init();
 
-        Application::new().with_assets(Assets).run(|cx: &mut App| {
-            // Initialize gpui-component (must be called before using any gpui-component features)
-            gpui_component::init(cx);
+        gpui_platform::application()
+            .with_assets(Assets)
+            .run(|cx: &mut App| {
+                // Initialize gpui-component (must be called before using any gpui-component features)
+                gpui_component::init(cx);
 
-            // Apply our custom color theme to gpui-component
-            init_theme(cx);
+                // Apply our custom color theme to gpui-component
+                init_theme(cx);
 
-            // Register actions and keybindings
-            Self::register_actions(cx);
-            Self::register_keybindings(cx);
+                // Register actions and keybindings
+                Self::register_actions(cx);
+                Self::register_keybindings(cx);
 
-            // Create main window
-            Self::create_main_window(cx);
+                // Create main window
+                Self::create_main_window(cx);
 
-            // Activate the application
-            cx.activate(true);
-        });
+                // Activate the application
+                cx.activate(true);
+            });
     }
 
     /// Register global actions

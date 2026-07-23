@@ -177,7 +177,6 @@ fn apply_setu_teal_theme(cx: &mut App) {
     theme.popover_foreground = colors.text_primary;
 
     // List colors
-    theme.list = colors.bg_secondary;
     theme.list_hover = colors.bg_tertiary;
     theme.list_active = colors.accent_muted;
     theme.list_active_border = colors.accent;

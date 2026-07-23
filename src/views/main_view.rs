@@ -3,12 +3,12 @@ use gpui::{
     App, Entity, FocusHandle, Focusable, IntoElement, PathPromptOptions, Render, ScrollHandle,
     SharedString, Styled, Window, div, px,
 };
-use gpui_component::PixelsExt;
 use gpui_component::Root;
 use gpui_component::Selectable;
 use gpui_component::Sizable;
 use gpui_component::WindowExt;
 use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::dialog::DialogFooter;
 use gpui_component::input::{Input, InputState};
 use gpui_component::notification::NotificationType;
 use gpui_component::resizable::{ResizableState, h_resizable, resizable_panel, v_resizable};
@@ -181,7 +181,7 @@ impl MainView {
                 });
             })
         })
-        .detach_and_log_err(cx);
+        .detach();
 
         let collections_load = CollectionsEntity::spawn_storage_load();
         let collections_for_load = collections.clone();
@@ -195,7 +195,7 @@ impl MainView {
                 });
             })
         })
-        .detach_and_log_err(cx);
+        .detach();
         let (ui_preferences, ui_preferences_store) = UiPreferencesStore::load();
         let stacked_split_state = cx.new(|_| ResizableState::default());
         let side_by_side_split_state = cx.new(|_| ResizableState::default());
@@ -943,16 +943,11 @@ impl MainView {
                         .child(Input::new(&input)),
                 )
                 .footer({
-                    // Clone before moving into footer closure
-                    let input_submit = input_for_buttons.clone();
-                    let this_submit = this_for_buttons.clone();
+                    let input_click = input_for_buttons.clone();
+                    let this_click = this_for_buttons.clone();
 
-                    move |_, _, _, _| {
-                        // Clone again for on_click closure
-                        let input_click = input_submit.clone();
-                        let this_click = this_submit.clone();
-
-                        vec![
+                    DialogFooter::new()
+                        .child(
                             Button::new("rename-submit")
                                 .primary()
                                 .label("Rename")
@@ -963,13 +958,12 @@ impl MainView {
                                     });
                                     window.close_dialog(cx);
                                 }),
-                            Button::new("rename-cancel").label("Cancel").on_click(
-                                |_, window, cx| {
-                                    window.close_dialog(cx);
-                                },
-                            ),
-                        ]
-                    }
+                        )
+                        .child(Button::new("rename-cancel").label("Cancel").on_click(
+                            |_, window, cx| {
+                                window.close_dialog(cx);
+                            },
+                        ))
                 })
         });
     }
@@ -1034,14 +1028,11 @@ impl MainView {
                 .title(title)
                 .child(v_flex().gap_3().child(prompt).child(Input::new(&input)))
                 .footer({
-                    let input_submit = input_for_buttons.clone();
-                    let this_submit = this_for_buttons.clone();
+                    let input_click = input_for_buttons.clone();
+                    let this_click = this_for_buttons.clone();
 
-                    move |_, _, _, _| {
-                        let input_click = input_submit.clone();
-                        let this_click = this_submit.clone();
-
-                        vec![
+                    DialogFooter::new()
+                        .child(
                             Button::new("rename-collection-target-submit")
                                 .primary()
                                 .label("Rename")
@@ -1052,13 +1043,14 @@ impl MainView {
                                     });
                                     window.close_dialog(cx);
                                 }),
+                        )
+                        .child(
                             Button::new("rename-collection-target-cancel")
                                 .label("Cancel")
                                 .on_click(|_, window, cx| {
                                     window.close_dialog(cx);
                                 }),
-                        ]
-                    }
+                        )
                 })
         });
     }
@@ -1139,14 +1131,11 @@ impl MainView {
                         .child(Input::new(&input)),
                 )
                 .footer({
-                    let input_submit = input_for_buttons.clone();
-                    let this_submit = this_for_buttons.clone();
+                    let input_click = input_for_buttons.clone();
+                    let this_click = this_for_buttons.clone();
 
-                    move |_, _, _, _| {
-                        let input_click = input_submit.clone();
-                        let this_click = this_submit.clone();
-
-                        vec![
+                    DialogFooter::new()
+                        .child(
                             Button::new("new-folder-submit")
                                 .primary()
                                 .label("Create")
@@ -1165,13 +1154,12 @@ impl MainView {
                                     }
                                     window.close_dialog(cx);
                                 }),
-                            Button::new("new-folder-cancel").label("Cancel").on_click(
-                                |_, window, cx| {
-                                    window.close_dialog(cx);
-                                },
-                            ),
-                        ]
-                    }
+                        )
+                        .child(Button::new("new-folder-cancel").label("Cancel").on_click(
+                            |_, window, cx| {
+                                window.close_dialog(cx);
+                            },
+                        ))
                 })
         });
     }
@@ -1223,50 +1211,51 @@ impl MainView {
                         .child("Choose a new destination:")
                         .child(Select::new(&select_state).menu_width(px(360.0))),
                 )
-                .footer(move |_, _, _, _| {
+                .footer({
                     let select_click = select_for_footer.clone();
                     let this_click = this_for_footer.clone();
 
-                    vec![
-                        Button::new("move-node-submit")
-                            .primary()
-                            .label("Move")
-                            .on_click(move |_, window, cx| {
-                                let Some(selection) =
-                                    select_click.read(cx).selected_value().cloned()
-                                else {
-                                    return;
-                                };
+                    DialogFooter::new()
+                        .child(
+                            Button::new("move-node-submit")
+                                .primary()
+                                .label("Move")
+                                .on_click(move |_, window, cx| {
+                                    let Some(selection) =
+                                        select_click.read(cx).selected_value().cloned()
+                                    else {
+                                        return;
+                                    };
 
-                                let result = this_click.update(cx, |view, cx| {
-                                    view.collections.update(cx, |collections, cx| {
-                                        collections.move_node(
-                                            source_collection_id,
-                                            node_id,
-                                            selection.destination.collection_id,
-                                            selection.destination.folder_id,
+                                    let result = this_click.update(cx, |view, cx| {
+                                        view.collections.update(cx, |collections, cx| {
+                                            collections.move_node(
+                                                source_collection_id,
+                                                node_id,
+                                                selection.destination.collection_id,
+                                                selection.destination.folder_id,
+                                                cx,
+                                            )
+                                        })
+                                    });
+
+                                    match result {
+                                        Ok(()) => window.close_dialog(cx),
+                                        Err(error) => window.push_notification(
+                                            (
+                                                NotificationType::Error,
+                                                SharedString::from(error.to_string()),
+                                            ),
                                             cx,
-                                        )
-                                    })
-                                });
-
-                                match result {
-                                    Ok(()) => window.close_dialog(cx),
-                                    Err(error) => window.push_notification(
-                                        (
-                                            NotificationType::Error,
-                                            SharedString::from(error.to_string()),
                                         ),
-                                        cx,
-                                    ),
-                                }
-                            }),
-                        Button::new("move-node-cancel").label("Cancel").on_click(
+                                    }
+                                }),
+                        )
+                        .child(Button::new("move-node-cancel").label("Cancel").on_click(
                             |_, window, cx| {
                                 window.close_dialog(cx);
                             },
-                        ),
-                    ]
+                        ))
                 })
         });
     }
@@ -1314,63 +1303,67 @@ impl MainView {
                             .child("Collection name")
                             .child(Input::new(&collection_name_input)),
                     )
-                    .footer(move |_, _, _, _| {
+                    .footer({
                         let request_name_click = request_name_for_buttons.clone();
                         let collection_name_click = collection_name_for_buttons.clone();
                         let this_click = this_for_buttons.clone();
                         let request_click = request_for_buttons.clone();
 
-                        vec![
-                            Button::new("save-to-new-collection")
-                                .primary()
-                                .label("Save")
-                                .on_click(move |_, window, cx| {
-                                    let request_name = request_name_click
-                                        .read(cx)
-                                        .text()
-                                        .to_string()
-                                        .trim()
-                                        .to_string();
-                                    let collection_name = collection_name_click
-                                        .read(cx)
-                                        .text()
-                                        .to_string()
-                                        .trim()
-                                        .to_string();
-                                    let request_name = if request_name.is_empty() {
-                                        "New Request".to_string()
-                                    } else {
-                                        request_name
-                                    };
-                                    let collection_name = if collection_name.is_empty() {
-                                        "New Collection".to_string()
-                                    } else {
-                                        collection_name
-                                    };
+                        DialogFooter::new()
+                            .child(
+                                Button::new("save-to-new-collection")
+                                    .primary()
+                                    .label("Save")
+                                    .on_click(move |_, window, cx| {
+                                        let request_name = request_name_click
+                                            .read(cx)
+                                            .text()
+                                            .to_string()
+                                            .trim()
+                                            .to_string();
+                                        let collection_name = collection_name_click
+                                            .read(cx)
+                                            .text()
+                                            .to_string()
+                                            .trim()
+                                            .to_string();
+                                        let request_name = if request_name.is_empty() {
+                                            "New Request".to_string()
+                                        } else {
+                                            request_name
+                                        };
+                                        let collection_name = if collection_name.is_empty() {
+                                            "New Collection".to_string()
+                                        } else {
+                                            collection_name
+                                        };
 
-                                    this_click.update(cx, |view, cx| {
-                                        let collection_id =
-                                            view.collections.update(cx, |collections, cx| {
-                                                collections.create_collection(&collection_name, cx)
-                                            });
-                                        view.save_request_to_destination(
-                                            CollectionDestination {
-                                                collection_id,
-                                                folder_id: None,
-                                            },
-                                            request_name,
-                                            request_click.clone(),
-                                            cx,
-                                        );
-                                    });
-                                    window.close_dialog(cx);
-                                }),
-                            Button::new("save-to-new-collection-cancel")
-                                .label("Cancel")
-                                .on_click(|_, window, cx| {
-                                    window.close_dialog(cx);
-                                }),
-                        ]
+                                        this_click.update(cx, |view, cx| {
+                                            let collection_id =
+                                                view.collections.update(cx, |collections, cx| {
+                                                    collections
+                                                        .create_collection(&collection_name, cx)
+                                                });
+                                            view.save_request_to_destination(
+                                                CollectionDestination {
+                                                    collection_id,
+                                                    folder_id: None,
+                                                },
+                                                request_name,
+                                                request_click.clone(),
+                                                cx,
+                                            );
+                                        });
+                                        window.close_dialog(cx);
+                                    }),
+                            )
+                            .child(
+                                Button::new("save-to-new-collection-cancel")
+                                    .label("Cancel")
+                                    .on_click(|_, window, cx| {
+                                        window.close_dialog(cx);
+                                    }),
+                            )
                     })
             });
             return;
@@ -1405,51 +1398,54 @@ impl MainView {
                         .child("Destination")
                         .child(Select::new(&destination_select).menu_width(px(360.0))),
                 )
-                .footer(move |_, _, _, _| {
+                .footer({
                     let request_name_click = request_name_for_buttons.clone();
                     let destination_click = destination_for_buttons.clone();
                     let this_click = this_for_buttons.clone();
                     let request_click = request_for_buttons.clone();
 
-                    vec![
-                        Button::new("save-to-collection-submit")
-                            .primary()
-                            .label("Save")
-                            .on_click(move |_, window, cx| {
-                                let Some(selection) =
-                                    destination_click.read(cx).selected_value().cloned()
-                                else {
-                                    return;
-                                };
+                    DialogFooter::new()
+                        .child(
+                            Button::new("save-to-collection-submit")
+                                .primary()
+                                .label("Save")
+                                .on_click(move |_, window, cx| {
+                                    let Some(selection) =
+                                        destination_click.read(cx).selected_value().cloned()
+                                    else {
+                                        return;
+                                    };
 
-                                let request_name = request_name_click
-                                    .read(cx)
-                                    .text()
-                                    .to_string()
-                                    .trim()
-                                    .to_string();
-                                let request_name = if request_name.is_empty() {
-                                    "New Request".to_string()
-                                } else {
-                                    request_name
-                                };
+                                    let request_name = request_name_click
+                                        .read(cx)
+                                        .text()
+                                        .to_string()
+                                        .trim()
+                                        .to_string();
+                                    let request_name = if request_name.is_empty() {
+                                        "New Request".to_string()
+                                    } else {
+                                        request_name
+                                    };
 
-                                this_click.update(cx, |view, cx| {
-                                    view.save_request_to_destination(
-                                        selection.destination,
-                                        request_name,
-                                        request_click.clone(),
-                                        cx,
-                                    );
-                                });
-                                window.close_dialog(cx);
-                            }),
-                        Button::new("save-to-collection-cancel")
-                            .label("Cancel")
-                            .on_click(|_, window, cx| {
-                                window.close_dialog(cx);
-                            }),
-                    ]
+                                    this_click.update(cx, |view, cx| {
+                                        view.save_request_to_destination(
+                                            selection.destination,
+                                            request_name,
+                                            request_click.clone(),
+                                            cx,
+                                        );
+                                    });
+                                    window.close_dialog(cx);
+                                }),
+                        )
+                        .child(
+                            Button::new("save-to-collection-cancel")
+                                .label("Cancel")
+                                .on_click(|_, window, cx| {
+                                    window.close_dialog(cx);
+                                }),
+                        )
                 })
         });
     }
@@ -1575,16 +1571,16 @@ impl MainView {
                                 .into_any_element()
                         }),
                 )
-                .footer(|_, _, _, _| {
-                    vec![
+                .footer(
+                    DialogFooter::new().child(
                         Button::new("import-summary-close")
                             .primary()
                             .label("Close")
                             .on_click(|_, window, cx| {
                                 window.close_dialog(cx);
                             }),
-                    ]
-                })
+                    ),
+                )
         });
     }
 
@@ -1761,7 +1757,7 @@ impl MainView {
                 });
             })
         })
-        .detach_and_log_err(cx);
+        .detach();
     }
 
     pub fn cancel_request(&mut self, cx: &mut Context<Self>) {

@@ -2,14 +2,15 @@
 name = "setu"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.91"
 description = "A modern, minimal API testing application"
 authors = ["Raunak"]
 license = "MIT"
 
 [dependencies]
-gpui = "0.2.2"
-gpui-component = "0.5.1"
+gpui = { git = "https://github.com/zed-industries/zed" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit"] }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "6b688302e0d9ce9c619a7d77f2eaa05c1952d5ce" }
 reqwest = { version = "0.13.4", default-features = false, features = [
     "charset",
     "form",

@@ -607,7 +607,7 @@ impl CollectionsPanel {
                                 builder(menu, window, cx)
                             });
 
-                            menu.focus_handle(cx).focus(window);
+                            menu.focus_handle(cx).focus(window, cx);
 
                             let subscription = window.subscribe(&menu, cx, {
                                 let menu_state = menu_state.clone();

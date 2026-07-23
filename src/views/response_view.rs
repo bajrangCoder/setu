@@ -178,6 +178,7 @@ impl ResponseView {
             let body_display = cx.new(|cx| {
                 InputState::new(window, cx)
                     .code_editor(lang)
+                    .folding(true)
                     .line_number(true)
                     .searchable(true)
                     .soft_wrap(wrap_lines)
