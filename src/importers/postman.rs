@@ -9,7 +9,10 @@ use uuid::Uuid;
 
 use crate::entities::{Header, HttpMethod, MultipartField, RequestBody, RequestData};
 
-use super::{CollectionImporter, ImportResult, ImportWarning, ImportedCollection, ImportedNode};
+use super::{
+    CollectionImporter, ImportResult, ImportWarning, ImportedCollection, ImportedEnvironment,
+    ImportedNode, ImportedVariable,
+};
 
 #[derive(Default)]
 pub struct PostmanCollectionImporter;
@@ -64,12 +67,11 @@ impl CollectionImporter for PostmanCollectionImporter {
             !document.event.is_empty(),
             "Collection scripts are skipped.",
         );
-        warn_on_unsupported_fields(
-            &mut warnings,
-            &collection_path,
-            !document.variable.is_empty(),
-            "Collection variables are skipped.",
-        );
+        let variables = document
+            .variable
+            .into_iter()
+            .filter_map(import_variable)
+            .collect();
 
         let nodes = document
             .item
@@ -89,6 +91,7 @@ impl CollectionImporter for PostmanCollectionImporter {
             collection: ImportedCollection {
                 name: collection_name,
                 nodes,
+                variables,
             },
             warnings,
         })
@@ -103,7 +106,7 @@ struct PostmanCollectionDocument {
     #[serde(default)]
     event: Vec<Value>,
     #[serde(default)]
-    variable: Vec<Value>,
+    variable: Vec<PostmanVariable>,
     #[serde(default)]
     auth: Option<PostmanAuth>,
 }
@@ -111,6 +114,89 @@ struct PostmanCollectionDocument {
 #[derive(Debug, Deserialize)]
 struct PostmanInfo {
     name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PostmanVariable {
+    #[serde(default)]
+    key: Option<String>,
+    #[serde(default)]
+    value: Option<Value>,
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    disabled: Option<bool>,
+    #[serde(default, rename = "type")]
+    variable_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PostmanEnvironmentDocument {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    values: Vec<PostmanVariable>,
+    #[serde(default)]
+    _postman_variable_scope: Option<String>,
+}
+
+pub fn import_postman_environment(
+    path: &Path,
+    contents: &str,
+) -> Option<Result<ImportedEnvironment>> {
+    let value = serde_json::from_str::<Value>(contents).ok()?;
+    let has_values = value.get("values").and_then(Value::as_array).is_some();
+    let scope = value.get("_postman_variable_scope").and_then(Value::as_str);
+    if !has_values || scope.is_some_and(|scope| scope != "environment" && scope != "globals") {
+        return None;
+    }
+    if value.get("info").is_some() || value.get("item").is_some() {
+        return None;
+    }
+
+    Some(
+        serde_json::from_str::<PostmanEnvironmentDocument>(contents)
+            .map_err(|error| anyhow!("Failed to parse Postman environment JSON: {error}"))
+            .map(|document| {
+                let name = document
+                    .name
+                    .or_else(|| {
+                        path.file_stem()
+                            .and_then(|stem| stem.to_str())
+                            .map(str::to_string)
+                    })
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or_else(|| "Imported Environment".to_string());
+                ImportedEnvironment {
+                    name,
+                    variables: document
+                        .values
+                        .into_iter()
+                        .filter_map(import_variable)
+                        .collect(),
+                }
+            }),
+    )
+}
+
+fn import_variable(variable: PostmanVariable) -> Option<ImportedVariable> {
+    let key = variable.key?.trim().to_string();
+    if key.is_empty() {
+        return None;
+    }
+    let value = match variable.value.unwrap_or(Value::String(String::new())) {
+        Value::String(value) => value,
+        Value::Null => String::new(),
+        value => value.to_string(),
+    };
+    Some(ImportedVariable {
+        key,
+        value,
+        enabled: variable.enabled.unwrap_or(true) && !variable.disabled.unwrap_or(false),
+        secret: variable
+            .variable_type
+            .is_some_and(|kind| kind.eq_ignore_ascii_case("secret")),
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -1574,5 +1660,57 @@ mod tests {
                 .message
                 .contains("Duplicate x-www-form-urlencoded key")
         }));
+    }
+
+    #[test]
+    fn imports_collection_variables_with_enabled_and_secret_metadata() {
+        let importer = PostmanCollectionImporter;
+        let json = r#"
+        {
+          "info": {
+            "name": "Variables",
+            "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+          },
+          "variable": [
+            { "key": "base_url", "value": "https://api.example.com" },
+            { "key": "token", "value": "secret", "type": "secret" },
+            { "key": "disabled", "value": 42, "disabled": true }
+          ],
+          "item": []
+        }"#;
+
+        let result = importer
+            .import(Path::new("variables.postman_collection.json"), json)
+            .expect("import succeeds");
+
+        assert_eq!(result.collection.variables.len(), 3);
+        assert_eq!(result.collection.variables[0].key, "base_url");
+        assert!(result.collection.variables[1].secret);
+        assert!(!result.collection.variables[2].enabled);
+        assert_eq!(result.collection.variables[2].value, "42");
+    }
+
+    #[test]
+    fn imports_postman_environment_exports() {
+        let json = r#"
+        {
+          "id": "example",
+          "name": "Production",
+          "values": [
+            { "key": "base_url", "value": "https://api.example.com", "enabled": true },
+            { "key": "token", "value": "secret", "enabled": false, "type": "secret" }
+          ],
+          "_postman_variable_scope": "environment"
+        }"#;
+
+        let environment =
+            import_postman_environment(Path::new("production.postman_environment.json"), json)
+                .expect("recognized as an environment")
+                .expect("import succeeds");
+
+        assert_eq!(environment.name, "Production");
+        assert_eq!(environment.variables.len(), 2);
+        assert!(!environment.variables[1].enabled);
+        assert!(environment.variables[1].secret);
     }
 }

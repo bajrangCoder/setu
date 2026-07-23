@@ -4,6 +4,7 @@ use gpui_component::Root;
 
 use crate::actions::*;
 use crate::assets::Assets;
+use crate::completion::init_completion_navigation;
 use crate::theme::init_theme;
 use crate::utils::set_app_focus_handle;
 use crate::views::MainView;
@@ -21,6 +22,7 @@ impl SetuApp {
             .run(|cx: &mut App| {
                 // Initialize gpui-component (must be called before using any gpui-component features)
                 gpui_component::init(cx);
+                init_completion_navigation(cx);
 
                 // Apply our custom color theme to gpui-component
                 init_theme(cx);

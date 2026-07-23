@@ -21,6 +21,7 @@
 mod actions;
 mod app;
 mod assets;
+mod completion;
 mod components;
 mod entities;
 mod http;

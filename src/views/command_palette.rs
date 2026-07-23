@@ -157,7 +157,7 @@ pub fn default_commands() -> Vec<Command> {
         ),
         Command::new(
             CommandId::ImportCollection,
-            "Import Collection",
+            "Import Postman Data",
             IconName::FileUp,
         ),
         Command::new(

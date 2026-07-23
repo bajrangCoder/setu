@@ -11,6 +11,10 @@ use gpui_component::input::{Input, InputState};
 use crate::icons::IconName;
 use gpui_component::ActiveTheme;
 
+use crate::completion::{
+    CompletionContext, CompletionEngine, CompletionInput, configure_completion,
+};
+
 pub struct FormDataRow {
     pub key_input: Entity<InputState>,
     pub value_input: Entity<InputState>,
@@ -34,20 +38,36 @@ struct DraggedRow {
 pub struct FormDataEditor {
     rows: Vec<FormDataRow>,
     focus_handle: FocusHandle,
+    completion_engine: Option<CompletionEngine>,
 }
 
 #[allow(dead_code)]
 impl FormDataEditor {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(completion_engine: Option<CompletionEngine>, cx: &mut Context<Self>) -> Self {
         Self {
             rows: Vec::new(),
             focus_handle: cx.focus_handle(),
+            completion_engine,
         }
     }
 
     pub fn add_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let key_input = cx.new(|cx| InputState::new(window, cx).placeholder("Key"));
-        let value_input = cx.new(|cx| InputState::new(window, cx).placeholder("Value"));
+        let completion_engine = self.completion_engine.clone();
+        let key_input = cx.new(|cx| {
+            configure_completion(
+                InputState::new(window, cx).placeholder("Key"),
+                completion_engine.as_ref(),
+                CompletionContext::FormName,
+            )
+        });
+        let completion_engine = self.completion_engine.clone();
+        let value_input = cx.new(|cx| {
+            configure_completion(
+                InputState::new(window, cx).placeholder("Value"),
+                completion_engine.as_ref(),
+                CompletionContext::FormValue,
+            )
+        });
 
         self.rows.push(FormDataRow {
             key_input,
@@ -142,15 +162,25 @@ impl FormDataEditor {
                 )
             };
 
+            let completion_engine = self.completion_engine.clone();
             let key_input = cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder("Key")
-                    .default_value(&key)
+                configure_completion(
+                    InputState::new(window, cx)
+                        .placeholder("Key")
+                        .default_value(&key),
+                    completion_engine.as_ref(),
+                    CompletionContext::FormName,
+                )
             });
+            let completion_engine = self.completion_engine.clone();
             let value_input = cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder("Value")
-                    .default_value(&value)
+                configure_completion(
+                    InputState::new(window, cx)
+                        .placeholder("Value")
+                        .default_value(&value),
+                    completion_engine.as_ref(),
+                    CompletionContext::FormValue,
+                )
             });
 
             self.rows.push(FormDataRow {
@@ -172,15 +202,25 @@ impl FormDataEditor {
         self.rows.clear();
 
         for (key, value) in data {
+            let completion_engine = self.completion_engine.clone();
             let key_input = cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder("Key")
-                    .default_value(key)
+                configure_completion(
+                    InputState::new(window, cx)
+                        .placeholder("Key")
+                        .default_value(key),
+                    completion_engine.as_ref(),
+                    CompletionContext::FormName,
+                )
             });
+            let completion_engine = self.completion_engine.clone();
             let value_input = cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder("Value")
-                    .default_value(value)
+                configure_completion(
+                    InputState::new(window, cx)
+                        .placeholder("Value")
+                        .default_value(value),
+                    completion_engine.as_ref(),
+                    CompletionContext::FormValue,
+                )
             });
 
             self.rows.push(FormDataRow {
@@ -386,18 +426,14 @@ impl Render for FormDataEditor {
                                         ),
                                     ),
                             )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .pr(px(8.0))
-                                    .child(Input::new(&row.key_input).appearance(false).xsmall()),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .pr(px(8.0))
-                                    .child(Input::new(&row.value_input).appearance(false).xsmall()),
-                            )
+                            .child(div().flex_1().pr(px(8.0)).child(CompletionInput::new(
+                                &row.key_input,
+                                Input::new(&row.key_input).appearance(false).xsmall(),
+                            )))
+                            .child(div().flex_1().pr(px(8.0)).child(CompletionInput::new(
+                                &row.value_input,
+                                Input::new(&row.value_input).appearance(false).xsmall(),
+                            )))
                             .child(
                                 div()
                                     .w(px(40.0))

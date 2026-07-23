@@ -5,7 +5,7 @@ use std::path::Path;
 
 use crate::entities::RequestData;
 
-pub use postman::PostmanCollectionImporter;
+pub use postman::{PostmanCollectionImporter, import_postman_environment};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportWarning {
@@ -60,6 +60,7 @@ impl ImportedNode {
 pub struct ImportedCollection {
     pub name: String,
     pub nodes: Vec<ImportedNode>,
+    pub variables: Vec<ImportedVariable>,
 }
 
 impl ImportedCollection {
@@ -70,6 +71,33 @@ impl ImportedCollection {
     pub fn request_count(&self) -> usize {
         self.nodes.iter().map(ImportedNode::request_count).sum()
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportedVariable {
+    pub key: String,
+    pub value: String,
+    pub enabled: bool,
+    pub secret: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ImportedEnvironment {
+    pub name: String,
+    pub variables: Vec<ImportedVariable>,
+}
+
+#[derive(Debug, Clone)]
+pub enum ImportedPayload {
+    Collection(ImportedCollection),
+    Environment(ImportedEnvironment),
+}
+
+#[derive(Debug, Clone)]
+pub struct ImportedFileResult {
+    pub provider: &'static str,
+    pub payload: ImportedPayload,
+    pub warnings: Vec<ImportWarning>,
 }
 
 #[derive(Debug, Clone)]
@@ -98,18 +126,42 @@ impl Default for ImportRegistry {
 }
 
 impl ImportRegistry {
-    pub fn import_file(&self, path: &Path) -> Result<ImportResult> {
+    pub fn import_any_file(&self, path: &Path) -> Result<ImportedFileResult> {
         let contents = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read {}", path.display()))?;
 
+        if let Some(environment) = import_postman_environment(path, &contents) {
+            return environment.map(|environment| ImportedFileResult {
+                provider: "Postman",
+                payload: ImportedPayload::Environment(environment),
+                warnings: Vec::new(),
+            });
+        }
+
+        self.import_contents(path, &contents)
+            .map(|result| ImportedFileResult {
+                provider: result.provider,
+                payload: ImportedPayload::Collection(result.collection),
+                warnings: result.warnings,
+            })
+    }
+
+    #[allow(dead_code)]
+    pub fn import_file(&self, path: &Path) -> Result<ImportResult> {
+        let contents = std::fs::read_to_string(path)
+            .with_context(|| format!("Failed to read {}", path.display()))?;
+        self.import_contents(path, &contents)
+    }
+
+    fn import_contents(&self, path: &Path, contents: &str) -> Result<ImportResult> {
         for importer in &self.importers {
-            if importer.matches(path, &contents) {
-                return importer.import(path, &contents);
+            if importer.matches(path, contents) {
+                return importer.import(path, contents);
             }
         }
 
         Err(anyhow!(
-            "Unsupported collection file. Only Postman collection JSON is supported right now."
+            "Unsupported import file. Select a Postman collection or environment JSON export."
         ))
     }
 }

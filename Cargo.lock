@@ -5498,6 +5498,7 @@ dependencies = [
  "gpui-component",
  "gpui_platform",
  "log",
+ "lsp-types",
  "mime_guess",
  "reqwest",
  "rodio",

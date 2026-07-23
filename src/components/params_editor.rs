@@ -11,6 +11,8 @@ use gpui_component::input::{Input, InputState};
 use crate::icons::IconName;
 use gpui_component::ActiveTheme;
 
+use crate::completion::{CompletionContext, CompletionEngine, CompletionInput};
+
 pub struct ParamRow {
     pub key_input: Entity<InputState>,
     pub value_input: Entity<InputState>,
@@ -37,20 +39,38 @@ struct DraggedParam {
 pub struct ParamsEditor {
     param_rows: Vec<ParamRow>,
     focus_handle: FocusHandle,
+    completion_engine: Option<CompletionEngine>,
 }
 
 impl ParamsEditor {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(completion_engine: Option<CompletionEngine>, cx: &mut Context<Self>) -> Self {
         Self {
             param_rows: Vec::new(),
             focus_handle: cx.focus_handle(),
+            completion_engine,
         }
     }
 
     /// Add a new empty param row
     pub fn add_param(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let key_input = cx.new(|cx| InputState::new(window, cx).placeholder("Param name"));
-        let value_input = cx.new(|cx| InputState::new(window, cx).placeholder("Value"));
+        let completion_engine = self.completion_engine.clone();
+        let key_input = cx.new(|cx| {
+            let input = InputState::new(window, cx).placeholder("Param name");
+            if let Some(engine) = completion_engine.as_ref() {
+                engine.configure_input(input, CompletionContext::QueryName)
+            } else {
+                input
+            }
+        });
+        let completion_engine = self.completion_engine.clone();
+        let value_input = cx.new(|cx| {
+            let input = InputState::new(window, cx).placeholder("Value");
+            if let Some(engine) = completion_engine.as_ref() {
+                engine.configure_input(input, CompletionContext::QueryValue)
+            } else {
+                input
+            }
+        });
         let description_input = cx.new(|cx| InputState::new(window, cx).placeholder("Description"));
 
         self.param_rows.push(ParamRow {
@@ -331,19 +351,16 @@ impl Render for ParamsEditor {
                                         ),
                                     ),
                             )
-                            .child(
-                                div()
-                                    .w(px(150.0))
-                                    .min_w(px(150.0))
-                                    .pr(px(8.0))
-                                    .child(Input::new(&row.key_input).appearance(false).xsmall()),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .pr(px(8.0))
-                                    .child(Input::new(&row.value_input).appearance(false).xsmall()),
-                            )
+                            .child(div().w(px(150.0)).min_w(px(150.0)).pr(px(8.0)).child(
+                                CompletionInput::new(
+                                    &row.key_input,
+                                    Input::new(&row.key_input).appearance(false).xsmall(),
+                                ),
+                            ))
+                            .child(div().flex_1().pr(px(8.0)).child(CompletionInput::new(
+                                &row.value_input,
+                                Input::new(&row.value_input).appearance(false).xsmall(),
+                            )))
                             .child(
                                 div().w(px(150.0)).min_w(px(150.0)).pr(px(8.0)).child(
                                     Input::new(&row.description_input)

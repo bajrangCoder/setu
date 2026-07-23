@@ -125,7 +125,9 @@ fn apply_setu_teal_theme(cx: &mut App) {
     theme.primary = colors.accent;
     theme.primary_hover = colors.accent_hover;
     theme.primary_foreground = colors.text_primary;
-    theme.accent = colors.accent_muted;
+    // Keep transient selections restrained and neutral, like editor completion rows.
+    // Teal remains reserved for primary actions and focus.
+    theme.accent = hsla(240.0 / 360.0, 0.06, 0.19, 1.0);
     theme.accent_foreground = colors.text_primary;
 
     // Semantic colors

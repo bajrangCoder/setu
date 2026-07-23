@@ -10,6 +10,7 @@ use gpui_component::WindowExt;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::dialog::DialogFooter;
 use gpui_component::input::{Input, InputState};
+use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::notification::NotificationType;
 use gpui_component::resizable::{ResizableState, h_resizable, resizable_panel, v_resizable};
 use gpui_component::scroll::ScrollableElement;
@@ -22,19 +23,21 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use crate::actions::*;
+use crate::completion::{CompletionContext, CompletionEngine, configure_completion};
 use crate::components::{
-    AppSidebar, BodyType, HistoryFilter, HistoryGroupBy, MethodDropdownState, ProtocolSelector,
-    ProtocolType, SidebarTab, TabBar, TabInfo, UrlBar,
+    AppSidebar, BodyType, EnvironmentPanel, HistoryFilter, HistoryGroupBy, MethodDropdownState,
+    ProtocolSelector, ProtocolType, SidebarTab, TabBar, TabInfo, UrlBar,
 };
 use crate::entities::{
-    CollectionDestination, CollectionDestinationEntry, CollectionsEntity, Header, HistoryEntity,
-    HistoryGrouping, HistoryRow, HttpMethod, PreferredLayout, RequestBody, RequestData,
-    RequestEntity, RequestEvent, ResponseData, ResponseEntity, SidebarLoadState, UiPreferences,
-    UiPreferencesStore,
+    CollectionDestination, CollectionDestinationEntry, CollectionsEntity, EnvironmentColor,
+    EnvironmentScope, EnvironmentVariable, EnvironmentsEntity, HistoryEntity, HistoryGrouping,
+    HistoryRow, HttpMethod, PreferredLayout, RequestBody, RequestData, RequestEntity, RequestEvent,
+    ResponseData, ResponseEntity, SidebarLoadState, UiPreferences, UiPreferencesStore,
+    WorkspacesEntity,
 };
 use crate::http::{HttpClient, InFlightRequest};
 use crate::icons::IconName;
-use crate::importers::{ImportRegistry, ImportWarning};
+use crate::importers::{ImportRegistry, ImportWarning, ImportedPayload};
 use crate::utils::{close_dialog, open_dialog};
 use crate::views::request_view::RequestView;
 use crate::views::response_view::ResponseView;
@@ -74,6 +77,7 @@ pub struct TabState {
     pub response_view: Entity<ResponseView>,
     pub in_flight_request: Option<InFlightRequest>,
     pub request_generation: RequestGeneration,
+    pub collection_id: Option<Uuid>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,6 +104,24 @@ impl SelectItem for DestinationOption {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct EnvironmentScopeOption {
+    scope: EnvironmentScope,
+    label: String,
+}
+
+impl SelectItem for EnvironmentScopeOption {
+    type Value = EnvironmentScopeOption;
+
+    fn title(&self) -> SharedString {
+        self.label.clone().into()
+    }
+
+    fn value(&self) -> &Self::Value {
+        self
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 enum RenameTarget {
     Collection(Uuid),
@@ -109,9 +131,11 @@ enum RenameTarget {
 #[derive(Clone, Debug)]
 struct ImportSummary {
     provider: &'static str,
-    collection_name: String,
-    folder_count: usize,
-    request_count: usize,
+    item_kind: &'static str,
+    item_name: String,
+    folder_count: Option<usize>,
+    request_count: Option<usize>,
+    variable_count: usize,
     warnings: Vec<ImportWarning>,
 }
 
@@ -129,6 +153,10 @@ pub struct MainView {
     // Shared state
     history: Entity<HistoryEntity>,
     collections: Entity<CollectionsEntity>,
+    environments: Entity<EnvironmentsEntity>,
+    workspaces: Entity<WorkspacesEntity>,
+    environment_panel: Entity<EnvironmentPanel>,
+    completion_engine: CompletionEngine,
     http_client: HttpClient,
 
     // UI state
@@ -157,7 +185,19 @@ impl MainView {
         let request = cx.new(|_| RequestEntity::new());
         let response = cx.new(|_| ResponseEntity::new());
         let method_dropdown = cx.new(|_| MethodDropdownState::new(HttpMethod::Get));
-        let request_view = cx.new(|cx| RequestView::new(request.clone(), BodyType::None, cx));
+        let focus_handle = cx.focus_handle();
+        let command_palette = cx.new(|cx| CommandPaletteView::new(focus_handle.clone(), cx));
+        let workspaces = cx.new(|_| WorkspacesEntity::load());
+        let active_workspace_id = workspaces.read(cx).active_workspace_id();
+        let history = cx.new(|_| HistoryEntity::new_for_workspace(active_workspace_id));
+        let collections = cx.new(|_| CollectionsEntity::new_for_workspace(active_workspace_id));
+        let environments = cx.new(|_| EnvironmentsEntity::new_for_workspace(active_workspace_id));
+        let completion_engine = CompletionEngine::for_environments(environments.clone());
+        let completion_engine_for_request = completion_engine.clone();
+        let request_view = cx.new(|cx| {
+            RequestView::new(request.clone(), BodyType::None, cx)
+                .with_completion_engine(completion_engine_for_request)
+        });
         let response_view = cx.new(|cx| ResponseView::new(response.clone(), cx));
 
         let initial_tab = TabState {
@@ -172,12 +212,10 @@ impl MainView {
             response_view,
             in_flight_request: None,
             request_generation: RequestGeneration::default(),
+            collection_id: None,
         };
-
-        let focus_handle = cx.focus_handle();
-        let command_palette = cx.new(|cx| CommandPaletteView::new(focus_handle.clone(), cx));
-        let history = cx.new(|_| HistoryEntity::new());
-        let collections = cx.new(|_| CollectionsEntity::new());
+        let environment_panel =
+            cx.new(|cx| EnvironmentPanel::new(environments.clone(), collections.clone(), cx));
         let history_load = HistoryEntity::spawn_storage_load();
         let history_for_load = history.clone();
         cx.spawn(async move |_view, cx| {
@@ -187,6 +225,20 @@ impl MainView {
             cx.update(|app| {
                 history_for_load.update(app, |history, cx| {
                     history.apply_storage_load(result, cx);
+                });
+            })
+        })
+        .detach();
+
+        let environments_load = EnvironmentsEntity::spawn_storage_load();
+        let environments_for_load = environments.clone();
+        cx.spawn(async move |_view, cx| {
+            let result = environments_load
+                .await
+                .unwrap_or_else(|_| Err("Environment loader stopped unexpectedly".to_string()));
+            cx.update(|app| {
+                environments_for_load.update(app, |environments, cx| {
+                    environments.apply_storage_load(result, cx);
                 });
             })
         })
@@ -222,6 +274,10 @@ impl MainView {
         .detach();
         cx.subscribe(&collections, |_this, _, _event, cx| cx.notify())
             .detach();
+        cx.subscribe(&environments, |_this, _, _event, cx| cx.notify())
+            .detach();
+        cx.subscribe(&workspaces, |_this, _, _event, cx| cx.notify())
+            .detach();
 
         let http_client = HttpClient::new().expect("Failed to create HTTP client");
 
@@ -233,6 +289,10 @@ impl MainView {
             command_palette,
             history,
             collections,
+            environments,
+            workspaces,
+            environment_panel,
+            completion_engine,
             http_client,
             sidebar_visible: ui_preferences.sidebar_visible,
             sidebar_width: ui_preferences.sidebar_width,
@@ -275,11 +335,17 @@ impl MainView {
 
     /// Ensure URL input is initialized for a tab
     fn ensure_url_input(&mut self, tab_index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let completion_engine = self.completion_engine.clone();
         if let Some(tab) = self.tabs.get_mut(tab_index)
             && tab.url_input.is_none()
         {
-            let url_input =
-                cx.new(|cx| InputState::new(window, cx).placeholder("Enter request URL..."));
+            let url_input = cx.new(|cx| {
+                configure_completion(
+                    InputState::new(window, cx).placeholder("Enter request URL..."),
+                    Some(&completion_engine),
+                    CompletionContext::Url,
+                )
+            });
             let tab_id = tab.id;
             Self::subscribe_url_input(&url_input, tab_id, window, cx);
             tab.url_input = Some(url_input);
@@ -539,17 +605,24 @@ impl MainView {
         });
 
         let method_dropdown = cx.new(|_| MethodDropdownState::new(request_data.method));
+        let completion_engine = self.completion_engine.clone();
         let request_view = cx.new(|cx| {
             RequestView::new(request.clone(), body_type, cx)
+                .with_completion_engine(completion_engine)
                 .with_initial_body_content(body_content)
                 .with_initial_form_data(form_data)
                 .with_initial_multipart_data(multipart_data)
         });
         let response_view = cx.new(|cx| ResponseView::new(response.clone(), cx));
+        let completion_engine = self.completion_engine.clone();
         let url_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Enter request URL...")
-                .default_value(&request_data.url)
+            configure_completion(
+                InputState::new(window, cx)
+                    .placeholder("Enter request URL...")
+                    .default_value(&request_data.url),
+                Some(&completion_engine),
+                CompletionContext::Url,
+            )
         });
         let tab_id = TabId(self.next_tab_id);
         Self::subscribe_url_input(&url_input, tab_id, window, cx);
@@ -567,6 +640,7 @@ impl MainView {
             response_view,
             in_flight_request: None,
             request_generation: RequestGeneration::default(),
+            collection_id: None,
         };
 
         self.tabs.push(tab);
@@ -669,17 +743,24 @@ impl MainView {
 
         let response = cx.new(|_| ResponseEntity::new());
         let method_dropdown = cx.new(|_| MethodDropdownState::new(request_data.method));
+        let completion_engine = self.completion_engine.clone();
         let request_view = cx.new(|cx| {
             RequestView::new(request.clone(), body_type, cx)
+                .with_completion_engine(completion_engine)
                 .with_initial_body_content(body_content)
                 .with_initial_form_data(form_data)
                 .with_initial_multipart_data(multipart_data)
         });
         let response_view = cx.new(|cx| ResponseView::new(response.clone(), cx));
+        let completion_engine = self.completion_engine.clone();
         let url_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Enter request URL...")
-                .default_value(&request_data.url)
+            configure_completion(
+                InputState::new(window, cx)
+                    .placeholder("Enter request URL...")
+                    .default_value(&request_data.url),
+                Some(&completion_engine),
+                CompletionContext::Url,
+            )
         });
         let tab_id = TabId(self.next_tab_id);
         Self::subscribe_url_input(&url_input, tab_id, window, cx);
@@ -697,6 +778,7 @@ impl MainView {
             response_view,
             in_flight_request: None,
             request_generation: RequestGeneration::default(),
+            collection_id: Some(collection_id),
         };
 
         self.tabs.push(tab);
@@ -712,11 +794,425 @@ impl MainView {
         });
     }
 
+    fn switch_workspace(&mut self, workspace_id: Uuid, cx: &mut Context<Self>) {
+        if self.workspaces.read(cx).active_workspace_id() == workspace_id {
+            return;
+        }
+        self.cancel_in_flight_for_all_tabs(cx);
+        self.collections.update(cx, |collections, cx| {
+            collections.set_active_workspace(workspace_id, cx);
+        });
+        self.history.update(cx, |history, cx| {
+            history.set_active_workspace(workspace_id, cx);
+        });
+        self.environments.update(cx, |environments, cx| {
+            environments.set_active_workspace(workspace_id, cx);
+        });
+        self.workspaces.update(cx, |workspaces, cx| {
+            workspaces.set_active_workspace(workspace_id, cx);
+        });
+
+        self.tabs.clear();
+        self.active_tab_index = 0;
+        self.new_tab(cx);
+        self.schedule_history_rows(cx);
+        cx.notify();
+    }
+
+    fn show_new_workspace_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("My Workspace")
+                .default_value("New Workspace")
+        });
+        let input_for_create = input.clone();
+        let this = cx.entity().clone();
+        open_dialog(window, cx, move |dialog, _, cx| {
+            let this_for_create = this.clone();
+            let input_for_create = input_for_create.clone();
+            dialog
+                .title("New Workspace")
+                .child(
+                    v_flex()
+                        .gap_3()
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(
+                                    "Collections, request history, and environments stay isolated inside this workspace.",
+                                ),
+                        )
+                        .child(Input::new(&input)),
+                )
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            Button::new("create-workspace-confirm")
+                                .label("Create workspace")
+                                .primary()
+                                .on_click(move |_, window, cx| {
+                                    let name =
+                                        input_for_create.read(cx).text().to_string();
+                                    this_for_create.update(cx, |view, cx| {
+                                        let workspace_id =
+                                            view.workspaces.update(cx, |workspaces, cx| {
+                                                workspaces.create_workspace(name, cx)
+                                            });
+                                        view.switch_workspace(workspace_id, cx);
+                                    });
+                                    close_dialog(window, cx);
+                                }),
+                        )
+                        .child(
+                            Button::new("create-workspace-cancel")
+                                .label("Cancel")
+                                .on_click(|_, window, cx| close_dialog(window, cx)),
+                        ),
+                )
+        });
+    }
+
+    fn show_rename_workspace_dialog(
+        &mut self,
+        workspace_id: Uuid,
+        current_name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Workspace name")
+                .default_value(current_name)
+        });
+        let input_for_rename = input.clone();
+        let this = cx.entity().clone();
+        open_dialog(window, cx, move |dialog, _, _| {
+            let this_for_rename = this.clone();
+            let input_for_rename = input_for_rename.clone();
+            dialog
+                .title("Rename Workspace")
+                .child(Input::new(&input))
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            Button::new("rename-workspace-confirm")
+                                .label("Rename")
+                                .primary()
+                                .on_click(move |_, window, cx| {
+                                    let name = input_for_rename.read(cx).text().to_string();
+                                    this_for_rename.update(cx, |view, cx| {
+                                        view.workspaces.update(cx, |workspaces, cx| {
+                                            workspaces.rename_workspace(workspace_id, name, cx);
+                                        });
+                                    });
+                                    close_dialog(window, cx);
+                                }),
+                        )
+                        .child(
+                            Button::new("rename-workspace-cancel")
+                                .label("Cancel")
+                                .on_click(|_, window, cx| close_dialog(window, cx)),
+                        ),
+                )
+        });
+    }
+
+    fn show_delete_workspace_dialog(
+        &mut self,
+        workspace_id: Uuid,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (name, fallback_id) = {
+            let workspaces = self.workspaces.read(cx);
+            let Some(workspace) = workspaces
+                .workspaces()
+                .iter()
+                .find(|workspace| workspace.id == workspace_id)
+            else {
+                return;
+            };
+            let Some(fallback) = workspaces
+                .workspaces()
+                .iter()
+                .find(|workspace| workspace.id != workspace_id)
+            else {
+                return;
+            };
+            (workspace.name.clone(), fallback.id)
+        };
+        let this = cx.entity().clone();
+        open_dialog(window, cx, move |dialog, _, _| {
+            let this_for_delete = this.clone();
+            dialog
+                .title("Delete Workspace")
+                .child(format!(
+                    "Delete “{name}” and its collections, history, and environments? This cannot be undone."
+                ))
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            Button::new("delete-workspace-confirm")
+                                .label("Delete workspace")
+                                .danger()
+                                .on_click(move |_, window, cx| {
+                                    this_for_delete.update(cx, |view, cx| {
+                                        view.switch_workspace(fallback_id, cx);
+                                        view.collections.update(cx, |collections, _| {
+                                            collections.remove_workspace(workspace_id);
+                                        });
+                                        view.history.update(cx, |history, _| {
+                                            history.remove_workspace(workspace_id);
+                                        });
+                                        view.environments.update(cx, |environments, _| {
+                                            environments.remove_workspace(workspace_id);
+                                        });
+                                        view.workspaces.update(cx, |workspaces, cx| {
+                                            workspaces.remove_workspace(workspace_id, cx);
+                                        });
+                                    });
+                                    close_dialog(window, cx);
+                                }),
+                        )
+                        .child(
+                            Button::new("delete-workspace-cancel")
+                                .label("Cancel")
+                                .on_click(|_, window, cx| close_dialog(window, cx)),
+                        ),
+                )
+        });
+    }
+
+    pub fn show_new_environment_dialog(
+        &mut self,
+        project_id: Option<Uuid>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut scope_options = vec![
+            EnvironmentScopeOption {
+                scope: EnvironmentScope::Global,
+                label: "Global · Available in every workspace".to_string(),
+            },
+            EnvironmentScopeOption {
+                scope: EnvironmentScope::Workspace,
+                label: "Workspace · Available in this workspace".to_string(),
+            },
+        ];
+        scope_options.extend(
+            self.collections
+                .read(cx)
+                .collections
+                .iter()
+                .map(|collection| EnvironmentScopeOption {
+                    scope: EnvironmentScope::Project(collection.id),
+                    label: format!("Project · {}", collection.name),
+                }),
+        );
+        let selected_index = project_id
+            .and_then(|project_id| {
+                scope_options
+                    .iter()
+                    .position(|option| option.scope == EnvironmentScope::Project(project_id))
+            })
+            .unwrap_or(1);
+        let scope_select = cx.new(|cx| {
+            SelectState::new(
+                scope_options,
+                Some(gpui_component::IndexPath::new(selected_index)),
+                window,
+                cx,
+            )
+        });
+        let name_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Development, Staging, Production…")
+                .default_value("Development")
+        });
+        let this = cx.entity().clone();
+        let name_for_footer = name_input.clone();
+        let scope_for_footer = scope_select.clone();
+
+        open_dialog(window, cx, move |dialog, _, cx| {
+            let this_for_create = this.clone();
+            let name_for_create = name_for_footer.clone();
+            let scope_for_create = scope_for_footer.clone();
+
+            dialog
+                .title("New Environment")
+                .child(
+                    v_flex()
+                        .gap_3()
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(
+                                    "Global environments are shared by every workspace. Workspace and project environments override them with more specific values.",
+                                ),
+                        )
+                        .child("Environment name")
+                        .child(Input::new(&name_input))
+                        .child("Scope")
+                        .child(Select::new(&scope_select).menu_width(px(360.0))),
+                )
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            Button::new("create-environment")
+                                .label("Create environment")
+                                .primary()
+                                .on_click(move |_, window, cx| {
+                                    let name = name_for_create
+                                        .read(cx)
+                                        .text()
+                                        .to_string()
+                                        .trim()
+                                        .to_string();
+                                    let name = if name.is_empty() {
+                                        "Development".to_string()
+                                    } else {
+                                        name
+                                    };
+                                    let Some(scope) = scope_for_create
+                                        .read(cx)
+                                        .selected_value()
+                                        .map(|option| option.scope)
+                                    else {
+                                        return;
+                                    };
+                                    this_for_create.update(cx, |view, cx| {
+                                        let environment_id = view.environments.update(
+                                            cx,
+                                            |environments, cx| {
+                                                environments.create_environment(name, scope, cx)
+                                            },
+                                        );
+                                        view.environment_panel.update(cx, |panel, cx| {
+                                            panel.select_environment(environment_id, cx);
+                                        });
+                                    });
+                                    close_dialog(window, cx);
+                                }),
+                        )
+                        .child(
+                            Button::new("create-environment-cancel")
+                                .label("Cancel")
+                                .on_click(|_, window, cx| close_dialog(window, cx)),
+                        ),
+                )
+        });
+    }
+
+    pub fn show_delete_environment_dialog(
+        &mut self,
+        environment_id: Uuid,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(name) = self
+            .environments
+            .read(cx)
+            .get(environment_id)
+            .map(|environment| environment.name.clone())
+        else {
+            return;
+        };
+        let this = cx.entity().clone();
+        open_dialog(window, cx, move |dialog, _, _| {
+            let this_for_delete = this.clone();
+            dialog
+                .title("Delete Environment")
+                .child(format!(
+                    "Delete “{name}”? Requests using its variables will stop resolving."
+                ))
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            Button::new("delete-environment-confirm")
+                                .label("Delete")
+                                .danger()
+                                .on_click(move |_, window, cx| {
+                                    this_for_delete.update(cx, |view, cx| {
+                                        view.environments.update(cx, |environments, cx| {
+                                            environments.remove_environment(environment_id, cx);
+                                        });
+                                    });
+                                    close_dialog(window, cx);
+                                }),
+                        )
+                        .child(
+                            Button::new("delete-environment-cancel")
+                                .label("Cancel")
+                                .on_click(|_, window, cx| close_dialog(window, cx)),
+                        ),
+                )
+        });
+    }
+
+    pub fn show_rename_environment_dialog(
+        &mut self,
+        environment_id: Uuid,
+        current_name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Environment name")
+                .default_value(current_name)
+        });
+        let this = cx.entity().clone();
+        let input_for_footer = input.clone();
+        open_dialog(window, cx, move |dialog, _, _| {
+            let this_for_rename = this.clone();
+            let input_for_rename = input_for_footer.clone();
+            dialog
+                .title("Rename Environment")
+                .child(Input::new(&input))
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            Button::new("rename-environment-confirm")
+                                .label("Rename")
+                                .primary()
+                                .on_click(move |_, window, cx| {
+                                    let name = input_for_rename.read(cx).text().to_string();
+                                    this_for_rename.update(cx, |view, cx| {
+                                        view.environments.update(cx, |environments, cx| {
+                                            environments.rename_environment(
+                                                environment_id,
+                                                name,
+                                                cx,
+                                            );
+                                        });
+                                    });
+                                    close_dialog(window, cx);
+                                }),
+                        )
+                        .child(
+                            Button::new("rename-environment-cancel")
+                                .label("Cancel")
+                                .on_click(|_, window, cx| close_dialog(window, cx)),
+                        ),
+                )
+        });
+    }
+
     /// Delete a collection
     pub fn delete_collection(&mut self, collection_id: Uuid, cx: &mut Context<Self>) {
         self.collections.update(cx, |collections, cx| {
             collections.remove_collection(collection_id, cx);
         });
+        self.environments.update(cx, |environments, cx| {
+            environments.remove_project_environments(collection_id, cx);
+        });
+        for tab in &mut self.tabs {
+            if tab.collection_id == Some(collection_id) {
+                tab.collection_id = None;
+            }
+        }
     }
 
     /// Delete an item from a collection
@@ -778,6 +1274,10 @@ impl MainView {
                 cx,
             );
         });
+        if let Some(tab) = self.tabs.get_mut(self.active_tab_index) {
+            tab.collection_id = Some(destination.collection_id);
+        }
+        cx.notify();
     }
 
     fn build_active_request_snapshot(&mut self, cx: &mut Context<Self>) -> Option<RequestData> {
@@ -926,7 +1426,11 @@ impl MainView {
         let request = cx.new(|_| RequestEntity::new());
         let response = cx.new(|_| ResponseEntity::new());
         let method_dropdown = cx.new(|_| MethodDropdownState::new(HttpMethod::Get));
-        let request_view = cx.new(|cx| RequestView::new(request.clone(), BodyType::None, cx));
+        let completion_engine = self.completion_engine.clone();
+        let request_view = cx.new(|cx| {
+            RequestView::new(request.clone(), BodyType::None, cx)
+                .with_completion_engine(completion_engine)
+        });
         let response_view = cx.new(|cx| ResponseView::new(response.clone(), cx));
 
         let tab_id = TabId(self.next_tab_id);
@@ -944,6 +1448,7 @@ impl MainView {
             response_view,
             in_flight_request: None,
             request_generation: RequestGeneration::default(),
+            collection_id: None,
         };
 
         self.tabs.push(tab);
@@ -1552,7 +2057,7 @@ impl MainView {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("Select collection file to import".into()),
+            prompt: Some("Select a Postman collection or environment".into()),
         };
         let paths_receiver = cx.prompt_for_paths(options);
 
@@ -1579,21 +2084,94 @@ impl MainView {
                 return;
             };
 
-            let result = ImportRegistry::default().import_file(&path);
+            let result = ImportRegistry::default().import_any_file(&path);
             let _ = cx.update(|window, app| match result {
                 Ok(result) => {
-                    let summary = ImportSummary {
-                        provider: result.provider,
-                        collection_name: result.collection.name.clone(),
-                        folder_count: result.collection.folder_count(),
-                        request_count: result.collection.request_count(),
-                        warnings: result.warnings.clone(),
-                    };
-
                     this.update(app, |view, cx| {
-                        view.collections.update(cx, |collections, cx| {
-                            collections.import_collection(result.collection, cx);
-                        });
+                        let summary = match result.payload {
+                            ImportedPayload::Collection(collection) => {
+                                let name = collection.name.clone();
+                                let folder_count = collection.folder_count();
+                                let request_count = collection.request_count();
+                                let variables = collection.variables.clone();
+                                let variable_count = variables.len();
+
+                                let workspace_id = view.workspaces.update(cx, |workspaces, cx| {
+                                    workspaces.create_workspace(name.clone(), cx)
+                                });
+                                view.switch_workspace(workspace_id, cx);
+
+                                let collection_id =
+                                    view.collections.update(cx, |collections, cx| {
+                                        collections.import_collection(collection, cx)
+                                    });
+                                if !variables.is_empty() {
+                                    view.environments.update(cx, |environments, cx| {
+                                        environments.import_environment(
+                                            format!("{name} Variables"),
+                                            EnvironmentScope::Project(collection_id),
+                                            variables
+                                                .into_iter()
+                                                .map(|variable| EnvironmentVariable {
+                                                    key: variable.key,
+                                                    value: variable.value,
+                                                    enabled: variable.enabled,
+                                                    secret: variable.secret,
+                                                    ..EnvironmentVariable::default()
+                                                })
+                                                .collect(),
+                                            cx,
+                                        );
+                                    });
+                                }
+                                ImportSummary {
+                                    provider: result.provider,
+                                    item_kind: "Workspace",
+                                    item_name: name,
+                                    folder_count: Some(folder_count),
+                                    request_count: Some(request_count),
+                                    variable_count,
+                                    warnings: result.warnings,
+                                }
+                            }
+                            ImportedPayload::Environment(environment) => {
+                                let name = environment.name.clone();
+                                let variable_count = environment.variables.len();
+                                let environment_id =
+                                    view.environments.update(cx, |environments, cx| {
+                                        environments.import_environment(
+                                            name.clone(),
+                                            EnvironmentScope::Workspace,
+                                            environment
+                                                .variables
+                                                .into_iter()
+                                                .map(|variable| EnvironmentVariable {
+                                                    key: variable.key,
+                                                    value: variable.value,
+                                                    enabled: variable.enabled,
+                                                    secret: variable.secret,
+                                                    ..EnvironmentVariable::default()
+                                                })
+                                                .collect(),
+                                            cx,
+                                        )
+                                    });
+                                view.environment_panel.update(cx, |panel, cx| {
+                                    panel.select_environment(environment_id, cx);
+                                });
+                                view.sidebar_visible = true;
+                                view.sidebar_tab = SidebarTab::Environments;
+                                ImportSummary {
+                                    provider: result.provider,
+                                    item_kind: "Environment",
+                                    item_name: name,
+                                    folder_count: None,
+                                    request_count: None,
+                                    variable_count,
+                                    warnings: result.warnings,
+                                }
+                            }
+                        };
                         view.show_import_summary_dialog(summary, window, cx);
                     });
                 }
@@ -1628,9 +2206,14 @@ impl MainView {
                     v_flex()
                         .gap_3()
                         .child(format!("Provider: {}", summary.provider))
-                        .child(format!("Collection: {}", summary.collection_name))
-                        .child(format!("Folders imported: {}", summary.folder_count))
-                        .child(format!("Requests imported: {}", summary.request_count))
+                        .child(format!("{}: {}", summary.item_kind, summary.item_name))
+                        .when_some(summary.folder_count, |element, count| {
+                            element.child(format!("Folders imported: {count}"))
+                        })
+                        .when_some(summary.request_count, |element, count| {
+                            element.child(format!("Requests imported: {count}"))
+                        })
+                        .child(format!("Variables imported: {}", summary.variable_count))
                         .child(format!("Warnings: {}", warning_count))
                         .child(if warnings.is_empty() {
                             div()
@@ -1711,6 +2294,7 @@ impl MainView {
         let response_entity = tab.response.clone();
         let request_view = tab.request_view.clone();
         let tab_name = tab.name.clone();
+        let collection_id = tab.collection_id;
 
         // Toggle behavior: send when idle, cancel when already sending.
         if request_entity.read(cx).is_sending() {
@@ -1753,23 +2337,43 @@ impl MainView {
             base_url
         };
 
-        // Mark as sending
-        request_entity.update(cx, |req, cx| {
-            req.set_sending(true, cx);
+        // Get request params, then resolve templates only for the outgoing request.
+        // Stored requests and history retain {{variables}} so secrets are not copied there.
+        let (method, template_headers, template_body) = {
+            let request = request_entity.read(cx);
+            (
+                request.method(),
+                request.headers().to_vec(),
+                request.body().clone(),
+            )
+        };
+        let resolved = self.environments.read(cx).resolve_request(
+            collection_id,
+            &url,
+            &template_headers,
+            &template_body,
+        );
+        let resolved = match resolved {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                response_entity.update(cx, |response, cx| {
+                    response.set_error(error.user_message(), cx);
+                });
+                return;
+            }
+        };
+        let resolved_url = resolved.url;
+        let resolved_headers = resolved.headers;
+        let resolved_body = resolved.body;
+        request_entity.update(cx, |request, cx| {
+            request.set_sending(true, cx);
         });
-
-        response_entity.update(cx, |resp, cx| {
-            resp.set_loading(cx);
+        response_entity.update(cx, |response, cx| {
+            response.set_loading(cx);
         });
-
-        // Get request params (clone what we need before async)
-        let request = request_entity.read(cx);
-        let method = request.method();
-        let headers: Vec<Header> = request.headers().to_vec();
-        let body: RequestBody = request.body().clone();
 
         let started_at = std::time::Instant::now();
-        log::info!("Sending {} request to {}", method.as_str(), url);
+        log::info!("Sending {} request", method.as_str());
 
         // Create request data for history before sending
         let history_request_data = RequestData {
@@ -1777,8 +2381,8 @@ impl MainView {
             name: tab_name,
             url: url.clone(),
             method,
-            headers: headers.clone(),
-            body: body.clone(),
+            headers: template_headers,
+            body: template_body,
             is_sending: false,
         };
 
@@ -1786,7 +2390,8 @@ impl MainView {
 
         // Spawn HTTP request on Tokio runtime and keep a cancel handle on the tab.
         let (result_rx, in_flight_request) =
-            self.http_client.spawn_request(method, url, headers, body);
+            self.http_client
+                .spawn_request(method, resolved_url, resolved_headers, resolved_body);
         let generation = if let Some(tab) = self.tabs.get_mut(tab_index) {
             let generation = tab.request_generation.advance();
             tab.in_flight_request = Some(in_flight_request);
@@ -2053,6 +2658,7 @@ impl MainView {
             let old_url_input = current_tab.url_input.clone();
             let old_name = current_tab.name.clone();
             let old_request_view = current_tab.request_view.clone();
+            let old_collection_id = current_tab.collection_id;
 
             let old_body_type = old_request_view.read(cx).get_body_type();
             let old_method = old_request.read(cx).method();
@@ -2101,10 +2707,15 @@ impl MainView {
             let new_method_dropdown = cx.new(|_| MethodDropdownState::new(old_method));
 
             let new_url_input = if old_url_input.is_some() {
+                let completion_engine = self.completion_engine.clone();
                 let input = cx.new(|cx| {
-                    InputState::new(window, cx)
-                        .placeholder("Enter request URL...")
-                        .default_value(&duplicated_url)
+                    configure_completion(
+                        InputState::new(window, cx)
+                            .placeholder("Enter request URL...")
+                            .default_value(&duplicated_url),
+                        Some(&completion_engine),
+                        CompletionContext::Url,
+                    )
                 });
                 let tab_id = TabId(self.next_tab_id);
                 Self::subscribe_url_input(&input, tab_id, window, cx);
@@ -2113,8 +2724,10 @@ impl MainView {
                 None
             };
 
+            let completion_engine = self.completion_engine.clone();
             let new_request_view = cx.new(|cx| {
                 RequestView::new(new_request.clone(), old_body_type, cx)
+                    .with_completion_engine(completion_engine)
                     .with_initial_body_content(body_content)
                     .with_initial_form_data(form_data)
                     .with_initial_multipart_data(multipart_data)
@@ -2136,6 +2749,7 @@ impl MainView {
                 response_view: new_response_view,
                 in_flight_request: None,
                 request_generation: RequestGeneration::default(),
+                collection_id: old_collection_id,
             };
 
             self.tabs.push(new_tab);
@@ -2199,6 +2813,8 @@ impl Focusable for MainView {
 
 impl Render for MainView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.completion_engine
+            .set_collection_id(self.active_tab().and_then(|tab| tab.collection_id));
         if let Some(cmd_id) = self.pending_window_command.take() {
             match cmd_id {
                 CommandId::DuplicateRequest => self.duplicate_request(window, cx),
@@ -2214,7 +2830,7 @@ impl Render for MainView {
         // Ensure sidebar search inputs are initialized
         self.ensure_sidebar_inputs(window, cx);
 
-        let theme = cx.theme();
+        let theme = cx.theme().clone();
         let viewport_width = window.viewport_size().width;
         let show_sidebar_rail = self.sidebar_visible && viewport_width < px(960.0);
         let show_full_sidebar = self.sidebar_visible && !show_sidebar_rail;
@@ -2267,6 +2883,34 @@ impl Render for MainView {
 
         let this = cx.entity().clone();
         let this_for_send = this.clone();
+        let active_collection_id = self.active_tab().and_then(|tab| tab.collection_id);
+        let this_for_new_environment = this.clone();
+        let this_for_import_environment = this.clone();
+        let this_for_delete_environment = this.clone();
+        let this_for_rename_environment = this.clone();
+        self.environment_panel.update(cx, |panel, cx| {
+            panel.set_collection_context(active_collection_id, cx);
+            panel.on_new_environment(move |project_id, window, cx| {
+                this_for_new_environment.update(cx, |view, cx| {
+                    view.show_new_environment_dialog(project_id, window, cx);
+                });
+            });
+            panel.on_import_environment(move |window, cx| {
+                this_for_import_environment.update(cx, |view, cx| {
+                    view.import_collection_from_file(window, cx);
+                });
+            });
+            panel.on_delete_environment(move |environment_id, window, cx| {
+                this_for_delete_environment.update(cx, |view, cx| {
+                    view.show_delete_environment_dialog(environment_id, window, cx);
+                });
+            });
+            panel.on_rename_environment(move |environment_id, name, window, cx| {
+                this_for_rename_environment.update(cx, |view, cx| {
+                    view.show_rename_environment_dialog(environment_id, name, window, cx);
+                });
+            });
+        });
 
         div()
             .id("main-view")
@@ -2407,8 +3051,10 @@ impl Render for MainView {
             .when(show_sidebar_rail, |el| {
                 let history_active = self.sidebar_tab == SidebarTab::History;
                 let collections_active = self.sidebar_tab == SidebarTab::Collections;
+                let environments_active = self.sidebar_tab == SidebarTab::Environments;
                 let this_for_history = this.clone();
                 let this_for_collections = this.clone();
+                let this_for_environments = this.clone();
                 el.child(
                     div()
                         .w(px(44.0))
@@ -2446,6 +3092,19 @@ impl Render for MainView {
                                         view.set_sidebar_tab(SidebarTab::Collections, cx);
                                     });
                                 }),
+                        )
+                        .child(
+                            Button::new("rail-environments")
+                                .icon(Icon::new(IconName::Package).size(px(15.0)))
+                                .ghost()
+                                .xsmall()
+                                .selected(environments_active)
+                                .tooltip("Environments")
+                                .on_click(move |_, _, cx| {
+                                    this_for_environments.update(cx, |view, cx| {
+                                        view.set_sidebar_tab(SidebarTab::Environments, cx);
+                                    });
+                                }),
                         ),
                 )
             })
@@ -2453,6 +3112,7 @@ impl Render for MainView {
             .when(show_full_sidebar, |el| {
                 let history = self.history.clone();
                 let collections = self.collections.clone();
+                let environment_panel = self.environment_panel.clone();
                 let history_search = self
                     .history_search
                     .clone()
@@ -2462,6 +3122,11 @@ impl Render for MainView {
                     .clone()
                     .expect("collections_search should be initialized");
                 let sidebar_tab = self.sidebar_tab;
+                let sidebar_render_width = if sidebar_tab == SidebarTab::Environments {
+                    self.sidebar_width.max(340.0)
+                } else {
+                    self.sidebar_width
+                };
                 let history_filter = self.history_filter;
                 let history_group_by = self.history_group_by;
 
@@ -2486,13 +3151,14 @@ impl Render for MainView {
 
                 el.child(
                     div()
-                        .w(px(self.sidebar_width))
+                        .w(px(sidebar_render_width))
                         .h_full()
                         .flex_shrink_0()
                         .child(
                             AppSidebar::new(
                                 history,
                                 collections,
+                                environment_panel,
                                 history_search,
                                 collections_search,
                                 self.history_rows.clone(),
@@ -2682,7 +3348,7 @@ impl Render for MainView {
                     .h_full()
                     .overflow_hidden()
                     // Compact application toolbar
-                    .child(self.render_header(&theme, this.clone()))
+                    .child(self.render_header(&theme, this.clone(), cx))
                     // Tab bar - pass this entity directly with scroll handle
                     .child(TabBar::new(
                         tab_infos,
@@ -2974,6 +3640,7 @@ impl MainView {
         &self,
         theme: &gpui_component::theme::ThemeColor,
         this: Entity<MainView>,
+        cx: &App,
     ) -> impl IntoElement {
         let layout_icon = match self.request_response_layout {
             RequestResponseLayout::Stacked => IconName::LayoutSplit,
@@ -2981,7 +3648,55 @@ impl MainView {
         };
         let this_for_sidebar = this.clone();
         let this_for_commands = this.clone();
-        let this_for_layout = this;
+        let this_for_layout = this.clone();
+        let this_for_manage_environments = this.clone();
+        let this_for_workspace_menu = this;
+        let (active_workspace_id, active_workspace_name, workspace_options) = {
+            let workspaces = self.workspaces.read(cx);
+            (
+                workspaces.active_workspace_id(),
+                workspaces.active_workspace().name.clone(),
+                workspaces.workspaces().to_vec(),
+            )
+        };
+        let collection_id = self.active_tab().and_then(|tab| tab.collection_id);
+        let (active_id, active_name, active_color, environment_options) = {
+            let environments = self.environments.read(cx);
+            let active_id = environments.active_environment_id(collection_id);
+            let active = environments.active_environment(collection_id);
+            let active_name = active
+                .map(|environment| environment.name.clone())
+                .unwrap_or_else(|| "No environment".to_string());
+            let active_color = active
+                .map(|environment| environment.color.clone())
+                .unwrap_or(EnvironmentColor::Slate);
+            let environment_options: Vec<_> = environments
+                .available_for(collection_id)
+                .into_iter()
+                .map(|environment| {
+                    let scope = match environment.scope {
+                        EnvironmentScope::Global => "Global".to_string(),
+                        EnvironmentScope::Workspace => "Workspace".to_string(),
+                        EnvironmentScope::Project(project_id) => self
+                            .collections
+                            .read(cx)
+                            .collections
+                            .iter()
+                            .find(|collection| collection.id == project_id)
+                            .map(|collection| collection.name.clone())
+                            .unwrap_or_else(|| "Project".to_string()),
+                    };
+                    (
+                        environment.id,
+                        environment.name.clone(),
+                        scope,
+                        environment.color.clone(),
+                    )
+                })
+                .collect();
+            (active_id, active_name, active_color, environment_options)
+        };
+        let environments_for_menu = self.environments.clone();
 
         div()
             .flex()
@@ -3019,6 +3734,75 @@ impl MainView {
                             .text_size(px(15.0))
                             .child("setu"),
                     )
+                    .child(div().w(px(1.0)).h(px(18.0)).bg(theme.border))
+                    .child(
+                        Button::new("toolbar-workspace")
+                            .icon(Icon::new(IconName::Box).size(px(14.0)))
+                            .label(active_workspace_name.clone())
+                            .ghost()
+                            .xsmall()
+                            .tooltip("Switch workspace")
+                            .dropdown_menu(move |mut menu, _window, _cx| {
+                                menu = menu.label("Workspace");
+                                for workspace in &workspace_options {
+                                    let workspace_id = workspace.id;
+                                    let this_for_switch = this_for_workspace_menu.clone();
+                                    let mut item = PopupMenuItem::new(workspace.name.clone());
+                                    if workspace_id == active_workspace_id {
+                                        item = item.icon(IconName::Check);
+                                    }
+                                    menu = menu.item(item.on_click(move |_, _, cx| {
+                                        this_for_switch.update(cx, |view, cx| {
+                                            view.switch_workspace(workspace_id, cx);
+                                        });
+                                    }));
+                                }
+
+                                let this_for_new = this_for_workspace_menu.clone();
+                                let this_for_rename = this_for_workspace_menu.clone();
+                                let this_for_delete = this_for_workspace_menu.clone();
+                                let active_name = active_workspace_name.clone();
+                                let mut menu = menu.separator().item(
+                                    PopupMenuItem::new("New workspace")
+                                        .icon(IconName::Plus)
+                                        .on_click(move |_, window, cx| {
+                                            this_for_new.update(cx, |view, cx| {
+                                                view.show_new_workspace_dialog(window, cx);
+                                            });
+                                        }),
+                                );
+                                menu = menu.item(
+                                    PopupMenuItem::new("Rename workspace")
+                                        .icon(IconName::FilePen)
+                                        .on_click(move |_, window, cx| {
+                                            this_for_rename.update(cx, |view, cx| {
+                                                view.show_rename_workspace_dialog(
+                                                    active_workspace_id,
+                                                    active_name.clone(),
+                                                    window,
+                                                    cx,
+                                                );
+                                            });
+                                        }),
+                                );
+                                if workspace_options.len() > 1 {
+                                    menu = menu.item(
+                                        PopupMenuItem::new("Delete workspace")
+                                            .icon(IconName::Trash)
+                                            .on_click(move |_, window, cx| {
+                                                this_for_delete.update(cx, |view, cx| {
+                                                    view.show_delete_workspace_dialog(
+                                                        active_workspace_id,
+                                                        window,
+                                                        cx,
+                                                    );
+                                                });
+                                            }),
+                                    );
+                                }
+                                menu
+                            }),
+                    )
                     .child(ProtocolSelector::new(ProtocolType::Rest)),
             )
             .child(
@@ -3026,6 +3810,52 @@ impl MainView {
                     .flex()
                     .items_center()
                     .gap(px(4.0))
+                    .child(
+                        Button::new("toolbar-environment")
+                            .icon(
+                                Icon::new(IconName::Package)
+                                    .size(px(14.0))
+                                    .text_color(active_color.accent()),
+                            )
+                            .label(active_name)
+                            .ghost()
+                            .xsmall()
+                            .tooltip("Active environment")
+                            .dropdown_menu(move |mut menu, _window, _cx| {
+                                menu = menu.label("Environment");
+                                for (id, name, scope, _color) in &environment_options {
+                                    let environment_id = *id;
+                                    let environments = environments_for_menu.clone();
+                                    let mut item = PopupMenuItem::new(format!("{name} · {scope}"));
+                                    if Some(environment_id) == active_id {
+                                        item = item.icon(IconName::Check);
+                                    }
+                                    menu = menu.item(item.on_click(move |_, _, cx| {
+                                        environments.update(cx, |environments, cx| {
+                                            environments.set_active(
+                                                collection_id,
+                                                Some(environment_id),
+                                                cx,
+                                            );
+                                        });
+                                    }));
+                                }
+                                let this_for_manage = this_for_manage_environments.clone();
+                                menu.separator().item(
+                                    PopupMenuItem::new("Manage environments")
+                                        .icon(IconName::Package)
+                                        .on_click(move |_, _, cx| {
+                                            this_for_manage.update(cx, |view, cx| {
+                                                view.sidebar_visible = true;
+                                                view.ui_preferences.sidebar_visible = true;
+                                                view.persist_ui_preferences();
+                                                view.set_sidebar_tab(SidebarTab::Environments, cx);
+                                            });
+                                        }),
+                                )
+                            }),
+                    )
+                    .child(div().w(px(1.0)).h(px(18.0)).bg(theme.border))
                     .child(
                         Button::new("toolbar-command-search")
                             .icon(Icon::new(IconName::Search).size(px(14.0)))

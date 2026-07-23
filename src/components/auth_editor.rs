@@ -10,6 +10,10 @@ use gpui_component::select::{Select, SelectEvent, SelectItem, SelectState};
 
 use gpui_component::ActiveTheme;
 
+use crate::completion::{
+    CompletionContext, CompletionEngine, CompletionInput, configure_completion,
+};
+
 /// Authentication type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AuthType {
@@ -213,10 +217,15 @@ pub struct AuthEditor {
     api_key_location_select: Entity<SelectState<Vec<ApiKeyLocation>>>,
 
     focus_handle: FocusHandle,
+    completion_engine: Option<CompletionEngine>,
 }
 
 impl AuthEditor {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        window: &mut Window,
+        completion_engine: Option<CompletionEngine>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         // Create auth type select state
         let auth_type_items: Vec<AuthType> = AuthType::all().to_vec();
         let auth_type_select = cx.new(|cx| {
@@ -274,22 +283,53 @@ impl AuthEditor {
             api_key_location: ApiKeyLocation::Header,
             api_key_location_select,
             focus_handle: cx.focus_handle(),
+            completion_engine,
         }
     }
 
     /// Initialize inputs lazily
     fn ensure_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.username_input.is_none() {
-            self.username_input =
-                Some(cx.new(|cx| InputState::new(window, cx).placeholder("Username")));
-            self.password_input =
-                Some(cx.new(|cx| InputState::new(window, cx).placeholder("Password")));
-            self.token_input =
-                Some(cx.new(|cx| InputState::new(window, cx).placeholder("Bearer token")));
-            self.api_key_name_input =
-                Some(cx.new(|cx| InputState::new(window, cx).placeholder("Key name")));
-            self.api_key_value_input =
-                Some(cx.new(|cx| InputState::new(window, cx).placeholder("Key value")));
+            let completion_engine = self.completion_engine.clone();
+            self.username_input = Some(cx.new(|cx| {
+                configure_completion(
+                    InputState::new(window, cx).placeholder("Username"),
+                    completion_engine.as_ref(),
+                    CompletionContext::Auth,
+                )
+            }));
+            let completion_engine = self.completion_engine.clone();
+            self.password_input = Some(cx.new(|cx| {
+                configure_completion(
+                    InputState::new(window, cx).placeholder("Password"),
+                    completion_engine.as_ref(),
+                    CompletionContext::Auth,
+                )
+            }));
+            let completion_engine = self.completion_engine.clone();
+            self.token_input = Some(cx.new(|cx| {
+                configure_completion(
+                    InputState::new(window, cx).placeholder("Bearer token"),
+                    completion_engine.as_ref(),
+                    CompletionContext::Auth,
+                )
+            }));
+            let completion_engine = self.completion_engine.clone();
+            self.api_key_name_input = Some(cx.new(|cx| {
+                configure_completion(
+                    InputState::new(window, cx).placeholder("Key name"),
+                    completion_engine.as_ref(),
+                    CompletionContext::Auth,
+                )
+            }));
+            let completion_engine = self.completion_engine.clone();
+            self.api_key_value_input = Some(cx.new(|cx| {
+                configure_completion(
+                    InputState::new(window, cx).placeholder("Key value"),
+                    completion_engine.as_ref(),
+                    CompletionContext::Auth,
+                )
+            }));
         }
     }
 
@@ -451,7 +491,10 @@ impl AuthEditor {
                                 .rounded(px(6.0))
                                 .border_1()
                                 .border_color(theme.border)
-                                .child(Input::new(input).appearance(false).small()),
+                                .child(CompletionInput::new(
+                                    input,
+                                    Input::new(input).appearance(false).small(),
+                                )),
                         )
                     }),
             )
@@ -475,7 +518,10 @@ impl AuthEditor {
                                 .rounded(px(6.0))
                                 .border_1()
                                 .border_color(theme.border)
-                                .child(Input::new(input).appearance(false).small()),
+                                .child(CompletionInput::new(
+                                    input,
+                                    Input::new(input).appearance(false).small(),
+                                )),
                         )
                     }),
             )
@@ -500,7 +546,10 @@ impl AuthEditor {
                         .rounded(px(6.0))
                         .border_1()
                         .border_color(theme.border)
-                        .child(Input::new(input).appearance(false).small()),
+                        .child(CompletionInput::new(
+                            input,
+                            Input::new(input).appearance(false).small(),
+                        )),
                 )
             })
     }
@@ -549,7 +598,10 @@ impl AuthEditor {
                                 .rounded(px(6.0))
                                 .border_1()
                                 .border_color(theme.border)
-                                .child(Input::new(input).appearance(false).small()),
+                                .child(CompletionInput::new(
+                                    input,
+                                    Input::new(input).appearance(false).small(),
+                                )),
                         )
                     }),
             )
@@ -573,7 +625,10 @@ impl AuthEditor {
                                 .rounded(px(6.0))
                                 .border_1()
                                 .border_color(theme.border)
-                                .child(Input::new(input).appearance(false).small()),
+                                .child(CompletionInput::new(
+                                    input,
+                                    Input::new(input).appearance(false).small(),
+                                )),
                         )
                     }),
             )

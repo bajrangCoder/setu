@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use gpui::{Context, EventEmitter};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,9 +9,16 @@ use uuid::Uuid;
 
 use crate::utils::{DebouncedJsonWriter, shared_tokio_runtime};
 
-use super::{HttpMethod, RequestData, ResponseData, SidebarLoadState};
+use super::{HttpMethod, RequestData, ResponseData, SidebarLoadState, default_workspace_id};
 
+const HISTORY_STORAGE_VERSION: u32 = 2;
 const SAVE_DEBOUNCE: Duration = Duration::from_secs(1);
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct HistoryStore {
+    version: u32,
+    workspaces: HashMap<Uuid, Vec<HistoryEntry>>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryEntry {
@@ -265,18 +272,26 @@ pub struct HistoryEntity {
     pub entries: Arc<Vec<Arc<HistoryEntry>>>,
     pub load_state: SidebarLoadState,
     pub max_entries: usize,
-    persistor: Option<DebouncedJsonWriter<Arc<Vec<Arc<HistoryEntry>>>>>,
+    active_workspace_id: Uuid,
+    workspace_entries: HashMap<Uuid, Arc<Vec<Arc<HistoryEntry>>>>,
+    persistor: Option<DebouncedJsonWriter<HistoryStore>>,
     collapsed_groups: Arc<HashSet<TimeGroup>>,
     collapsed_url_groups: Arc<HashSet<String>>,
 }
 
 impl HistoryEntity {
     pub fn new() -> Self {
+        Self::new_for_workspace(default_workspace_id())
+    }
+
+    pub fn new_for_workspace(active_workspace_id: Uuid) -> Self {
         let storage_path = Self::get_storage_path();
         let entity = Self {
             entries: Arc::new(Vec::new()),
             load_state: SidebarLoadState::Loading,
             max_entries: 5_000,
+            active_workspace_id,
+            workspace_entries: HashMap::new(),
             persistor: storage_path
                 .clone()
                 .map(|path| DebouncedJsonWriter::new("history", path, SAVE_DEBOUNCE)),
@@ -296,28 +311,21 @@ impl HistoryEntity {
     }
 
     pub fn spawn_storage_load()
-    -> tokio::sync::oneshot::Receiver<Result<(Vec<HistoryEntry>, bool), String>> {
+    -> tokio::sync::oneshot::Receiver<Result<(HashMap<Uuid, Vec<HistoryEntry>>, bool), String>>
+    {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let path = Self::get_storage_path();
         shared_tokio_runtime().spawn(async move {
             let result = async {
                 let Some(path) = path else {
-                    return Ok((Vec::new(), false));
+                    return Ok((HashMap::new(), false));
                 };
                 match tokio::fs::read_to_string(&path).await {
                     Ok(contents) => {
-                        let mut entries = serde_json::from_str::<Vec<HistoryEntry>>(&contents)
-                            .map_err(|error| error.to_string())?;
-                        let mut compacted = false;
-                        for entry in &mut entries {
-                            if let Some(response) = entry.response.as_mut() {
-                                compacted |= response.compact_storage();
-                            }
-                        }
-                        Ok((entries, compacted))
+                        deserialize_history_store(&contents).map_err(|error| error.to_string())
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        Ok((Vec::new(), false))
+                        Ok((HashMap::new(), false))
                     }
                     Err(error) => Err(error.to_string()),
                 }
@@ -330,14 +338,30 @@ impl HistoryEntity {
 
     pub fn apply_storage_load(
         &mut self,
-        result: Result<(Vec<HistoryEntry>, bool), String>,
+        result: Result<(HashMap<Uuid, Vec<HistoryEntry>>, bool), String>,
         cx: &mut Context<Self>,
     ) {
         match result {
-            Ok((entries, compacted)) => {
-                self.entries = Arc::new(entries.into_iter().map(Arc::new).collect());
+            Ok((mut workspaces, migrated)) => {
+                self.entries = Arc::new(
+                    workspaces
+                        .remove(&self.active_workspace_id)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(Arc::new)
+                        .collect(),
+                );
+                self.workspace_entries = workspaces
+                    .into_iter()
+                    .map(|(workspace_id, entries)| {
+                        (
+                            workspace_id,
+                            Arc::new(entries.into_iter().map(Arc::new).collect()),
+                        )
+                    })
+                    .collect();
                 self.load_state = SidebarLoadState::Ready;
-                if compacted {
+                if migrated {
                     self.save_to_file();
                 }
                 cx.emit(HistoryEvent::Reloaded);
@@ -349,7 +373,50 @@ impl HistoryEntity {
 
     fn save_to_file(&self) {
         if let Some(persistor) = &self.persistor {
-            persistor.schedule_save(self.entries.clone());
+            let mut workspaces: HashMap<_, Vec<_>> = self
+                .workspace_entries
+                .iter()
+                .map(|(workspace_id, entries)| {
+                    (
+                        *workspace_id,
+                        entries.iter().map(|entry| (**entry).clone()).collect(),
+                    )
+                })
+                .collect();
+            workspaces.insert(
+                self.active_workspace_id,
+                self.entries.iter().map(|entry| (**entry).clone()).collect(),
+            );
+            persistor.schedule_save(HistoryStore {
+                version: HISTORY_STORAGE_VERSION,
+                workspaces,
+            });
+        }
+    }
+
+    pub fn set_active_workspace(&mut self, workspace_id: Uuid, cx: &mut Context<Self>) {
+        if workspace_id == self.active_workspace_id {
+            return;
+        }
+        let previous = std::mem::replace(&mut self.entries, Arc::new(Vec::new()));
+        self.workspace_entries
+            .insert(self.active_workspace_id, previous);
+        self.active_workspace_id = workspace_id;
+        self.entries = self
+            .workspace_entries
+            .remove(&workspace_id)
+            .unwrap_or_else(|| Arc::new(Vec::new()));
+        self.collapsed_groups = Arc::new(HashSet::new());
+        self.collapsed_url_groups = Arc::new(HashSet::new());
+        self.save_to_file();
+        cx.emit(HistoryEvent::Reloaded);
+        cx.notify();
+    }
+
+    pub fn remove_workspace(&mut self, workspace_id: Uuid) {
+        if workspace_id != self.active_workspace_id {
+            self.workspace_entries.remove(&workspace_id);
+            self.save_to_file();
         }
     }
 
@@ -501,6 +568,32 @@ impl HistoryEntity {
     }
 }
 
+fn deserialize_history_store(
+    contents: &str,
+) -> Result<(HashMap<Uuid, Vec<HistoryEntry>>, bool), serde_json::Error> {
+    let (mut workspaces, mut migrated) =
+        if let Ok(store) = serde_json::from_str::<HistoryStore>(contents) {
+            if store.version == HISTORY_STORAGE_VERSION {
+                (store.workspaces, false)
+            } else {
+                (HashMap::new(), true)
+            }
+        } else {
+            let entries = serde_json::from_str::<Vec<HistoryEntry>>(contents)?;
+            (HashMap::from([(default_workspace_id(), entries)]), true)
+        };
+
+    for entries in workspaces.values_mut() {
+        for entry in entries {
+            if let Some(response) = entry.response.as_mut() {
+                migrated |= response.compact_storage();
+            }
+        }
+    }
+
+    Ok((workspaces, migrated))
+}
+
 impl Default for HistoryEntity {
     fn default() -> Self {
         Self::new()
@@ -572,6 +665,8 @@ mod tests {
             ]),
             max_entries: 500,
             load_state: SidebarLoadState::Ready,
+            active_workspace_id: default_workspace_id(),
+            workspace_entries: HashMap::new(),
             persistor: None,
             collapsed_groups: Arc::new(HashSet::new()),
             collapsed_url_groups: Arc::new(HashSet::new()),
@@ -604,6 +699,8 @@ mod tests {
             ]),
             max_entries: 500,
             load_state: SidebarLoadState::Ready,
+            active_workspace_id: default_workspace_id(),
+            workspace_entries: HashMap::new(),
             persistor: None,
             collapsed_groups: Arc::new(HashSet::new()),
             collapsed_url_groups: Arc::new(HashSet::new()),
@@ -635,6 +732,8 @@ mod tests {
             ]),
             load_state: SidebarLoadState::Ready,
             max_entries: 5_000,
+            active_workspace_id: default_workspace_id(),
+            workspace_entries: HashMap::new(),
             persistor: None,
             collapsed_groups: Arc::new(HashSet::new()),
             collapsed_url_groups: Arc::new(HashSet::new()),
@@ -655,6 +754,8 @@ mod tests {
             ))]),
             load_state: SidebarLoadState::Ready,
             max_entries: 5_000,
+            active_workspace_id: default_workspace_id(),
+            workspace_entries: HashMap::new(),
             persistor: None,
             collapsed_groups: Arc::new(HashSet::new()),
             collapsed_url_groups: Arc::new(HashSet::from(["api.example.com".to_string()])),

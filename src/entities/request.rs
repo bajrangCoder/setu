@@ -68,7 +68,7 @@ impl Header {
 }
 
 /// A multipart form field that can be either text or a file
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MultipartField {
     pub key: String,
     pub value: String,
@@ -99,7 +99,7 @@ impl MultipartField {
 }
 
 /// Request body content
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum RequestBody {
     #[default]
     None,
