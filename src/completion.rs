@@ -290,7 +290,7 @@ impl CompletionSource for EnvironmentCompletionSource {
         if !request.context.supports_templates() {
             return Vec::new();
         }
-        let Some((start, query)) = template_query(&request.text, request.cursor) else {
+        let Some((replace_range, query)) = template_query(&request.text, request.cursor) else {
             return Vec::new();
         };
         let normalized_query = query.to_ascii_lowercase();
@@ -320,7 +320,7 @@ impl CompletionSource for EnvironmentCompletionSource {
                     detail: Some("variable".to_string()),
                     documentation: Some(documentation),
                     insert_text: format!("{{{{{}}}}}", variable.key),
-                    replace_range: start..request.cursor,
+                    replace_range: replace_range.clone(),
                     kind: CompletionItemKind::VARIABLE,
                     filter_text: Some(query.clone()),
                 }
@@ -329,7 +329,7 @@ impl CompletionSource for EnvironmentCompletionSource {
     }
 }
 
-fn template_query(text: &str, cursor: usize) -> Option<(usize, String)> {
+fn template_query(text: &str, cursor: usize) -> Option<(Range<usize>, String)> {
     if cursor > text.len() || !text.is_char_boundary(cursor) {
         return None;
     }
@@ -339,7 +339,15 @@ fn template_query(text: &str, cursor: usize) -> Option<(usize, String)> {
     if query.contains("}}") || query.chars().any(char::is_whitespace) {
         return None;
     }
-    Some((start, query.to_string()))
+    // When editing an existing template (for example `{{v}}`), include its
+    // closing delimiter in the edit. Otherwise accepting `var` would replace
+    // only `{{v` with `{{var}}` and leave the old `}}` behind.
+    let end = if text[cursor..].starts_with("}}") {
+        cursor + 2
+    } else {
+        cursor
+    };
+    Some((start..end, query.to_string()))
 }
 
 #[cfg(test)]
@@ -350,7 +358,15 @@ mod tests {
     fn extracts_open_template_at_cursor() {
         assert_eq!(
             template_query("https://{{base_u", 16),
-            Some((8, "base_u".to_string()))
+            Some((8..16, "base_u".to_string()))
+        );
+    }
+
+    #[test]
+    fn replaces_existing_template_closing_delimiter() {
+        assert_eq!(
+            template_query("prefix {{v}} suffix", 10),
+            Some((7..12, "v".to_string()))
         );
     }
 
