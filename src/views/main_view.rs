@@ -35,6 +35,7 @@ use crate::entities::{
 use crate::http::{HttpClient, InFlightRequest};
 use crate::icons::IconName;
 use crate::importers::{ImportRegistry, ImportWarning};
+use crate::utils::{close_dialog, open_dialog};
 use crate::views::request_view::RequestView;
 use crate::views::response_view::ResponseView;
 use crate::views::{CommandId, CommandPaletteEvent, CommandPaletteView};
@@ -173,7 +174,8 @@ impl MainView {
             request_generation: RequestGeneration::default(),
         };
 
-        let command_palette = cx.new(|cx| CommandPaletteView::new(cx));
+        let focus_handle = cx.focus_handle();
+        let command_palette = cx.new(|cx| CommandPaletteView::new(focus_handle.clone(), cx));
         let history = cx.new(|_| HistoryEntity::new());
         let collections = cx.new(|_| CollectionsEntity::new());
         let history_load = HistoryEntity::spawn_storage_load();
@@ -246,7 +248,7 @@ impl MainView {
                 PreferredLayout::Stacked => RequestResponseLayout::Stacked,
                 PreferredLayout::SideBySide => RequestResponseLayout::SideBySide,
             },
-            focus_handle: cx.focus_handle(),
+            focus_handle,
             pending_window_command: None,
             ui_preferences,
             ui_preferences_store,
@@ -1014,7 +1016,7 @@ impl MainView {
             if let InputEvent::PressEnter { .. } = event {
                 let new_name = state.read(cx).text().to_string();
                 view.rename_tab(index, new_name, cx);
-                window.close_dialog(cx);
+                close_dialog(window, cx);
             }
         })
         .detach();
@@ -1023,7 +1025,7 @@ impl MainView {
         let input_for_footer = input.clone();
         let this_for_footer = this.clone();
 
-        window.open_dialog(cx, move |dialog, _, _| {
+        open_dialog(window, cx, move |dialog, _, _| {
             // Clone again before the inner move closure
             let input_for_buttons = input_for_footer.clone();
             let this_for_buttons = this_for_footer.clone();
@@ -1050,12 +1052,12 @@ impl MainView {
                                     this_click.update(cx, |view, cx| {
                                         view.rename_tab(index, new_name, cx);
                                     });
-                                    window.close_dialog(cx);
+                                    close_dialog(window, cx);
                                 }),
                         )
                         .child(Button::new("rename-cancel").label("Cancel").on_click(
                             |_, window, cx| {
-                                window.close_dialog(cx);
+                                close_dialog(window, cx);
                             },
                         ))
                 })
@@ -1106,7 +1108,7 @@ impl MainView {
             use gpui_component::input::InputEvent;
             if let InputEvent::PressEnter { .. } = event {
                 view.rename_collection_target(target, state.read(cx).text().to_string(), cx);
-                window.close_dialog(cx);
+                close_dialog(window, cx);
             }
         })
         .detach();
@@ -1114,7 +1116,7 @@ impl MainView {
         let input_for_footer = input.clone();
         let this_for_footer = this.clone();
 
-        window.open_dialog(cx, move |dialog, _, _| {
+        open_dialog(window, cx, move |dialog, _, _| {
             let input_for_buttons = input_for_footer.clone();
             let this_for_buttons = this_for_footer.clone();
 
@@ -1135,14 +1137,14 @@ impl MainView {
                                     this_click.update(cx, |view, cx| {
                                         view.rename_collection_target(target, new_name, cx);
                                     });
-                                    window.close_dialog(cx);
+                                    close_dialog(window, cx);
                                 }),
                         )
                         .child(
                             Button::new("rename-collection-target-cancel")
                                 .label("Cancel")
                                 .on_click(|_, window, cx| {
-                                    window.close_dialog(cx);
+                                    close_dialog(window, cx);
                                 }),
                         )
                 })
@@ -1204,7 +1206,7 @@ impl MainView {
                 if !name.is_empty() {
                     view.create_collection_folder(collection_id, parent_folder_id, &name, cx);
                 }
-                window.close_dialog(cx);
+                close_dialog(window, cx);
             }
         })
         .detach();
@@ -1212,7 +1214,7 @@ impl MainView {
         let input_for_footer = input.clone();
         let this_for_footer = this.clone();
 
-        window.open_dialog(cx, move |dialog, _, _| {
+        open_dialog(window, cx, move |dialog, _, _| {
             let input_for_buttons = input_for_footer.clone();
             let this_for_buttons = this_for_footer.clone();
 
@@ -1246,12 +1248,12 @@ impl MainView {
                                             );
                                         });
                                     }
-                                    window.close_dialog(cx);
+                                    close_dialog(window, cx);
                                 }),
                         )
                         .child(Button::new("new-folder-cancel").label("Cancel").on_click(
                             |_, window, cx| {
-                                window.close_dialog(cx);
+                                close_dialog(window, cx);
                             },
                         ))
                 })
@@ -1293,7 +1295,7 @@ impl MainView {
         });
         let this = cx.entity().clone();
 
-        window.open_dialog(cx, move |dialog, _, _| {
+        open_dialog(window, cx, move |dialog, _, _| {
             let select_for_footer = select_state.clone();
             let this_for_footer = this.clone();
 
@@ -1334,7 +1336,7 @@ impl MainView {
                                     });
 
                                     match result {
-                                        Ok(()) => window.close_dialog(cx),
+                                        Ok(()) => close_dialog(window, cx),
                                         Err(error) => window.push_notification(
                                             (
                                                 NotificationType::Error,
@@ -1347,7 +1349,7 @@ impl MainView {
                         )
                         .child(Button::new("move-node-cancel").label("Cancel").on_click(
                             |_, window, cx| {
-                                window.close_dialog(cx);
+                                close_dialog(window, cx);
                             },
                         ))
                 })
@@ -1380,7 +1382,7 @@ impl MainView {
             let this_for_footer = this.clone();
             let request_for_footer = request_data.clone();
 
-            window.open_dialog(cx, move |dialog, _, _| {
+            open_dialog(window, cx, move |dialog, _, _| {
                 let request_name_for_buttons = request_name_for_footer.clone();
                 let collection_name_for_buttons = collection_name_for_footer.clone();
                 let this_for_buttons = this_for_footer.clone();
@@ -1448,14 +1450,14 @@ impl MainView {
                                                 cx,
                                             );
                                         });
-                                        window.close_dialog(cx);
+                                        close_dialog(window, cx);
                                     }),
                             )
                             .child(
                                 Button::new("save-to-new-collection-cancel")
                                     .label("Cancel")
                                     .on_click(|_, window, cx| {
-                                        window.close_dialog(cx);
+                                        close_dialog(window, cx);
                                     }),
                             )
                     })
@@ -1476,7 +1478,7 @@ impl MainView {
         let this_for_footer = this.clone();
         let request_for_footer = request_data.clone();
 
-        window.open_dialog(cx, move |dialog, _, _| {
+        open_dialog(window, cx, move |dialog, _, _| {
             let request_name_for_buttons = request_name_for_footer.clone();
             let destination_for_buttons = destination_for_footer.clone();
             let this_for_buttons = this_for_footer.clone();
@@ -1530,14 +1532,14 @@ impl MainView {
                                             cx,
                                         );
                                     });
-                                    window.close_dialog(cx);
+                                    close_dialog(window, cx);
                                 }),
                         )
                         .child(
                             Button::new("save-to-collection-cancel")
                                 .label("Cancel")
                                 .on_click(|_, window, cx| {
-                                    window.close_dialog(cx);
+                                    close_dialog(window, cx);
                                 }),
                         )
                 })
@@ -1616,7 +1618,7 @@ impl MainView {
         cx: &mut Context<Self>,
     ) {
         let muted_foreground = cx.theme().muted_foreground;
-        window.open_dialog(cx, move |dialog, _, _| {
+        open_dialog(window, cx, move |dialog, _, _| {
             let warning_count = summary.warnings.len();
             let warnings = summary.warnings.clone();
 
@@ -1671,7 +1673,7 @@ impl MainView {
                             .primary()
                             .label("Close")
                             .on_click(|_, window, cx| {
-                                window.close_dialog(cx);
+                                close_dialog(window, cx);
                             }),
                     ),
                 )
@@ -1912,7 +1914,7 @@ impl MainView {
             self.command_palette.update(cx, |palette, cx| {
                 palette.close(cx);
             });
-            window.close_dialog(cx);
+            close_dialog(window, cx);
             return;
         }
 
@@ -1921,18 +1923,25 @@ impl MainView {
         });
         let palette = self.command_palette.clone();
         let palette_for_close = palette.clone();
+        let palette_for_focus = palette.clone();
+        let app_focus_for_close = self.focus_handle.clone();
         window.open_dialog(cx, move |dialog, _, _| {
             let palette_for_close = palette_for_close.clone();
+            let app_focus_for_close = app_focus_for_close.clone();
             dialog
                 .w(px(560.0))
                 .margin_top(px(48.0))
                 .p_0()
                 .overflow_hidden()
                 .close_button(false)
-                .on_close(move |_, _, cx| {
+                .on_close(move |_, window, cx| {
                     palette_for_close.update(cx, |palette, cx| palette.close(cx));
+                    app_focus_for_close.focus(window, cx);
                 })
                 .child(palette.clone())
+        });
+        palette_for_focus.update(cx, |palette, cx| {
+            palette.focus_input(window, cx);
         });
     }
 

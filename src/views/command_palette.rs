@@ -256,13 +256,14 @@ pub struct CommandPaletteView {
     filtered_indices: Vec<usize>,
     selected_index: usize,
     focus_handle: FocusHandle,
+    app_focus_handle: FocusHandle,
     input_state: Option<Entity<InputState>>,
     query: String,
     scroll_handle: ScrollHandle,
 }
 
 impl CommandPaletteView {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(app_focus_handle: FocusHandle, cx: &mut Context<Self>) -> Self {
         let commands = default_commands();
         let command_labels = commands
             .iter()
@@ -282,6 +283,7 @@ impl CommandPaletteView {
             filtered_indices,
             selected_index: 0,
             focus_handle: cx.focus_handle(),
+            app_focus_handle,
             input_state: None,
             query: String::new(),
             scroll_handle: ScrollHandle::new(),
@@ -293,14 +295,22 @@ impl CommandPaletteView {
             let input_state =
                 cx.new(|cx| InputState::new(window, cx).placeholder("Execute a command…"));
 
-            cx.subscribe_in(&input_state, window, |this, state, event, _window, cx| {
-                if matches!(event, InputEvent::Change) {
-                    this.query = state.read(cx).text().to_string();
-                    this.selected_index = 0;
-                    this.refresh_filtered_indices();
-                    cx.notify();
-                }
-            })
+            cx.subscribe_in(
+                &input_state,
+                window,
+                |this, state, event, window, cx| match event {
+                    InputEvent::Change => {
+                        this.query = state.read(cx).text().to_string();
+                        this.selected_index = 0;
+                        this.refresh_filtered_indices();
+                        cx.notify();
+                    }
+                    InputEvent::PressEnter { .. } => {
+                        this.execute_selected(window, cx);
+                    }
+                    _ => {}
+                },
+            )
             .detach();
 
             self.input_state = Some(input_state);
@@ -318,11 +328,16 @@ impl CommandPaletteView {
             if let Some(ref input) = self.input_state {
                 input.update(cx, |state, cx| {
                     state.set_value(String::new(), window, cx);
-                    state.focus(window, cx);
                 });
             }
         }
         cx.notify();
+    }
+
+    pub fn focus_input(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(input) = &self.input_state {
+            input.update(cx, |state, cx| state.focus(window, cx));
+        }
     }
 
     pub fn is_open(&self) -> bool {
@@ -332,6 +347,12 @@ impl CommandPaletteView {
     pub fn close(&mut self, cx: &mut Context<Self>) {
         self.is_open = false;
         cx.notify();
+    }
+
+    fn close_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.close(cx);
+        window.close_dialog(cx);
+        self.app_focus_handle.focus(window, cx);
     }
 
     fn refresh_filtered_indices(&mut self) {
@@ -384,7 +405,7 @@ impl CommandPaletteView {
             self.is_open = false;
             cx.emit(CommandPaletteEvent::ExecuteCommand(cmd_id));
             cx.notify();
-            window.close_dialog(cx);
+            self.close_dialog(window, cx);
         }
     }
 
@@ -397,7 +418,7 @@ impl CommandPaletteView {
         self.is_open = false;
         cx.emit(CommandPaletteEvent::ExecuteCommand(command_id));
         cx.notify();
-        window.close_dialog(cx);
+        self.close_dialog(window, cx);
     }
 }
 
@@ -439,8 +460,7 @@ impl Render for CommandPaletteView {
                 let key = event.keystroke.key.as_str();
                 match key {
                     "escape" => {
-                        this.close(cx);
-                        window.close_dialog(cx);
+                        this.close_dialog(window, cx);
                     }
                     "down" => {
                         if this.select_next() {

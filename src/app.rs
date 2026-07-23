@@ -1,10 +1,11 @@
 use gpui::prelude::*;
-use gpui::{App, Bounds, KeyBinding, Size, WindowBounds, WindowOptions, px};
+use gpui::{App, Bounds, Focusable, KeyBinding, Size, WindowBounds, WindowOptions, px};
 use gpui_component::Root;
 
 use crate::actions::*;
 use crate::assets::Assets;
 use crate::theme::init_theme;
+use crate::utils::set_app_focus_handle;
 use crate::views::MainView;
 
 /// Application configuration
@@ -127,6 +128,11 @@ impl SetuApp {
         // Wrap MainView in Root for gpui-component to work properly
         cx.open_window(options, |window, cx| {
             let main_view = cx.new(|cx| MainView::new(cx));
+            let main_focus_handle = main_view.focus_handle(cx);
+            set_app_focus_handle(main_focus_handle.clone(), cx);
+            window.defer(cx, move |window, cx| {
+                main_focus_handle.focus(window, cx);
+            });
             cx.new(|cx| Root::new(main_view, window, cx))
         })
         .expect("Failed to open main window");
