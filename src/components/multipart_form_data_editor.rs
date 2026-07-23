@@ -12,6 +12,10 @@ use std::path::PathBuf;
 use crate::icons::IconName;
 use gpui_component::ActiveTheme;
 
+use crate::completion::{
+    CompletionContext, CompletionEngine, CompletionInput, configure_completion,
+};
+
 pub struct MultipartFormRow {
     pub key_input: Entity<InputState>,
     pub value_input: Entity<InputState>,
@@ -38,20 +42,36 @@ struct DraggedMultipartRow {
 pub struct MultipartFormDataEditor {
     rows: Vec<MultipartFormRow>,
     focus_handle: FocusHandle,
+    completion_engine: Option<CompletionEngine>,
 }
 
 #[allow(dead_code)]
 impl MultipartFormDataEditor {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(completion_engine: Option<CompletionEngine>, cx: &mut Context<Self>) -> Self {
         Self {
             rows: Vec::new(),
             focus_handle: cx.focus_handle(),
+            completion_engine,
         }
     }
 
     pub fn add_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let key_input = cx.new(|cx| InputState::new(window, cx).placeholder("Key"));
-        let value_input = cx.new(|cx| InputState::new(window, cx).placeholder("Value"));
+        let completion_engine = self.completion_engine.clone();
+        let key_input = cx.new(|cx| {
+            configure_completion(
+                InputState::new(window, cx).placeholder("Key"),
+                completion_engine.as_ref(),
+                CompletionContext::FormName,
+            )
+        });
+        let completion_engine = self.completion_engine.clone();
+        let value_input = cx.new(|cx| {
+            configure_completion(
+                InputState::new(window, cx).placeholder("Value"),
+                completion_engine.as_ref(),
+                CompletionContext::FormValue,
+            )
+        });
 
         self.rows.push(MultipartFormRow {
             key_input,
@@ -168,15 +188,25 @@ impl MultipartFormDataEditor {
         self.rows.clear();
 
         for field in fields {
+            let completion_engine = self.completion_engine.clone();
             let key_input = cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder("Key")
-                    .default_value(&field.key)
+                configure_completion(
+                    InputState::new(window, cx)
+                        .placeholder("Key")
+                        .default_value(&field.key),
+                    completion_engine.as_ref(),
+                    CompletionContext::FormName,
+                )
             });
+            let completion_engine = self.completion_engine.clone();
             let value_input = cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder("Value")
-                    .default_value(&field.value)
+                configure_completion(
+                    InputState::new(window, cx)
+                        .placeholder("Value")
+                        .default_value(&field.value),
+                    completion_engine.as_ref(),
+                    CompletionContext::FormValue,
+                )
             });
 
             let file_path = field.file_path.as_ref().map(PathBuf::from);
@@ -441,13 +471,12 @@ impl Render for MultipartFormDataEditor {
                                         ),
                                     ),
                             )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(80.0))
-                                    .pr(px(8.0))
-                                    .child(Input::new(&row.key_input).appearance(false).xsmall()),
-                            )
+                            .child(div().flex_1().min_w(px(80.0)).pr(px(8.0)).child(
+                                CompletionInput::new(
+                                    &row.key_input,
+                                    Input::new(&row.key_input).appearance(false).xsmall(),
+                                ),
+                            ))
                             .child(
                                 div()
                                     .flex_1()
@@ -457,9 +486,10 @@ impl Render for MultipartFormDataEditor {
                                     .flex_row()
                                     .items_center()
                                     .when(!has_file, |el| {
-                                        el.child(
+                                        el.child(CompletionInput::new(
+                                            &row.value_input,
                                             Input::new(&row.value_input).appearance(false).xsmall(),
-                                        )
+                                        ))
                                     })
                                     .when(has_file, |el| {
                                         el.child(

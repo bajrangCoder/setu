@@ -23,6 +23,7 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use crate::actions::*;
+use crate::completion::{CompletionContext, CompletionEngine, configure_completion};
 use crate::components::{
     AppSidebar, BodyType, EnvironmentPanel, HistoryFilter, HistoryGroupBy, MethodDropdownState,
     ProtocolSelector, ProtocolType, SidebarTab, TabBar, TabInfo, UrlBar,
@@ -155,6 +156,7 @@ pub struct MainView {
     environments: Entity<EnvironmentsEntity>,
     workspaces: Entity<WorkspacesEntity>,
     environment_panel: Entity<EnvironmentPanel>,
+    completion_engine: CompletionEngine,
     http_client: HttpClient,
 
     // UI state
@@ -183,7 +185,19 @@ impl MainView {
         let request = cx.new(|_| RequestEntity::new());
         let response = cx.new(|_| ResponseEntity::new());
         let method_dropdown = cx.new(|_| MethodDropdownState::new(HttpMethod::Get));
-        let request_view = cx.new(|cx| RequestView::new(request.clone(), BodyType::None, cx));
+        let focus_handle = cx.focus_handle();
+        let command_palette = cx.new(|cx| CommandPaletteView::new(focus_handle.clone(), cx));
+        let workspaces = cx.new(|_| WorkspacesEntity::load());
+        let active_workspace_id = workspaces.read(cx).active_workspace_id();
+        let history = cx.new(|_| HistoryEntity::new_for_workspace(active_workspace_id));
+        let collections = cx.new(|_| CollectionsEntity::new_for_workspace(active_workspace_id));
+        let environments = cx.new(|_| EnvironmentsEntity::new_for_workspace(active_workspace_id));
+        let completion_engine = CompletionEngine::for_environments(environments.clone());
+        let completion_engine_for_request = completion_engine.clone();
+        let request_view = cx.new(|cx| {
+            RequestView::new(request.clone(), BodyType::None, cx)
+                .with_completion_engine(completion_engine_for_request)
+        });
         let response_view = cx.new(|cx| ResponseView::new(response.clone(), cx));
 
         let initial_tab = TabState {
@@ -200,14 +214,6 @@ impl MainView {
             request_generation: RequestGeneration::default(),
             collection_id: None,
         };
-
-        let focus_handle = cx.focus_handle();
-        let command_palette = cx.new(|cx| CommandPaletteView::new(focus_handle.clone(), cx));
-        let workspaces = cx.new(|_| WorkspacesEntity::load());
-        let active_workspace_id = workspaces.read(cx).active_workspace_id();
-        let history = cx.new(|_| HistoryEntity::new_for_workspace(active_workspace_id));
-        let collections = cx.new(|_| CollectionsEntity::new_for_workspace(active_workspace_id));
-        let environments = cx.new(|_| EnvironmentsEntity::new_for_workspace(active_workspace_id));
         let environment_panel =
             cx.new(|cx| EnvironmentPanel::new(environments.clone(), collections.clone(), cx));
         let history_load = HistoryEntity::spawn_storage_load();
@@ -286,6 +292,7 @@ impl MainView {
             environments,
             workspaces,
             environment_panel,
+            completion_engine,
             http_client,
             sidebar_visible: ui_preferences.sidebar_visible,
             sidebar_width: ui_preferences.sidebar_width,
@@ -328,11 +335,17 @@ impl MainView {
 
     /// Ensure URL input is initialized for a tab
     fn ensure_url_input(&mut self, tab_index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let completion_engine = self.completion_engine.clone();
         if let Some(tab) = self.tabs.get_mut(tab_index)
             && tab.url_input.is_none()
         {
-            let url_input =
-                cx.new(|cx| InputState::new(window, cx).placeholder("Enter request URL..."));
+            let url_input = cx.new(|cx| {
+                configure_completion(
+                    InputState::new(window, cx).placeholder("Enter request URL..."),
+                    Some(&completion_engine),
+                    CompletionContext::Url,
+                )
+            });
             let tab_id = tab.id;
             Self::subscribe_url_input(&url_input, tab_id, window, cx);
             tab.url_input = Some(url_input);
@@ -592,17 +605,24 @@ impl MainView {
         });
 
         let method_dropdown = cx.new(|_| MethodDropdownState::new(request_data.method));
+        let completion_engine = self.completion_engine.clone();
         let request_view = cx.new(|cx| {
             RequestView::new(request.clone(), body_type, cx)
+                .with_completion_engine(completion_engine)
                 .with_initial_body_content(body_content)
                 .with_initial_form_data(form_data)
                 .with_initial_multipart_data(multipart_data)
         });
         let response_view = cx.new(|cx| ResponseView::new(response.clone(), cx));
+        let completion_engine = self.completion_engine.clone();
         let url_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Enter request URL...")
-                .default_value(&request_data.url)
+            configure_completion(
+                InputState::new(window, cx)
+                    .placeholder("Enter request URL...")
+                    .default_value(&request_data.url),
+                Some(&completion_engine),
+                CompletionContext::Url,
+            )
         });
         let tab_id = TabId(self.next_tab_id);
         Self::subscribe_url_input(&url_input, tab_id, window, cx);
@@ -723,17 +743,24 @@ impl MainView {
 
         let response = cx.new(|_| ResponseEntity::new());
         let method_dropdown = cx.new(|_| MethodDropdownState::new(request_data.method));
+        let completion_engine = self.completion_engine.clone();
         let request_view = cx.new(|cx| {
             RequestView::new(request.clone(), body_type, cx)
+                .with_completion_engine(completion_engine)
                 .with_initial_body_content(body_content)
                 .with_initial_form_data(form_data)
                 .with_initial_multipart_data(multipart_data)
         });
         let response_view = cx.new(|cx| ResponseView::new(response.clone(), cx));
+        let completion_engine = self.completion_engine.clone();
         let url_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Enter request URL...")
-                .default_value(&request_data.url)
+            configure_completion(
+                InputState::new(window, cx)
+                    .placeholder("Enter request URL...")
+                    .default_value(&request_data.url),
+                Some(&completion_engine),
+                CompletionContext::Url,
+            )
         });
         let tab_id = TabId(self.next_tab_id);
         Self::subscribe_url_input(&url_input, tab_id, window, cx);
@@ -1399,7 +1426,11 @@ impl MainView {
         let request = cx.new(|_| RequestEntity::new());
         let response = cx.new(|_| ResponseEntity::new());
         let method_dropdown = cx.new(|_| MethodDropdownState::new(HttpMethod::Get));
-        let request_view = cx.new(|cx| RequestView::new(request.clone(), BodyType::None, cx));
+        let completion_engine = self.completion_engine.clone();
+        let request_view = cx.new(|cx| {
+            RequestView::new(request.clone(), BodyType::None, cx)
+                .with_completion_engine(completion_engine)
+        });
         let response_view = cx.new(|cx| ResponseView::new(response.clone(), cx));
 
         let tab_id = TabId(self.next_tab_id);
@@ -2676,10 +2707,15 @@ impl MainView {
             let new_method_dropdown = cx.new(|_| MethodDropdownState::new(old_method));
 
             let new_url_input = if old_url_input.is_some() {
+                let completion_engine = self.completion_engine.clone();
                 let input = cx.new(|cx| {
-                    InputState::new(window, cx)
-                        .placeholder("Enter request URL...")
-                        .default_value(&duplicated_url)
+                    configure_completion(
+                        InputState::new(window, cx)
+                            .placeholder("Enter request URL...")
+                            .default_value(&duplicated_url),
+                        Some(&completion_engine),
+                        CompletionContext::Url,
+                    )
                 });
                 let tab_id = TabId(self.next_tab_id);
                 Self::subscribe_url_input(&input, tab_id, window, cx);
@@ -2688,8 +2724,10 @@ impl MainView {
                 None
             };
 
+            let completion_engine = self.completion_engine.clone();
             let new_request_view = cx.new(|cx| {
                 RequestView::new(new_request.clone(), old_body_type, cx)
+                    .with_completion_engine(completion_engine)
                     .with_initial_body_content(body_content)
                     .with_initial_form_data(form_data)
                     .with_initial_multipart_data(multipart_data)
@@ -2775,6 +2813,8 @@ impl Focusable for MainView {
 
 impl Render for MainView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.completion_engine
+            .set_collection_id(self.active_tab().and_then(|tab| tab.collection_id));
         if let Some(cmd_id) = self.pending_window_command.take() {
             match cmd_id {
                 CommandId::DuplicateRequest => self.duplicate_request(window, cx),

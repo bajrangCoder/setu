@@ -250,6 +250,14 @@ pub struct ResolvedRequestParts {
     pub body: RequestBody,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvironmentVariableCompletion {
+    pub key: String,
+    pub environment_name: String,
+    pub scope: EnvironmentScope,
+    pub secret: bool,
+}
+
 pub struct EnvironmentsEntity {
     environments: Vec<Environment>,
     active_global_environment: Option<Uuid>,
@@ -399,6 +407,54 @@ impl EnvironmentsEntity {
     pub fn active_environment(&self, collection_id: Option<Uuid>) -> Option<&Environment> {
         self.active_environment_id(collection_id)
             .and_then(|id| self.get(id))
+    }
+
+    pub fn effective_variable_completions(
+        &self,
+        collection_id: Option<Uuid>,
+    ) -> Vec<EnvironmentVariableCompletion> {
+        let mut completions = HashMap::new();
+        let mut add_environment = |environment: &Environment| {
+            for variable in &environment.variables {
+                let key = variable.key.trim();
+                if !variable.enabled || key.is_empty() {
+                    continue;
+                }
+                completions.insert(
+                    key.to_string(),
+                    EnvironmentVariableCompletion {
+                        key: key.to_string(),
+                        environment_name: environment.name.clone(),
+                        scope: environment.scope,
+                        secret: variable.secret,
+                    },
+                );
+            }
+        };
+
+        if let Some(global) = self.active_global_environment.and_then(|id| self.get(id)) {
+            add_environment(global);
+        }
+        if let Some(workspace) = self
+            .active_workspace_environment
+            .and_then(|id| self.get(id))
+        {
+            add_environment(workspace);
+        }
+        if let Some(project) = collection_id
+            .and_then(|id| self.active_project_environments.get(&id))
+            .and_then(|id| self.get(*id))
+        {
+            add_environment(project);
+        }
+
+        let mut completions: Vec<_> = completions.into_values().collect();
+        completions.sort_by(|left, right| {
+            left.key
+                .to_ascii_lowercase()
+                .cmp(&right.key.to_ascii_lowercase())
+        });
+        completions
     }
 
     pub fn set_active(
@@ -1100,6 +1156,31 @@ mod tests {
     }
 
     #[test]
+    fn completion_metadata_marks_secret_values() {
+        let mut entity = entity_with_variables(&[], None);
+        let workspace_id = entity
+            .active_workspace_environment
+            .expect("active workspace environment");
+        entity
+            .get_mut(workspace_id)
+            .expect("workspace environment")
+            .variables
+            .push(EnvironmentVariable {
+                key: "token".to_string(),
+                value: "do-not-preview".to_string(),
+                secret: true,
+                ..EnvironmentVariable::default()
+            });
+
+        let token = entity
+            .effective_variable_completions(None)
+            .into_iter()
+            .find(|variable| variable.key == "token")
+            .expect("token completion");
+        assert!(token.secret);
+    }
+
+    #[test]
     fn specificity_order_is_global_then_workspace_then_project() {
         let project_id = Uuid::new_v4();
         let mut entity = entity_with_variables(
@@ -1131,6 +1212,25 @@ mod tests {
             .resolve_request(Some(project_id), "{{base_url}}", &[], &RequestBody::None)
             .expect("project values should override workspace values");
         assert_eq!(project.url, "https://project.example");
+
+        let completions = entity.effective_variable_completions(Some(project_id));
+        let base_url = completions
+            .iter()
+            .find(|variable| variable.key == "base_url")
+            .expect("effective base_url completion");
+        assert_eq!(base_url.scope, EnvironmentScope::Project(project_id));
+        assert_eq!(
+            completions
+                .iter()
+                .filter(|variable| variable.key == "base_url")
+                .count(),
+            1
+        );
+        assert!(
+            completions
+                .iter()
+                .any(|variable| variable.key == "shared_id")
+        );
     }
 
     #[test]

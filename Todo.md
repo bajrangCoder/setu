@@ -24,7 +24,8 @@
 - [ ] Scope UI preferences and restorable request-tab sessions per workspace.
 - [ ] Encrypt secret values with an OS-keychain-backed key instead of relying only on local file permissions.
 - [ ] Export environment files; exported secret values must be omitted.
-- [ ] Variable autocomplete, syntax highlighting, scope badges, and resolved-value previews in request editors.
+- [x] Extensible variable autocomplete across request editors with effective scope details and no value disclosure.
+- [ ] Highlight `{{variable}}` expressions inline in every request editor.
 - [ ] Initial/current values and temporary session overrides.
 - [ ] Request-scoped, folder-scoped, predefined (`$timestamp`, `$uuid`), and OS environment variables.
 - [ ] Pre-request/test scripting APIs for reading and updating variables.

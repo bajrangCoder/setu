@@ -15,6 +15,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use uuid::Uuid;
 
+use crate::completion::{
+    CompletionContext, CompletionEngine, CompletionInput, configure_completion,
+};
 use crate::entities::{
     CollectionsEntity, Environment, EnvironmentColor, EnvironmentEvent, EnvironmentScope,
     EnvironmentVariable, EnvironmentsEntity,
@@ -45,6 +48,7 @@ pub struct EnvironmentPanel {
     color_picker: Option<Entity<ColorPickerState>>,
     color_picker_environment_id: Option<Uuid>,
     color_picker_color: Option<EnvironmentColor>,
+    completion_engine: CompletionEngine,
     on_new_environment: Option<NewEnvironmentCallback>,
     on_import_environment: Option<ImportEnvironmentCallback>,
     on_delete_environment: Option<DeleteEnvironmentCallback>,
@@ -58,6 +62,7 @@ impl EnvironmentPanel {
         collections: Entity<CollectionsEntity>,
         cx: &mut Context<Self>,
     ) -> Self {
+        let completion_engine = CompletionEngine::for_environments(environments.clone());
         cx.subscribe(
             &environments,
             |this, environments, event: &EnvironmentEvent, cx| {
@@ -85,6 +90,7 @@ impl EnvironmentPanel {
             color_picker: None,
             color_picker_environment_id: None,
             color_picker_color: None,
+            completion_engine,
             on_new_environment: None,
             on_import_environment: None,
             on_delete_environment: None,
@@ -261,14 +267,18 @@ impl EnvironmentPanel {
                 .default_value(&variable.key)
         });
         let value_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(if variable.secret {
-                    "Secret value"
-                } else {
-                    "Value"
-                })
-                .default_value(&variable.value)
-                .masked(variable.secret)
+            configure_completion(
+                InputState::new(window, cx)
+                    .placeholder(if variable.secret {
+                        "Secret value"
+                    } else {
+                        "Value"
+                    })
+                    .default_value(&variable.value)
+                    .masked(variable.secret),
+                Some(&self.completion_engine),
+                CompletionContext::EnvironmentValue,
+            )
         });
 
         let environments_for_key = self.environments.clone();
@@ -697,6 +707,7 @@ impl Focusable for EnvironmentPanel {
 
 impl Render for EnvironmentPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.completion_engine.set_collection_id(self.collection_id);
         self.ensure_color_picker(window, cx);
         self.sync_rows(window, cx);
         let theme = cx.theme();
@@ -979,12 +990,13 @@ impl Render for EnvironmentPanel {
                                 .border_color(theme.input)
                                 .bg(theme.background.opacity(0.55))
                                 .px(px(7.0))
-                                .child(
+                                .child(CompletionInput::new(
+                                    &row.value_input,
                                     Input::new(&row.value_input)
                                         .appearance(false)
                                         .xsmall()
                                         .when(row.secret, |input| input.mask_toggle()),
-                                ),
+                                )),
                         )
                         .when(row.secret, |element| {
                             element.child(

@@ -16,6 +16,7 @@ use crate::icons::IconName;
 use gpui_component::{ActiveTheme, Icon};
 use std::collections::HashMap;
 
+use crate::completion::{CompletionContext, CompletionEngine, CompletionInput};
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum RequestViewEvent {
@@ -50,6 +51,7 @@ pub struct RequestView {
     initial_body_content: Option<String>,
     initial_form_data: Option<HashMap<String, String>>,
     initial_multipart_data: Option<Vec<MultipartField>>,
+    completion_engine: Option<CompletionEngine>,
 }
 
 impl RequestView {
@@ -80,7 +82,13 @@ impl RequestView {
             initial_body_content: None,
             initial_form_data: None,
             initial_multipart_data: None,
+            completion_engine: None,
         }
+    }
+
+    pub fn with_completion_engine(mut self, completion_engine: CompletionEngine) -> Self {
+        self.completion_engine = Some(completion_engine);
+        self
     }
 
     pub fn with_initial_body_content(mut self, content: Option<String>) -> Self {
@@ -121,14 +129,20 @@ impl RequestView {
             });
 
             let wrap_lines = self.wrap_lines;
+            let completion_engine = self.completion_engine.clone();
             let body_editor = cx.new(|cx| {
-                InputState::new(window, cx)
+                let input = InputState::new(window, cx)
                     .code_editor(syntax_lang)
                     .folding(true)
                     .line_number(true)
                     .searchable(true)
                     .soft_wrap(wrap_lines)
-                    .default_value(&initial_content)
+                    .default_value(&initial_content);
+                if let Some(engine) = completion_engine.as_ref() {
+                    engine.configure_input(input, CompletionContext::Body)
+                } else {
+                    input
+                }
             });
 
             self.body_editor = Some(body_editor);
@@ -200,15 +214,18 @@ impl RequestView {
 
     fn ensure_params_editor(&mut self, cx: &mut Context<Self>) {
         if self.params_editor.is_none() {
-            self.params_editor = Some(cx.new(|cx| ParamsEditor::new(cx)));
+            let completion_engine = self.completion_engine.clone();
+            self.params_editor =
+                Some(cx.new(|cx| ParamsEditor::new(completion_engine.clone(), cx)));
         }
     }
 
     fn ensure_form_data_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.form_data_editor.is_none() {
             let initial_data = self.initial_form_data.take();
+            let completion_engine = self.completion_engine.clone();
             self.form_data_editor = Some(cx.new(|cx| {
-                let mut editor = FormDataEditor::new(cx);
+                let mut editor = FormDataEditor::new(completion_engine.clone(), cx);
                 if let Some(data) = initial_data {
                     editor.set_from_hashmap(&data, window, cx);
                 }
@@ -220,8 +237,9 @@ impl RequestView {
     fn ensure_multipart_form_data_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.multipart_form_data_editor.is_none() {
             let initial_data = self.initial_multipart_data.take();
+            let completion_engine = self.completion_engine.clone();
             self.multipart_form_data_editor = Some(cx.new(|cx| {
-                let mut editor = MultipartFormDataEditor::new(cx);
+                let mut editor = MultipartFormDataEditor::new(completion_engine.clone(), cx);
                 if let Some(data) = initial_data {
                     editor.set_from_multipart_fields(&data, window, cx);
                 }
@@ -233,13 +251,17 @@ impl RequestView {
     fn ensure_header_editor(&mut self, cx: &mut Context<Self>) {
         if self.header_editor.is_none() {
             let request = self.request.clone();
-            self.header_editor = Some(cx.new(|cx| HeaderEditor::new(request, cx)));
+            let completion_engine = self.completion_engine.clone();
+            self.header_editor =
+                Some(cx.new(|cx| HeaderEditor::new(request, completion_engine.clone(), cx)));
         }
     }
 
     fn ensure_auth_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.auth_editor.is_none() {
-            self.auth_editor = Some(cx.new(|cx| AuthEditor::new(window, cx)));
+            let completion_engine = self.completion_engine.clone();
+            self.auth_editor =
+                Some(cx.new(|cx| AuthEditor::new(window, completion_engine.clone(), cx)));
         }
     }
 
@@ -786,7 +808,10 @@ impl RequestView {
                             .overflow_y_scroll()
                             .bg(theme.muted)
                             .when_some(self.body_editor.as_ref(), |el, editor| {
-                                el.child(Input::new(editor).appearance(false).size_full().p_0())
+                                el.child(CompletionInput::new(
+                                    editor,
+                                    Input::new(editor).appearance(false).size_full().p_0(),
+                                ))
                             }),
                     )
                 },

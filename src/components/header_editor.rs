@@ -12,6 +12,10 @@ use crate::entities::{Header, RequestEntity};
 use crate::icons::IconName;
 use gpui_component::ActiveTheme;
 
+use crate::completion::{
+    CompletionContext, CompletionEngine, CompletionInput, configure_completion,
+};
+
 pub struct HeaderRow {
     pub key_input: Entity<InputState>,
     pub value_input: Entity<InputState>,
@@ -32,10 +36,15 @@ pub struct HeaderEditor {
     header_rows: Vec<HeaderRow>,
     pending_initial_headers: Option<Vec<(String, String, bool)>>,
     focus_handle: FocusHandle,
+    completion_engine: Option<CompletionEngine>,
 }
 
 impl HeaderEditor {
-    pub fn new(request: Entity<RequestEntity>, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        request: Entity<RequestEntity>,
+        completion_engine: Option<CompletionEngine>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         cx.subscribe(&request, |this, _request, _event, cx| {
             this.sync_headers_from_request(cx);
             cx.notify();
@@ -47,6 +56,7 @@ impl HeaderEditor {
             header_rows: Vec::new(),
             pending_initial_headers: None,
             focus_handle: cx.focus_handle(),
+            completion_engine,
         };
 
         editor.sync_headers_from_request(cx);
@@ -80,15 +90,25 @@ impl HeaderEditor {
         };
 
         for (key, value, enabled) in headers {
+            let completion_engine = self.completion_engine.clone();
             let key_input = cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder("Header name")
-                    .default_value(&key)
+                configure_completion(
+                    InputState::new(window, cx)
+                        .placeholder("Header name")
+                        .default_value(&key),
+                    completion_engine.as_ref(),
+                    CompletionContext::HeaderName,
+                )
             });
+            let completion_engine = self.completion_engine.clone();
             let value_input = cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder("Value")
-                    .default_value(&value)
+                configure_completion(
+                    InputState::new(window, cx)
+                        .placeholder("Value")
+                        .default_value(&value),
+                    completion_engine.as_ref(),
+                    CompletionContext::HeaderValue,
+                )
             });
             let description_input =
                 cx.new(|cx| InputState::new(window, cx).placeholder("Description"));
@@ -106,8 +126,22 @@ impl HeaderEditor {
 
     /// Add a new empty header row
     pub fn add_header(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let key_input = cx.new(|cx| InputState::new(window, cx).placeholder("Header name"));
-        let value_input = cx.new(|cx| InputState::new(window, cx).placeholder("Value"));
+        let completion_engine = self.completion_engine.clone();
+        let key_input = cx.new(|cx| {
+            configure_completion(
+                InputState::new(window, cx).placeholder("Header name"),
+                completion_engine.as_ref(),
+                CompletionContext::HeaderName,
+            )
+        });
+        let completion_engine = self.completion_engine.clone();
+        let value_input = cx.new(|cx| {
+            configure_completion(
+                InputState::new(window, cx).placeholder("Value"),
+                completion_engine.as_ref(),
+                CompletionContext::HeaderValue,
+            )
+        });
         let description_input = cx.new(|cx| InputState::new(window, cx).placeholder("Description"));
 
         self.header_rows.push(HeaderRow {
@@ -134,15 +168,25 @@ impl HeaderEditor {
         let key_for_input = key_owned.clone();
         let value_for_input = value_owned.clone();
 
+        let completion_engine = self.completion_engine.clone();
         let key_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Header name")
-                .default_value(&key_for_input)
+            configure_completion(
+                InputState::new(window, cx)
+                    .placeholder("Header name")
+                    .default_value(&key_for_input),
+                completion_engine.as_ref(),
+                CompletionContext::HeaderName,
+            )
         });
+        let completion_engine = self.completion_engine.clone();
         let value_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Value")
-                .default_value(&value_for_input)
+            configure_completion(
+                InputState::new(window, cx)
+                    .placeholder("Value")
+                    .default_value(&value_for_input),
+                completion_engine.as_ref(),
+                CompletionContext::HeaderValue,
+            )
         });
         let description_input = cx.new(|cx| InputState::new(window, cx).placeholder("Description"));
 
@@ -447,19 +491,16 @@ impl Render for HeaderEditor {
                                         ),
                                     ),
                             )
-                            .child(
-                                div()
-                                    .w(px(150.0))
-                                    .min_w(px(150.0))
-                                    .pr(px(8.0))
-                                    .child(Input::new(&row.key_input).appearance(false).xsmall()),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .pr(px(8.0))
-                                    .child(Input::new(&row.value_input).appearance(false).xsmall()),
-                            )
+                            .child(div().w(px(150.0)).min_w(px(150.0)).pr(px(8.0)).child(
+                                CompletionInput::new(
+                                    &row.key_input,
+                                    Input::new(&row.key_input).appearance(false).xsmall(),
+                                ),
+                            ))
+                            .child(div().flex_1().pr(px(8.0)).child(CompletionInput::new(
+                                &row.value_input,
+                                Input::new(&row.value_input).appearance(false).xsmall(),
+                            )))
                             .child(
                                 div().w(px(150.0)).min_w(px(150.0)).pr(px(8.0)).child(
                                     Input::new(&row.description_input)

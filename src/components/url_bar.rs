@@ -6,6 +6,7 @@ use gpui_component::input::{Input, InputState};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use std::rc::Rc;
 
+use crate::completion::CompletionInput;
 use crate::components::{MethodDropdown, MethodDropdownState};
 use crate::entities::RequestEntity;
 use crate::icons::IconName;
@@ -158,11 +159,12 @@ impl RenderOnce for UrlBar {
                     .items_center()
                     .h_full()
                     .px(px(8.0))
-                    .child(
+                    .child(CompletionInput::new(
+                        &self.input_state,
                         Input::new(&self.input_state)
                             .appearance(false) // Remove default styling
                             .size_full(),
-                    ),
+                    )),
             )
             .child(div().mr(px(4.0)).child(split_button))
     }
