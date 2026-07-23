@@ -16,9 +16,9 @@
 ## Environments & Workspaces
 
 - [x] Named environments with `{{variable}}` interpolation across URLs, params, headers, auth, and bodies.
-- [x] Workspace base variables plus collection/project overrides.
+- [x] Global variables plus workspace and collection/project overrides.
 - [x] Local secret values, enable/disable controls, nested variables, environment colors, and duplication.
-- [x] Grouped environment manager with separate edit and active states.
+- [x] Grouped environment manager with separate edit and active states, preset colors, and a full custom color picker.
 - [x] Real persisted workspace containers and a top-bar switcher that isolate collections, history, and environments.
 - [x] Import Postman collections as new workspaces, plus environment exports and collection variables in their appropriate workspace.
 - [ ] Scope UI preferences and restorable request-tab sessions per workspace.

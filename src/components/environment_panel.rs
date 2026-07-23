@@ -6,6 +6,7 @@ use gpui::{
 use gpui_component::Sizable;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::checkbox::Checkbox;
+use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::scroll::ScrollableElement;
@@ -41,6 +42,9 @@ pub struct EnvironmentPanel {
     loaded_environment_id: Option<Uuid>,
     loaded_signature: Vec<(Uuid, bool)>,
     rows: Vec<VariableRow>,
+    color_picker: Option<Entity<ColorPickerState>>,
+    color_picker_environment_id: Option<Uuid>,
+    color_picker_color: Option<EnvironmentColor>,
     on_new_environment: Option<NewEnvironmentCallback>,
     on_import_environment: Option<ImportEnvironmentCallback>,
     on_delete_environment: Option<DeleteEnvironmentCallback>,
@@ -78,6 +82,9 @@ impl EnvironmentPanel {
             loaded_environment_id: None,
             loaded_signature: Vec::new(),
             rows: Vec::new(),
+            color_picker: None,
+            color_picker_environment_id: None,
+            color_picker_color: None,
             on_new_environment: None,
             on_import_environment: None,
             on_delete_environment: None,
@@ -157,6 +164,7 @@ impl EnvironmentPanel {
     fn sync_rows(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.ensure_selection(cx);
         let selected_id = self.selected_environment_id;
+        self.sync_color_picker(selected_id, window, cx);
         let variables = selected_id
             .and_then(|id| self.environments.read(cx).get(id))
             .map(|environment| environment.variables.clone())
@@ -184,6 +192,59 @@ impl EnvironmentPanel {
             self.rows
                 .push(self.build_row(environment_id, variable, window, cx));
         }
+    }
+
+    fn ensure_color_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.color_picker.is_some() {
+            return;
+        }
+        let picker = cx.new(|cx| {
+            ColorPickerState::new(window, cx).default_value(EnvironmentColor::default().accent())
+        });
+        cx.subscribe(&picker, |this, _, event: &ColorPickerEvent, cx| {
+            let ColorPickerEvent::Change(Some(color)) = event else {
+                return;
+            };
+            let Some(environment_id) = this.selected_environment_id else {
+                return;
+            };
+            this.environments.update(cx, |environments, cx| {
+                environments.set_environment_color(
+                    environment_id,
+                    EnvironmentColor::custom(*color),
+                    cx,
+                );
+            });
+        })
+        .detach();
+        self.color_picker = Some(picker);
+    }
+
+    fn sync_color_picker(
+        &mut self,
+        environment_id: Option<Uuid>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let selected_color = environment_id
+            .and_then(|id| self.environments.read(cx).get(id))
+            .map(|environment| environment.color.clone());
+        if self.color_picker_environment_id == environment_id
+            && self.color_picker_color == selected_color
+        {
+            return;
+        }
+        let Some(selected_color) = selected_color else {
+            self.color_picker_environment_id = environment_id;
+            self.color_picker_color = None;
+            return;
+        };
+        if let Some(picker) = &self.color_picker {
+            let color = selected_color.accent();
+            picker.update(cx, |picker, cx| picker.set_value(color, window, cx));
+        }
+        self.color_picker_environment_id = environment_id;
+        self.color_picker_color = Some(selected_color);
     }
 
     fn build_row(
@@ -262,6 +323,7 @@ impl EnvironmentPanel {
 
     fn scope_label(&self, scope: EnvironmentScope, cx: &App) -> String {
         match scope {
+            EnvironmentScope::Global => "Global · All workspaces".to_string(),
             EnvironmentScope::Workspace => "Workspace base".to_string(),
             EnvironmentScope::Project(collection_id) => self
                 .collection_name(collection_id, cx)
@@ -279,7 +341,7 @@ impl EnvironmentPanel {
         let environment_id = environment.id;
         let environment_scope = environment.scope;
         let environment_name = environment.name.clone();
-        let environment_color = environment.color;
+        let environment_color = environment.color.clone();
         let environments_for_activate = self.environments.clone();
         let environments_for_duplicate = self.environments.clone();
         let environments_for_color = self.environments.clone();
@@ -296,6 +358,7 @@ impl EnvironmentPanel {
         .tooltip("Environment actions")
         .dropdown_menu(move |mut menu, _window, _cx| {
             let activate_label = match environment_scope {
+                EnvironmentScope::Global => "Use globally",
                 EnvironmentScope::Workspace => "Use as workspace base",
                 EnvironmentScope::Project(_) => "Use for this project",
             };
@@ -305,6 +368,9 @@ impl EnvironmentPanel {
                     .icon(IconName::CircleCheck)
                     .on_click(move |_, _, cx| {
                         environments.update(cx, |environments, cx| match environment_scope {
+                            EnvironmentScope::Global => {
+                                environments.set_active(None, Some(environment_id), cx);
+                            }
                             EnvironmentScope::Workspace => {
                                 environments.set_active(None, Some(environment_id), cx);
                             }
@@ -350,6 +416,7 @@ impl EnvironmentPanel {
                     item = item.icon(IconName::Check);
                 }
                 menu = menu.item(item.on_click(move |_, _, cx| {
+                    let color = color.clone();
                     environments.update(cx, |environments, cx| {
                         environments.set_environment_color(environment_id, color, cx);
                     });
@@ -460,8 +527,12 @@ impl EnvironmentPanel {
 
     fn render_active_stack(&self, cx: &App) -> AnyElement {
         let theme = cx.theme();
-        let (workspace, project) = {
+        let (global, workspace, project) = {
             let environments = self.environments.read(cx);
+            let global = environments
+                .active_global_environment_id()
+                .and_then(|id| environments.get(id))
+                .cloned();
             let workspace = environments
                 .active_workspace_environment_id()
                 .and_then(|id| environments.get(id))
@@ -471,7 +542,7 @@ impl EnvironmentPanel {
                 .and_then(|id| environments.active_project_environment_id(id))
                 .and_then(|id| environments.get(id))
                 .cloned();
-            (workspace, project)
+            (global, workspace, project)
         };
 
         let layer = |environment: &Environment, suffix: &str| {
@@ -523,32 +594,45 @@ impl EnvironmentPanel {
                     .text_color(theme.muted_foreground)
                     .child("VARIABLE PRECEDENCE"),
             )
+            .when_some(global.as_ref(), |element, environment| {
+                element.child(layer(environment, "global base"))
+            })
             .when_some(workspace.as_ref(), |element, environment| {
-                element.child(layer(environment, "workspace"))
+                element
+                    .when(global.is_some(), |element| {
+                        element.child(div().ml(px(2.0)).h(px(7.0)).w(px(1.0)).bg(theme.border))
+                    })
+                    .child(layer(environment, "workspace"))
             })
             .when_some(project.as_ref(), |element, environment| {
                 element
                     .child(div().ml(px(2.0)).h(px(7.0)).w(px(1.0)).bg(theme.border))
                     .child(layer(environment, "overrides"))
             })
-            .when(workspace.is_none() && project.is_none(), |element| {
-                element.child(
-                    div()
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child("No environment is active"),
-                )
-            })
+            .when(
+                global.is_none() && workspace.is_none() && project.is_none(),
+                |element| {
+                    element.child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child("No environment is active"),
+                    )
+                },
+            )
             .into_any_element()
     }
 
     fn has_layered_precedence(&self, cx: &App) -> bool {
         let environments = self.environments.read(cx);
-        environments.active_workspace_environment_id().is_some()
-            && self
-                .collection_id
-                .and_then(|id| environments.active_project_environment_id(id))
-                .is_some()
+        let active_layers = usize::from(environments.active_global_environment_id().is_some())
+            + usize::from(environments.active_workspace_environment_id().is_some())
+            + usize::from(
+                self.collection_id
+                    .and_then(|id| environments.active_project_environment_id(id))
+                    .is_some(),
+            );
+        active_layers > 1
     }
 
     fn render_empty_state(&self, theme: &gpui_component::theme::ThemeColor) -> AnyElement {
@@ -613,6 +697,7 @@ impl Focusable for EnvironmentPanel {
 
 impl Render for EnvironmentPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.ensure_color_picker(window, cx);
         self.sync_rows(window, cx);
         let theme = cx.theme();
         let this = cx.entity().clone();
@@ -625,11 +710,14 @@ impl Render for EnvironmentPanel {
         let on_import = self.on_import_environment.clone();
         let collection_id = self.collection_id;
         let has_layered_precedence = self.has_layered_precedence(cx);
+        let color_picker = self.color_picker.clone();
 
         let mut project_groups: HashMap<Uuid, Vec<Environment>> = HashMap::new();
+        let mut global_environments = Vec::new();
         let mut workspace_environments = Vec::new();
         for environment in &environments {
             match environment.scope {
+                EnvironmentScope::Global => global_environments.push(environment.clone()),
                 EnvironmentScope::Workspace => workspace_environments.push(environment.clone()),
                 EnvironmentScope::Project(project_id) => project_groups
                     .entry(project_id)
@@ -639,6 +727,30 @@ impl Render for EnvironmentPanel {
         }
 
         let mut navigator_groups = Vec::new();
+        if !global_environments.is_empty() {
+            let rows = global_environments
+                .iter()
+                .map(|environment| self.render_environment_row(environment, this.clone(), cx))
+                .collect::<Vec<_>>();
+            navigator_groups.push(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .child(
+                        div()
+                            .px(px(8.0))
+                            .pt(px(5.0))
+                            .pb(px(3.0))
+                            .text_size(px(9.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.muted_foreground)
+                            .child("GLOBAL"),
+                    )
+                    .children(rows)
+                    .into_any_element(),
+            );
+        }
         if !workspace_environments.is_empty() {
             let rows = workspace_environments
                 .iter()
@@ -954,6 +1066,18 @@ impl Render for EnvironmentPanel {
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(theme.warning)
                                     .child("DUPLICATE KEYS"),
+                            )
+                        })
+                        .when_some(color_picker, |element, picker| {
+                            element.child(
+                                ColorPicker::new(&picker)
+                                    .featured_colors(
+                                        EnvironmentColor::ALL
+                                            .iter()
+                                            .map(EnvironmentColor::accent)
+                                            .collect(),
+                                    )
+                                    .xsmall(),
                             )
                         })
                         .child(

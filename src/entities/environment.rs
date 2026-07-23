@@ -1,4 +1,5 @@
 use gpui::{Context, EventEmitter, Hsla, hsla};
+use gpui_component::Colorize;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -8,18 +9,19 @@ use uuid::Uuid;
 use crate::entities::{Header, MultipartField, RequestBody, default_workspace_id};
 use crate::utils::{DebouncedJsonWriter, shared_tokio_runtime};
 
-const ENVIRONMENTS_STORAGE_VERSION: u32 = 2;
+const ENVIRONMENTS_STORAGE_VERSION: u32 = 3;
 const SAVE_DEBOUNCE: Duration = Duration::from_millis(350);
 const MAX_INTERPOLATION_DEPTH: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "scope", content = "collection_id", rename_all = "snake_case")]
 pub enum EnvironmentScope {
+    Global,
     Workspace,
     Project(Uuid),
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EnvironmentColor {
     #[default]
@@ -29,6 +31,7 @@ pub enum EnvironmentColor {
     Amber,
     Rose,
     Slate,
+    Custom(String),
 }
 
 impl EnvironmentColor {
@@ -41,7 +44,7 @@ impl EnvironmentColor {
         Self::Slate,
     ];
 
-    pub fn label(self) -> &'static str {
+    pub fn label(&self) -> &'static str {
         match self {
             Self::Teal => "Teal",
             Self::Blue => "Blue",
@@ -49,10 +52,11 @@ impl EnvironmentColor {
             Self::Amber => "Amber",
             Self::Rose => "Rose",
             Self::Slate => "Slate",
+            Self::Custom(_) => "Custom",
         }
     }
 
-    pub fn accent(self) -> Hsla {
+    pub fn accent(&self) -> Hsla {
         match self {
             Self::Teal => hsla(165.0 / 360.0, 0.80, 0.48, 1.0),
             Self::Blue => hsla(205.0 / 360.0, 0.82, 0.58, 1.0),
@@ -60,7 +64,18 @@ impl EnvironmentColor {
             Self::Amber => hsla(38.0 / 360.0, 0.92, 0.58, 1.0),
             Self::Rose => hsla(348.0 / 360.0, 0.78, 0.62, 1.0),
             Self::Slate => hsla(220.0 / 360.0, 0.12, 0.62, 1.0),
+            Self::Custom(hex) => {
+                Hsla::parse_hex(hex).unwrap_or_else(|_| EnvironmentColor::default().accent())
+            }
         }
+    }
+
+    pub fn custom(color: Hsla) -> Self {
+        let hex = color.to_hex();
+        Self::ALL
+            .into_iter()
+            .find(|preset| preset.accent().to_hex() == hex)
+            .unwrap_or(Self::Custom(hex))
     }
 }
 
@@ -159,6 +174,8 @@ impl EnvironmentWorkspaceStore {
 #[serde(default)]
 pub(crate) struct EnvironmentsStore {
     version: u32,
+    global_environments: Vec<Environment>,
+    active_global_environment: Option<Uuid>,
     workspaces: HashMap<Uuid, EnvironmentWorkspaceStore>,
 }
 
@@ -166,6 +183,8 @@ impl Default for EnvironmentsStore {
     fn default() -> Self {
         Self {
             version: ENVIRONMENTS_STORAGE_VERSION,
+            global_environments: Vec::new(),
+            active_global_environment: None,
             workspaces: HashMap::new(),
         }
     }
@@ -233,6 +252,7 @@ pub struct ResolvedRequestParts {
 
 pub struct EnvironmentsEntity {
     environments: Vec<Environment>,
+    active_global_environment: Option<Uuid>,
     active_workspace_environment: Option<Uuid>,
     active_project_environments: HashMap<Uuid, Uuid>,
     active_workspace_id: Uuid,
@@ -251,6 +271,7 @@ impl EnvironmentsEntity {
         let store = EnvironmentWorkspaceStore::starter();
         Self {
             environments: store.environments,
+            active_global_environment: None,
             active_workspace_environment: store.active_workspace_environment,
             active_project_environments: store.active_project_environments,
             active_workspace_id,
@@ -296,7 +317,11 @@ impl EnvironmentsEntity {
                     .remove(&self.active_workspace_id)
                     .unwrap_or_else(EnvironmentWorkspaceStore::starter)
                     .validated();
-                self.environments = active.environments;
+                self.environments = store.global_environments;
+                self.environments.extend(active.environments);
+                self.active_global_environment = store
+                    .active_global_environment
+                    .filter(|id| self.get(*id).is_some());
                 self.active_workspace_environment = active.active_workspace_environment;
                 self.active_project_environments = active.active_project_environments;
                 self.workspace_environments = store.workspaces;
@@ -325,6 +350,7 @@ impl EnvironmentsEntity {
             return false;
         };
         match environment.scope {
+            EnvironmentScope::Global => self.active_global_environment == Some(environment_id),
             EnvironmentScope::Workspace => {
                 self.active_workspace_environment == Some(environment_id)
             }
@@ -338,6 +364,7 @@ impl EnvironmentsEntity {
         self.environments
             .iter()
             .filter(|environment| match environment.scope {
+                EnvironmentScope::Global => true,
                 EnvironmentScope::Workspace => true,
                 EnvironmentScope::Project(project_id) => Some(project_id) == collection_id,
             })
@@ -348,6 +375,12 @@ impl EnvironmentsEntity {
         collection_id
             .and_then(|id| self.active_project_environments.get(&id).copied())
             .or(self.active_workspace_environment)
+            .or(self.active_global_environment)
+            .filter(|id| self.get(*id).is_some())
+    }
+
+    pub fn active_global_environment_id(&self) -> Option<Uuid> {
+        self.active_global_environment
             .filter(|id| self.get(*id).is_some())
     }
 
@@ -375,6 +408,9 @@ impl EnvironmentsEntity {
         cx: &mut Context<Self>,
     ) {
         match (collection_id, environment_id.and_then(|id| self.get(id))) {
+            (_, Some(environment)) if environment.scope == EnvironmentScope::Global => {
+                self.active_global_environment = Some(environment.id);
+            }
             (Some(project_id), Some(environment))
                 if environment.scope == EnvironmentScope::Project(project_id) =>
             {
@@ -393,7 +429,10 @@ impl EnvironmentsEntity {
             (None, Some(environment)) if environment.scope == EnvironmentScope::Workspace => {
                 self.active_workspace_environment = Some(environment.id);
             }
-            (None, None) => self.active_workspace_environment = None,
+            (None, None) => {
+                self.active_global_environment = None;
+                self.active_workspace_environment = None;
+            }
             _ => return,
         }
         self.bump_revision();
@@ -412,6 +451,7 @@ impl EnvironmentsEntity {
         let id = environment.id;
         self.environments.push(environment);
         match scope {
+            EnvironmentScope::Global => self.active_global_environment = Some(id),
             EnvironmentScope::Workspace => self.active_workspace_environment = Some(id),
             EnvironmentScope::Project(project_id) => {
                 self.active_project_environments.insert(project_id, id);
@@ -433,6 +473,7 @@ impl EnvironmentsEntity {
         let id = environment.id;
         self.environments.push(environment);
         match scope {
+            EnvironmentScope::Global => self.active_global_environment = Some(id),
             EnvironmentScope::Workspace => self.active_workspace_environment = Some(id),
             EnvironmentScope::Project(project_id) => {
                 self.active_project_environments.insert(project_id, id);
@@ -446,8 +487,12 @@ impl EnvironmentsEntity {
         if workspace_id == self.active_workspace_id {
             return;
         }
+        let (global_environments, workspace_environments): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut self.environments)
+                .into_iter()
+                .partition(|environment| environment.scope == EnvironmentScope::Global);
         let previous = EnvironmentWorkspaceStore {
-            environments: std::mem::take(&mut self.environments),
+            environments: workspace_environments,
             active_workspace_environment: self.active_workspace_environment.take(),
             active_project_environments: std::mem::take(&mut self.active_project_environments),
         };
@@ -459,7 +504,8 @@ impl EnvironmentsEntity {
             .remove(&workspace_id)
             .unwrap_or_else(EnvironmentWorkspaceStore::starter)
             .validated();
-        self.environments = active.environments;
+        self.environments = global_environments;
+        self.environments.extend(active.environments);
         self.active_workspace_environment = active.active_workspace_environment;
         self.active_project_environments = active.active_project_environments;
         self.changed(EnvironmentEvent::ActiveChanged, cx);
@@ -479,6 +525,9 @@ impl EnvironmentsEntity {
         let duplicate_id = duplicate.id;
         self.environments.push(duplicate);
         match scope {
+            EnvironmentScope::Global => {
+                self.active_global_environment = Some(duplicate_id);
+            }
             EnvironmentScope::Workspace => {
                 self.active_workspace_environment = Some(duplicate_id);
             }
@@ -500,6 +549,13 @@ impl EnvironmentsEntity {
             return;
         };
         self.environments.remove(index);
+        if self.active_global_environment == Some(id) {
+            self.active_global_environment = self
+                .environments
+                .iter()
+                .find(|environment| environment.scope == EnvironmentScope::Global)
+                .map(|environment| environment.id);
+        }
         if self.active_workspace_environment == Some(id) {
             self.active_workspace_environment = self
                 .environments
@@ -694,6 +750,9 @@ impl EnvironmentsEntity {
 
     fn effective_values(&self, collection_id: Option<Uuid>) -> HashMap<String, String> {
         let mut values = HashMap::new();
+        if let Some(global) = self.active_global_environment.and_then(|id| self.get(id)) {
+            insert_environment_values(global, &mut values);
+        }
         if let Some(workspace) = self
             .active_workspace_environment
             .and_then(|id| self.get(id))
@@ -740,16 +799,29 @@ impl EnvironmentsEntity {
     fn save_to_file(&self) {
         if let Some(persistor) = &self.persistor {
             let mut workspaces = self.workspace_environments.clone();
+            let global_environments = self
+                .environments
+                .iter()
+                .filter(|environment| environment.scope == EnvironmentScope::Global)
+                .cloned()
+                .collect();
             workspaces.insert(
                 self.active_workspace_id,
                 EnvironmentWorkspaceStore {
-                    environments: self.environments.clone(),
+                    environments: self
+                        .environments
+                        .iter()
+                        .filter(|environment| environment.scope != EnvironmentScope::Global)
+                        .cloned()
+                        .collect(),
                     active_workspace_environment: self.active_workspace_environment,
                     active_project_environments: self.active_project_environments.clone(),
                 },
             );
             persistor.schedule_save(EnvironmentsStore {
                 version: ENVIRONMENTS_STORAGE_VERSION,
+                global_environments,
+                active_global_environment: self.active_global_environment,
                 workspaces,
             });
         }
@@ -770,14 +842,30 @@ fn deserialize_environments_store(
     contents: &str,
 ) -> Result<(EnvironmentsStore, bool), serde_json::Error> {
     if let Ok(mut store) = serde_json::from_str::<EnvironmentsStore>(contents)
-        && store.version == ENVIRONMENTS_STORAGE_VERSION
+        && matches!(store.version, 2 | ENVIRONMENTS_STORAGE_VERSION)
     {
+        let migrated = store.version != ENVIRONMENTS_STORAGE_VERSION;
+        store.version = ENVIRONMENTS_STORAGE_VERSION;
+        store
+            .global_environments
+            .retain(|environment| environment.scope == EnvironmentScope::Global);
+        let global_ids: HashSet<_> = store
+            .global_environments
+            .iter()
+            .map(|environment| environment.id)
+            .collect();
+        if store
+            .active_global_environment
+            .is_some_and(|id| !global_ids.contains(&id))
+        {
+            store.active_global_environment = None;
+        }
         store.workspaces = store
             .workspaces
             .into_iter()
             .map(|(workspace_id, workspace)| (workspace_id, workspace.validated()))
             .collect();
-        return Ok((store, false));
+        return Ok((store, migrated));
     }
 
     let legacy = serde_json::from_str::<LegacyEnvironmentsStore>(contents)?;
@@ -790,6 +878,8 @@ fn deserialize_environments_store(
     Ok((
         EnvironmentsStore {
             version: ENVIRONMENTS_STORAGE_VERSION,
+            global_environments: Vec::new(),
+            active_global_environment: None,
             workspaces: HashMap::from([(default_workspace_id(), workspace)]),
         },
         true,
@@ -959,6 +1049,7 @@ mod tests {
         }
         EnvironmentsEntity {
             environments,
+            active_global_environment: None,
             active_workspace_environment: Some(workspace_id),
             active_project_environments,
             active_workspace_id: default_workspace_id(),
@@ -1006,6 +1097,40 @@ mod tests {
             .resolve_request(Some(project_id), "{{base_url}}", &[], &RequestBody::None)
             .expect("request should resolve");
         assert_eq!(resolved.url, "https://project.example");
+    }
+
+    #[test]
+    fn specificity_order_is_global_then_workspace_then_project() {
+        let project_id = Uuid::new_v4();
+        let mut entity = entity_with_variables(
+            &[("base_url", "https://workspace.example")],
+            Some((project_id, &[("base_url", "https://project.example")])),
+        );
+        let mut global = Environment::new("Shared", EnvironmentScope::Global);
+        global.variables = vec![
+            EnvironmentVariable {
+                key: "base_url".to_string(),
+                value: "https://global.example".to_string(),
+                ..EnvironmentVariable::default()
+            },
+            EnvironmentVariable {
+                key: "shared_id".to_string(),
+                value: "from-global".to_string(),
+                ..EnvironmentVariable::default()
+            },
+        ];
+        entity.active_global_environment = Some(global.id);
+        entity.environments.insert(0, global);
+
+        let workspace = entity
+            .resolve_request(None, "{{base_url}}/{{shared_id}}", &[], &RequestBody::None)
+            .expect("workspace values should override global values");
+        assert_eq!(workspace.url, "https://workspace.example/from-global");
+
+        let project = entity
+            .resolve_request(Some(project_id), "{{base_url}}", &[], &RequestBody::None)
+            .expect("project values should override workspace values");
+        assert_eq!(project.url, "https://project.example");
     }
 
     #[test]
@@ -1064,5 +1189,38 @@ mod tests {
         let decoded: Environment =
             serde_json::from_value(value).expect("deserialize legacy environment");
         assert_eq!(decoded.color, EnvironmentColor::Teal);
+    }
+
+    #[test]
+    fn custom_environment_colors_round_trip() {
+        let color = EnvironmentColor::custom(hsla(0.42, 0.71, 0.53, 1.0));
+        let encoded = serde_json::to_string(&color).expect("serialize custom color");
+        let decoded: EnvironmentColor =
+            serde_json::from_str(&encoded).expect("deserialize custom color");
+        assert_eq!(decoded, color);
+    }
+
+    #[test]
+    fn version_two_workspace_store_migrates_without_data_loss() {
+        let workspace_id = default_workspace_id();
+        let environment = Environment::new("Development", EnvironmentScope::Workspace);
+        let environment_id = environment.id;
+        let contents = serde_json::json!({
+            "version": 2,
+            "workspaces": {
+                workspace_id.to_string(): {
+                    "environments": [environment],
+                    "active_workspace_environment": environment_id,
+                    "active_project_environments": {}
+                }
+            }
+        })
+        .to_string();
+
+        let (store, migrated) =
+            deserialize_environments_store(&contents).expect("migrate version two store");
+        assert!(migrated);
+        assert_eq!(store.version, ENVIRONMENTS_STORAGE_VERSION);
+        assert_eq!(store.workspaces[&workspace_id].environments.len(), 1);
     }
 }

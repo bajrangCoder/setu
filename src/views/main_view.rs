@@ -963,10 +963,16 @@ impl MainView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let mut scope_options = vec![EnvironmentScopeOption {
-            scope: EnvironmentScope::Workspace,
-            label: "Workspace · Available everywhere".to_string(),
-        }];
+        let mut scope_options = vec![
+            EnvironmentScopeOption {
+                scope: EnvironmentScope::Global,
+                label: "Global · Available in every workspace".to_string(),
+            },
+            EnvironmentScopeOption {
+                scope: EnvironmentScope::Workspace,
+                label: "Workspace · Available in this workspace".to_string(),
+            },
+        ];
         scope_options.extend(
             self.collections
                 .read(cx)
@@ -983,7 +989,7 @@ impl MainView {
                     .iter()
                     .position(|option| option.scope == EnvironmentScope::Project(project_id))
             })
-            .unwrap_or(0);
+            .unwrap_or(1);
         let scope_select = cx.new(|cx| {
             SelectState::new(
                 scope_options,
@@ -1016,7 +1022,7 @@ impl MainView {
                                 .text_sm()
                                 .text_color(cx.theme().muted_foreground)
                                 .child(
-                                    "Workspace environments are available everywhere. Project environments can override them for one collection.",
+                                    "Global environments are shared by every workspace. Workspace and project environments override them with more specific values.",
                                 ),
                         )
                         .child("Environment name")
@@ -3622,13 +3628,14 @@ impl MainView {
                 .map(|environment| environment.name.clone())
                 .unwrap_or_else(|| "No environment".to_string());
             let active_color = active
-                .map(|environment| environment.color)
+                .map(|environment| environment.color.clone())
                 .unwrap_or(EnvironmentColor::Slate);
             let environment_options: Vec<_> = environments
                 .available_for(collection_id)
                 .into_iter()
                 .map(|environment| {
                     let scope = match environment.scope {
+                        EnvironmentScope::Global => "Global".to_string(),
                         EnvironmentScope::Workspace => "Workspace".to_string(),
                         EnvironmentScope::Project(project_id) => self
                             .collections
@@ -3643,7 +3650,7 @@ impl MainView {
                         environment.id,
                         environment.name.clone(),
                         scope,
-                        environment.color,
+                        environment.color.clone(),
                     )
                 })
                 .collect();
