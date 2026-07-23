@@ -334,7 +334,7 @@ impl CollectionsPanel {
             container = container.child(
                 Button::new("import-first-collection")
                     .small()
-                    .label("Import Collection")
+                    .label("Import Postman")
                     .icon(Icon::new(IconName::FileUp).size(px(14.0)))
                     .on_click(move |_, window, cx| handler(window, cx)),
             );
@@ -1081,7 +1081,7 @@ impl RenderOnce for CollectionsPanel {
                     .ghost()
                     .xsmall()
                     .icon(Icon::new(IconName::FileUp).size(px(14.0)))
-                    .tooltip("Import Collection")
+                    .tooltip("Import a Postman collection or environment")
                     .on_click(move |_, window, cx| handler(window, cx)),
             );
         }

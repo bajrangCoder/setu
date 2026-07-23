@@ -1,5 +1,6 @@
 use gpui::{Context, EventEmitter};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -8,9 +9,9 @@ use uuid::Uuid;
 use crate::importers::{ImportedCollection, ImportedNode};
 use crate::utils::{DebouncedJsonWriter, shared_tokio_runtime};
 
-use super::{RequestData, SidebarLoadState};
+use super::{RequestData, SidebarLoadState, default_workspace_id};
 
-const COLLECTIONS_STORAGE_VERSION: u32 = 1;
+const COLLECTIONS_STORAGE_VERSION: u32 = 2;
 const SAVE_DEBOUNCE: Duration = Duration::from_secs(1);
 
 fn default_expanded() -> bool {
@@ -241,6 +242,12 @@ impl Collection {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CollectionsStore {
     version: u32,
+    workspaces: HashMap<Uuid, Vec<Collection>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LegacyVersionedCollectionsStore {
+    version: u32,
     collections: Vec<Collection>,
 }
 
@@ -335,6 +342,8 @@ pub enum CollectionsEvent {
 pub struct CollectionsEntity {
     pub collections: Vec<Collection>,
     pub load_state: SidebarLoadState,
+    active_workspace_id: Uuid,
+    workspace_collections: HashMap<Uuid, Vec<Collection>>,
     revision: u64,
     persistor: Option<DebouncedJsonWriter<CollectionsStore>>,
 }
@@ -342,10 +351,16 @@ pub struct CollectionsEntity {
 #[allow(dead_code)]
 impl CollectionsEntity {
     pub fn new() -> Self {
+        Self::new_for_workspace(default_workspace_id())
+    }
+
+    pub fn new_for_workspace(active_workspace_id: Uuid) -> Self {
         let storage_path = Self::get_storage_path();
         let entity = Self {
             collections: Vec::new(),
             load_state: SidebarLoadState::Loading,
+            active_workspace_id,
+            workspace_collections: HashMap::new(),
             revision: 0,
             persistor: storage_path
                 .clone()
@@ -364,18 +379,18 @@ impl CollectionsEntity {
     }
 
     pub fn spawn_storage_load()
-    -> tokio::sync::oneshot::Receiver<Result<(Vec<Collection>, bool), String>> {
+    -> tokio::sync::oneshot::Receiver<Result<(HashMap<Uuid, Vec<Collection>>, bool), String>> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let path = Self::get_storage_path();
         shared_tokio_runtime().spawn(async move {
             let result = async {
                 let Some(path) = path else {
-                    return Ok((Vec::new(), false));
+                    return Ok((HashMap::new(), false));
                 };
                 match tokio::fs::read_to_string(path).await {
                     Ok(contents) => deserialize_store(&contents).map_err(|error| error.to_string()),
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        Ok((Vec::new(), false))
+                        Ok((HashMap::new(), false))
                     }
                     Err(error) => Err(error.to_string()),
                 }
@@ -388,12 +403,15 @@ impl CollectionsEntity {
 
     pub fn apply_storage_load(
         &mut self,
-        result: Result<(Vec<Collection>, bool), String>,
+        result: Result<(HashMap<Uuid, Vec<Collection>>, bool), String>,
         cx: &mut Context<Self>,
     ) {
         match result {
-            Ok((collections, migrated)) => {
-                self.collections = collections;
+            Ok((mut workspaces, migrated)) => {
+                self.collections = workspaces
+                    .remove(&self.active_workspace_id)
+                    .unwrap_or_default();
+                self.workspace_collections = workspaces;
                 self.load_state = SidebarLoadState::Ready;
                 self.bump_revision();
                 if migrated {
@@ -407,11 +425,37 @@ impl CollectionsEntity {
 
     fn save_to_file(&self) {
         if let Some(persistor) = &self.persistor {
+            let mut workspaces = self.workspace_collections.clone();
+            workspaces.insert(self.active_workspace_id, self.collections.clone());
             let store = CollectionsStore {
                 version: COLLECTIONS_STORAGE_VERSION,
-                collections: self.collections.clone(),
+                workspaces,
             };
             persistor.schedule_save(store);
+        }
+    }
+
+    pub fn set_active_workspace(&mut self, workspace_id: Uuid, cx: &mut Context<Self>) {
+        if workspace_id == self.active_workspace_id {
+            return;
+        }
+        let previous = std::mem::take(&mut self.collections);
+        self.workspace_collections
+            .insert(self.active_workspace_id, previous);
+        self.active_workspace_id = workspace_id;
+        self.collections = self
+            .workspace_collections
+            .remove(&workspace_id)
+            .unwrap_or_default();
+        self.bump_revision();
+        self.save_to_file();
+        cx.notify();
+    }
+
+    pub fn remove_workspace(&mut self, workspace_id: Uuid) {
+        if workspace_id != self.active_workspace_id {
+            self.workspace_collections.remove(&workspace_id);
+            self.save_to_file();
         }
     }
 
@@ -745,19 +789,28 @@ impl CollectionNode {
     }
 }
 
-fn deserialize_store(contents: &str) -> Result<(Vec<Collection>, bool), serde_json::Error> {
-    if let Ok(store) = serde_json::from_str::<CollectionsStore>(contents) {
-        return Ok((store.collections, false));
+fn deserialize_store(
+    contents: &str,
+) -> Result<(HashMap<Uuid, Vec<Collection>>, bool), serde_json::Error> {
+    if let Ok(store) = serde_json::from_str::<CollectionsStore>(contents)
+        && store.version == COLLECTIONS_STORAGE_VERSION
+    {
+        return Ok((store.workspaces, false));
+    }
+
+    if let Ok(store) = serde_json::from_str::<LegacyVersionedCollectionsStore>(contents) {
+        return Ok((
+            HashMap::from([(default_workspace_id(), store.collections)]),
+            true,
+        ));
     }
 
     let legacy_collections = serde_json::from_str::<Vec<LegacyCollection>>(contents)?;
-    Ok((
-        legacy_collections
-            .into_iter()
-            .map(LegacyCollection::into_collection)
-            .collect(),
-        true,
-    ))
+    let collections = legacy_collections
+        .into_iter()
+        .map(LegacyCollection::into_collection)
+        .collect();
+    Ok((HashMap::from([(default_workspace_id(), collections)]), true))
 }
 
 fn append_destination_entries(
@@ -969,7 +1022,8 @@ mod tests {
             }}]"#
         );
 
-        let (collections, migrated) = deserialize_store(&legacy).expect("legacy parse");
+        let (workspaces, migrated) = deserialize_store(&legacy).expect("legacy parse");
+        let collections = &workspaces[&default_workspace_id()];
         assert!(migrated);
         assert_eq!(collections.len(), 1);
         assert_eq!(collections[0].id, collection_id);
@@ -1000,10 +1054,11 @@ mod tests {
 
         let store = CollectionsStore {
             version: COLLECTIONS_STORAGE_VERSION,
-            collections: vec![collection.clone()],
+            workspaces: HashMap::from([(default_workspace_id(), vec![collection.clone()])]),
         };
         let encoded = serde_json::to_string(&store).expect("encode");
-        let (decoded, migrated) = deserialize_store(&encoded).expect("decode");
+        let (workspaces, migrated) = deserialize_store(&encoded).expect("decode");
+        let decoded = &workspaces[&default_workspace_id()];
 
         assert!(!migrated);
         assert_eq!(decoded.len(), 1);

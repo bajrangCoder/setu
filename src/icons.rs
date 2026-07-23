@@ -54,6 +54,13 @@ pub enum IconName {
     Volume2,
     VolumeX,
     Ellipsis,
+    Variable,
+    Lock,
+    Unlock,
+    Box,
+    Package,
+    Eye,
+    EyeOff,
 }
 
 impl IconNamed for IconName {
@@ -106,6 +113,13 @@ impl IconNamed for IconName {
             Self::Volume2 => "icons/volume-2.svg",
             Self::VolumeX => "icons/volume-x.svg",
             Self::Ellipsis => "icons/ellipsis.svg",
+            Self::Variable => "icons/variable.svg",
+            Self::Lock => "icons/lock.svg",
+            Self::Unlock => "icons/unlock.svg",
+            Self::Box => "icons/box.svg",
+            Self::Package => "icons/package.svg",
+            Self::Eye => "icons/eye.svg",
+            Self::EyeOff => "icons/eye-closed.svg",
         }
         .into()
     }

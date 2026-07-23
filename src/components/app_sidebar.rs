@@ -10,6 +10,7 @@ use crate::entities::{CollectionsEntity, HistoryEntity, HistoryRow};
 use crate::icons::IconName;
 
 use super::collections_panel::CollectionsPanel;
+use super::environment_panel::EnvironmentPanel;
 use super::history_panel::{HistoryFilter, HistoryGroupBy, HistoryPanel};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -17,6 +18,7 @@ pub enum SidebarTab {
     #[default]
     History,
     Collections,
+    Environments,
 }
 
 #[derive(IntoElement)]
@@ -24,6 +26,7 @@ pub struct AppSidebar {
     active_tab: SidebarTab,
     history: Entity<HistoryEntity>,
     collections: Entity<CollectionsEntity>,
+    environment_panel: Entity<EnvironmentPanel>,
     history_search: Entity<InputState>,
     collections_search: Entity<InputState>,
     history_rows: Arc<Vec<HistoryRow>>,
@@ -56,6 +59,7 @@ impl AppSidebar {
     pub fn new(
         history: Entity<HistoryEntity>,
         collections: Entity<CollectionsEntity>,
+        environment_panel: Entity<EnvironmentPanel>,
         history_search: Entity<InputState>,
         collections_search: Entity<InputState>,
         history_rows: Arc<Vec<HistoryRow>>,
@@ -65,6 +69,7 @@ impl AppSidebar {
             active_tab: SidebarTab::History,
             history,
             collections,
+            environment_panel,
             history_search,
             collections_search,
             history_rows,
@@ -372,6 +377,7 @@ impl AppSidebar {
             .id(match tab {
                 SidebarTab::History => "history-tab-btn",
                 SidebarTab::Collections => "collections-tab-btn",
+                SidebarTab::Environments => "environments-tab-btn",
             })
             .flex()
             .items_center()
@@ -402,6 +408,7 @@ impl RenderOnce for AppSidebar {
         let panel = match self.active_tab {
             SidebarTab::History => self.build_history_panel().into_any_element(),
             SidebarTab::Collections => self.build_collections_panel().into_any_element(),
+            SidebarTab::Environments => self.environment_panel.clone().into_any_element(),
         };
 
         div()
@@ -424,6 +431,11 @@ impl RenderOnce for AppSidebar {
                     .child(self.render_icon_button(
                         SidebarTab::Collections,
                         IconName::Folder,
+                        &theme,
+                    ))
+                    .child(self.render_icon_button(
+                        SidebarTab::Environments,
+                        IconName::Package,
                         &theme,
                     )),
             )
