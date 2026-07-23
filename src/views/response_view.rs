@@ -1,12 +1,15 @@
+use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use bytes::Bytes;
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, Context, ElementId, Entity, FocusHandle, Focusable, Image, ImageFormat,
-    IntoElement, PathPromptOptions, Pixels, Render, SharedString, Size, Styled, Window, div, img,
-    px, size,
+    IntoElement, ListHorizontalSizingBehavior, PathPromptOptions, Pixels, Render, SharedString,
+    Size, Styled, UniformListScrollHandle, Window, div, img, px, size, uniform_list,
 };
 use gpui_component::Selectable;
 use gpui_component::Sizable;
@@ -23,10 +26,18 @@ use crate::components::StatusBadge;
 use crate::components::audio_player::AudioPlayer;
 use crate::entities::{
     ContentCategory, ResponseData, ResponseEntity, ResponseEvent, ResponseState,
+    ResponseTextSnapshot,
 };
 use crate::icons::IconName;
 use gpui_component::ActiveTheme;
 use gpui_component::Icon;
+
+const LARGE_RESPONSE_THRESHOLD_BYTES: usize = 256 * 1024;
+const LARGE_RESPONSE_MAX_EDITOR_LINES: usize = 20_000;
+const VIRTUAL_TEXT_ROW_MAX_BYTES: usize = 384;
+const VIRTUAL_TEXT_ROW_HEIGHT: Pixels = px(22.0);
+const VIRTUAL_TEXT_ROW_WIDTH: Pixels = px(8192.0);
+const LARGE_RESPONSE_DEBOUNCE: Duration = Duration::from_millis(16);
 
 /// Active tab in the response panel
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -40,19 +51,126 @@ pub enum ResponseTab {
     Headers,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ResponseTextKey {
+    body_hash: u64,
+    category: ContentCategory,
+}
+
+#[derive(Debug, Clone)]
+struct VirtualTextRow {
+    line_number: usize,
+    continuation: bool,
+    byte_range: Range<usize>,
+}
+
+struct VirtualTextDisplay {
+    content: Arc<str>,
+    rows: Arc<Vec<VirtualTextRow>>,
+    scroll_handle: UniformListScrollHandle,
+}
+
+enum TextDisplay {
+    Editor(Entity<InputState>),
+    Virtual(VirtualTextDisplay),
+}
+
+struct PreparedTextDisplay {
+    key: ResponseTextKey,
+    content: Arc<str>,
+    display: TextDisplay,
+}
+
+fn virtual_text_rows(content: &str) -> Vec<VirtualTextRow> {
+    if content.is_empty() {
+        return vec![VirtualTextRow {
+            line_number: 1,
+            continuation: false,
+            byte_range: 0..0,
+        }];
+    }
+
+    let mut rows = Vec::new();
+    let mut line_number = 1;
+    let mut line_start = 0;
+
+    while line_start < content.len() {
+        let line_end_with_newline = content[line_start..]
+            .find('\n')
+            .map(|offset| line_start + offset + 1)
+            .unwrap_or(content.len());
+        let mut line_end = line_end_with_newline;
+        if line_end > line_start && content.as_bytes()[line_end - 1] == b'\n' {
+            line_end -= 1;
+        }
+        if line_end > line_start && content.as_bytes()[line_end - 1] == b'\r' {
+            line_end -= 1;
+        }
+
+        if line_end == line_start {
+            rows.push(VirtualTextRow {
+                line_number,
+                continuation: false,
+                byte_range: line_start..line_start,
+            });
+        } else {
+            let mut chunk_start = line_start;
+            let mut continuation = false;
+            while chunk_start < line_end {
+                let mut chunk_end = (chunk_start + VIRTUAL_TEXT_ROW_MAX_BYTES).min(line_end);
+                while chunk_end > chunk_start && !content.is_char_boundary(chunk_end) {
+                    chunk_end -= 1;
+                }
+                if chunk_end == chunk_start {
+                    chunk_end = line_end;
+                }
+
+                rows.push(VirtualTextRow {
+                    line_number,
+                    continuation,
+                    byte_range: chunk_start..chunk_end,
+                });
+                continuation = true;
+                chunk_start = chunk_end;
+            }
+        }
+
+        line_number += 1;
+        line_start = line_end_with_newline;
+    }
+
+    if content.ends_with('\n') {
+        rows.push(VirtualTextRow {
+            line_number,
+            continuation: false,
+            byte_range: content.len()..content.len(),
+        });
+    }
+
+    rows
+}
+
+fn should_virtualize_response_text(content: &str) -> bool {
+    content.len() >= LARGE_RESPONSE_THRESHOLD_BYTES
+        || content
+            .as_bytes()
+            .iter()
+            .filter(|&&byte| byte == b'\n')
+            .take(LARGE_RESPONSE_MAX_EDITOR_LINES)
+            .count()
+            >= LARGE_RESPONSE_MAX_EDITOR_LINES
+}
+
 /// Response view
 pub struct ResponseView {
     pub response: Entity<ResponseEntity>,
     active_tab: ResponseTab,
-    /// Body display
-    body_display: Option<Entity<InputState>>,
-    /// Raw body display (plain text)
-    raw_display: Option<Entity<InputState>>,
-    /// Independent hashes prevent switching tabs from suppressing cache refreshes.
-    last_pretty_hash: u64,
-    last_raw_hash: u64,
-    /// Last content category for pretty display
-    last_content_category: ContentCategory,
+    body_display: Option<PreparedTextDisplay>,
+    raw_display: Option<PreparedTextDisplay>,
+    requested_body: Option<ResponseTextKey>,
+    requested_raw: Option<ResponseTextKey>,
+    body_generation: Arc<AtomicU64>,
+    raw_generation: Arc<AtomicU64>,
     focus_handle: FocusHandle,
     /// Virtual list scroll handle for headers tab
     headers_scroll_handle: VirtualListScrollHandle,
@@ -64,8 +182,15 @@ pub struct ResponseView {
 
 impl ResponseView {
     pub fn new(response: Entity<ResponseEntity>, cx: &mut Context<Self>) -> Self {
-        cx.subscribe(&response, |_this, _response, _event: &ResponseEvent, cx| {
-            // Just notify to trigger re-render, which will update the display
+        cx.subscribe(&response, |this, _response, _event: &ResponseEvent, cx| {
+            this.body_generation.fetch_add(1, Ordering::AcqRel);
+            this.raw_generation.fetch_add(1, Ordering::AcqRel);
+            this.requested_body = None;
+            this.requested_raw = None;
+            this.body_display = None;
+            this.raw_display = None;
+            this.audio_player = None;
+            this.decoded_image = None;
             cx.notify();
         })
         .detach();
@@ -75,9 +200,10 @@ impl ResponseView {
             active_tab: ResponseTab::Body,
             body_display: None,
             raw_display: None,
-            last_pretty_hash: 0,
-            last_raw_hash: 0,
-            last_content_category: ContentCategory::Text,
+            requested_body: None,
+            requested_raw: None,
+            body_generation: Arc::new(AtomicU64::new(0)),
+            raw_generation: Arc::new(AtomicU64::new(0)),
             focus_handle: cx.focus_handle(),
             headers_scroll_handle: VirtualListScrollHandle::new(),
             wrap_lines: true,
@@ -87,29 +213,26 @@ impl ResponseView {
     }
 
     fn ensure_body_display(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (current_hash, content_category, formatted_content) = {
-            self.response.update(cx, |resp, _cx| {
-                if let Some(ref mut data) = resp.data {
-                    let category = data.content_category();
-                    let formatted = match category {
-                        ContentCategory::Json
-                        | ContentCategory::Html
-                        | ContentCategory::Xml
-                        | ContentCategory::Text => Some(data.formatted_body()),
-                        _ => None,
-                    };
-                    (data.body_hash(), category, formatted)
-                } else {
-                    (0, ContentCategory::Text, None)
-                }
-            })
+        let Some((key, snapshot)) = self.response.read(cx).data.as_ref().map(|data| {
+            let category = data.content_category();
+            (
+                ResponseTextKey {
+                    body_hash: data.body_hash(),
+                    category,
+                },
+                data.text_snapshot(),
+            )
+        }) else {
+            return;
         };
 
-        let needs_update =
-            current_hash != self.last_pretty_hash || content_category != self.last_content_category;
+        let needs_update = self
+            .body_display
+            .as_ref()
+            .is_none_or(|display| display.key != key);
 
-        if content_category == ContentCategory::Audio {
-            if self.audio_player.is_none() || needs_update {
+        if key.category == ContentCategory::Audio {
+            if self.audio_player.is_none() || self.requested_body != Some(key) {
                 let audio_bytes = self
                     .response
                     .read(cx)
@@ -130,14 +253,13 @@ impl ResponseView {
                     self.audio_player = Some(player);
                 }
 
-                self.last_pretty_hash = current_hash;
-                self.last_content_category = content_category;
+                self.requested_body = Some(key);
             }
             return;
         }
 
-        if content_category == ContentCategory::Image {
-            if needs_update {
+        if key.category == ContentCategory::Image {
+            if self.requested_body != Some(key) {
                 let image_data = self.response.read(cx).data.as_ref().and_then(|data| {
                     if data.body_bytes().is_empty() {
                         return None;
@@ -155,74 +277,192 @@ impl ResponseView {
                         data.body_bytes().to_vec(),
                     )))
                 });
-                self.decoded_image = image_data.map(|image| (current_hash, image));
-                self.last_pretty_hash = current_hash;
-                self.last_content_category = content_category;
+                self.decoded_image = image_data.map(|image| (key.body_hash, image));
+                self.requested_body = Some(key);
             }
             return;
         }
 
         // Clear audio player if switching away from audio
-        if self.audio_player.is_some() && content_category != ContentCategory::Audio {
+        if self.audio_player.is_some() && key.category != ContentCategory::Audio {
             self.audio_player = None;
         }
         if self.decoded_image.is_some() {
             self.decoded_image = None;
         }
 
-        if self.body_display.is_none() || needs_update {
-            let lang = content_category.language();
-            let content = formatted_content.map(|s| s.to_string()).unwrap_or_default();
-
-            let wrap_lines = self.wrap_lines;
-            let body_display = cx.new(|cx| {
-                InputState::new(window, cx)
-                    .code_editor(lang)
-                    .folding(true)
-                    .line_number(true)
-                    .searchable(true)
-                    .soft_wrap(wrap_lines)
-                    .default_value(&content)
-            });
-            self.body_display = Some(body_display);
-            self.last_pretty_hash = current_hash;
-            self.last_content_category = content_category;
+        if needs_update && self.requested_body != Some(key) {
+            self.body_display = None;
+            self.requested_body = Some(key);
+            self.schedule_text_display(key, snapshot, true, window, cx);
         }
     }
 
     fn ensure_raw_display(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (current_hash, raw_body) = {
-            self.response.update(cx, |resp, _cx| {
-                if let Some(ref mut data) = resp.data {
-                    (data.body_hash(), Some(data.raw_body().to_string()))
-                } else {
-                    (0, None)
-                }
-            })
+        let Some((key, snapshot)) = self.response.read(cx).data.as_ref().map(|data| {
+            (
+                ResponseTextKey {
+                    body_hash: data.body_hash(),
+                    category: data.content_category(),
+                },
+                data.text_snapshot(),
+            )
+        }) else {
+            return;
         };
 
-        if self.raw_display.is_none() {
-            let content = raw_body.unwrap_or_default();
-            let wrap_lines = self.wrap_lines;
-            let raw_display = cx.new(|cx| {
-                InputState::new(window, cx)
-                    .code_editor("text")
-                    .line_number(true)
-                    .searchable(true)
-                    .soft_wrap(wrap_lines)
-                    .default_value(&content)
-            });
-            self.raw_display = Some(raw_display);
-            self.last_raw_hash = current_hash;
-        } else if current_hash != self.last_raw_hash
-            && let Some(ref raw_display) = self.raw_display
-        {
-            let content = raw_body.unwrap_or_default();
-            raw_display.update(cx, |state, cx| {
-                state.set_value(content, window, cx);
-            });
-            self.last_raw_hash = current_hash;
+        let needs_update = self
+            .raw_display
+            .as_ref()
+            .is_none_or(|display| display.key != key);
+        if needs_update && self.requested_raw != Some(key) {
+            self.raw_display = None;
+            self.requested_raw = Some(key);
+            self.schedule_text_display(key, snapshot, false, window, cx);
         }
+    }
+
+    fn schedule_text_display(
+        &mut self,
+        key: ResponseTextKey,
+        snapshot: ResponseTextSnapshot,
+        formatted: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let generation_clock = if formatted {
+            self.body_generation.clone()
+        } else {
+            self.raw_generation.clone()
+        };
+        let generation = generation_clock
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
+        let worker_generation_clock = generation_clock.clone();
+        let should_debounce = snapshot.source_len() >= LARGE_RESPONSE_THRESHOLD_BYTES;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        crate::utils::shared_tokio_runtime().spawn(async move {
+            if should_debounce {
+                tokio::time::sleep(LARGE_RESPONSE_DEBOUNCE).await;
+            }
+            if worker_generation_clock.load(Ordering::Acquire) != generation {
+                return;
+            }
+
+            let blocking_generation_clock = worker_generation_clock.clone();
+            let prepared = tokio::task::spawn_blocking(move || {
+                if blocking_generation_clock.load(Ordering::Acquire) != generation {
+                    return None;
+                }
+                let content = if formatted {
+                    snapshot.formatted_body()
+                } else {
+                    snapshot.raw_body()
+                };
+                let rows = should_virtualize_response_text(&content)
+                    .then(|| Arc::new(virtual_text_rows(&content)));
+                Some((content, rows))
+            })
+            .await;
+
+            if worker_generation_clock.load(Ordering::Acquire) == generation
+                && let Ok(Some(prepared)) = prepared
+            {
+                let _ = tx.send(prepared);
+            }
+        });
+
+        let response = self.response.clone();
+        cx.spawn_in(window, async move |view, cx| {
+            let result = rx.await;
+            let _ = cx.update(|window, app| {
+                if generation_clock.load(Ordering::Acquire) != generation {
+                    return;
+                }
+                let Ok((content, rows)) = result else {
+                    let _ = view.update(app, |this, cx| {
+                        if formatted && this.requested_body == Some(key) {
+                            this.requested_body = None;
+                        } else if !formatted && this.requested_raw == Some(key) {
+                            this.requested_raw = None;
+                        }
+                        cx.notify();
+                    });
+                    return;
+                };
+
+                let is_current = response.read(app).data.as_ref().is_some_and(|data| {
+                    data.body_hash() == key.body_hash && data.content_category() == key.category
+                });
+                if !is_current {
+                    let _ = view.update(app, |this, cx| {
+                        if formatted && this.requested_body == Some(key) {
+                            this.requested_body = None;
+                        } else if !formatted && this.requested_raw == Some(key) {
+                            this.requested_raw = None;
+                        }
+                        cx.notify();
+                    });
+                    return;
+                }
+
+                response.update(app, |response, _cx| {
+                    if let Some(data) = response.data.as_mut() {
+                        data.cache_prepared_body(key.body_hash, formatted, content.clone());
+                    }
+                });
+
+                let _ = view.update(app, |this, cx| {
+                    let requested = if formatted {
+                        this.requested_body
+                    } else {
+                        this.requested_raw
+                    };
+                    if requested != Some(key) {
+                        return;
+                    }
+
+                    let display = if let Some(rows) = rows {
+                        TextDisplay::Virtual(VirtualTextDisplay {
+                            content: content.clone(),
+                            rows,
+                            scroll_handle: UniformListScrollHandle::new(),
+                        })
+                    } else {
+                        let language = if formatted {
+                            key.category.language()
+                        } else {
+                            "text"
+                        };
+                        let wrap_lines = this.wrap_lines;
+                        let editor_content = content.clone();
+                        let editor = cx.new(move |cx| {
+                            InputState::new(window, cx)
+                                .code_editor(language)
+                                .folding(formatted)
+                                .line_number(true)
+                                .searchable(true)
+                                .soft_wrap(wrap_lines)
+                                .default_value(editor_content)
+                        });
+                        TextDisplay::Editor(editor)
+                    };
+
+                    let prepared = PreparedTextDisplay {
+                        key,
+                        content,
+                        display,
+                    };
+                    if formatted {
+                        this.body_display = Some(prepared);
+                    } else {
+                        this.raw_display = Some(prepared);
+                    }
+                    cx.notify();
+                });
+            });
+        })
+        .detach();
     }
 
     pub fn set_tab(&mut self, tab: ResponseTab, cx: &mut Context<Self>) {
@@ -232,13 +472,21 @@ impl ResponseView {
 
     pub fn toggle_wrap_lines(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.wrap_lines = !self.wrap_lines;
-        if let Some(ref body_display) = self.body_display {
-            body_display.update(cx, |state, cx| {
+        if let Some(PreparedTextDisplay {
+            display: TextDisplay::Editor(editor),
+            ..
+        }) = &self.body_display
+        {
+            editor.update(cx, |state, cx| {
                 state.set_soft_wrap(self.wrap_lines, window, cx);
             });
         }
-        if let Some(ref raw_display) = self.raw_display {
-            raw_display.update(cx, |state, cx| {
+        if let Some(PreparedTextDisplay {
+            display: TextDisplay::Editor(editor),
+            ..
+        }) = &self.raw_display
+        {
+            editor.update(cx, |state, cx| {
                 state.set_soft_wrap(self.wrap_lines, window, cx);
             });
         }
@@ -247,42 +495,106 @@ impl ResponseView {
 
     pub fn trigger_search(&mut self, window: &mut Window, _cx: &mut Context<Self>) {
         let editor = match self.active_tab {
-            ResponseTab::Body => self.body_display.clone(),
-            ResponseTab::Raw => self.raw_display.clone(),
+            ResponseTab::Body => self.body_display.as_ref(),
+            ResponseTab::Raw => self.raw_display.as_ref(),
+            ResponseTab::Headers => None,
+        }
+        .and_then(|display| match &display.display {
+            TextDisplay::Editor(editor) => Some(editor.clone()),
+            TextDisplay::Virtual(_) => None,
+        });
+        crate::utils::trigger_editor_search(editor, window);
+    }
+
+    fn active_text_is_virtual(&self) -> bool {
+        let display = match self.active_tab {
+            ResponseTab::Body => self.body_display.as_ref(),
+            ResponseTab::Raw => self.raw_display.as_ref(),
             ResponseTab::Headers => None,
         };
-        crate::utils::trigger_editor_search(editor, window);
+        display.is_some_and(|display| matches!(display.display, TextDisplay::Virtual(_)))
+    }
+
+    fn prepared_text_for_tab(&self, tab: ResponseTab) -> Option<Arc<str>> {
+        match tab {
+            ResponseTab::Body => self.body_display.as_ref(),
+            ResponseTab::Raw => self.raw_display.as_ref(),
+            ResponseTab::Headers => None,
+        }
+        .map(|display| display.content.clone())
     }
 
     fn copy_response(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let active_tab = self.active_tab;
-        let content = self.response.update(cx, |resp, _cx| {
-            resp.data.as_mut().map(|d| match active_tab {
-                ResponseTab::Body => d.formatted_body().to_string(),
-                ResponseTab::Raw => d.raw_body().to_string(),
-                ResponseTab::Headers => {
-                    let headers_json: Vec<serde_json::Value> = d
-                        .headers
-                        .iter()
-                        .map(|(k, v)| {
-                            serde_json::json!({
-                                "key": k,
-                                "value": v
-                            })
-                        })
-                        .collect();
-                    serde_json::to_string(&headers_json).unwrap_or_else(|_| "[]".to_string())
+        if matches!(active_tab, ResponseTab::Body | ResponseTab::Raw) {
+            if let Some(content) = self.prepared_text_for_tab(active_tab)
+                && content.len() < LARGE_RESPONSE_THRESHOLD_BYTES
+            {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(content.to_string()));
+                window.push_notification(
+                    (NotificationType::Success, "Response copied to clipboard"),
+                    cx,
+                );
+                return;
+            }
+
+            let prepared = self.prepared_text_for_tab(active_tab);
+            let snapshot = prepared.is_none().then(|| {
+                self.response
+                    .read(cx)
+                    .data
+                    .as_ref()
+                    .map(ResponseData::text_snapshot)
+            });
+            let formatted = active_tab == ResponseTab::Body;
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            crate::utils::shared_tokio_runtime().spawn_blocking(move || {
+                let content = prepared.or_else(|| {
+                    snapshot.flatten().map(|snapshot| {
+                        if formatted {
+                            snapshot.formatted_body()
+                        } else {
+                            snapshot.raw_body()
+                        }
+                    })
+                });
+                if let Some(content) = content {
+                    let _ = tx.send(content.to_string());
+                }
+            });
+            cx.spawn_in(window, async move |_view, cx| {
+                if let Ok(content) = rx.await {
+                    let _ = cx.update(|window, app| {
+                        app.write_to_clipboard(gpui::ClipboardItem::new_string(content));
+                        window.push_notification(
+                            (NotificationType::Success, "Response copied to clipboard"),
+                            app,
+                        );
+                    });
                 }
             })
+            .detach();
+            return;
+        }
+
+        let content = self.response.read(cx).data.as_ref().map(|data| {
+            let headers_json: Vec<serde_json::Value> = data
+                .headers
+                .iter()
+                .map(|(key, value)| {
+                    serde_json::json!({
+                        "key": key,
+                        "value": value
+                    })
+                })
+                .collect();
+            serde_json::to_string(&headers_json).unwrap_or_else(|_| "[]".to_string())
         });
 
         if let Some(content) = content {
             cx.write_to_clipboard(gpui::ClipboardItem::new_string(content));
             window.push_notification(
-                (
-                    gpui_component::notification::NotificationType::Success,
-                    "Response copied to clipboard",
-                ),
+                (NotificationType::Success, "Response copied to clipboard"),
                 cx,
             );
         }
@@ -291,10 +603,26 @@ impl ResponseView {
     fn save_to_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         enum SaveContent {
             Text(String),
+            SharedText(Arc<str>),
             Bytes(Bytes),
         }
 
         let active_tab = self.active_tab;
+        let prepared_text = self.prepared_text_for_tab(active_tab);
+        let requires_prepared_text = matches!(active_tab, ResponseTab::Body | ResponseTab::Raw)
+            && self.response.read(cx).data.as_ref().is_some_and(|data| {
+                let category = data.content_category();
+                let can_save_original_bytes = matches!(
+                    category,
+                    ContentCategory::Image | ContentCategory::Binary | ContentCategory::Audio
+                ) && !data.body_bytes().is_empty();
+                !can_save_original_bytes
+            });
+        if requires_prepared_text && prepared_text.is_none() {
+            window.push_notification((NotificationType::Info, "Response is still preparing"), cx);
+            return;
+        }
+
         let Some((save_content, default_extension)) = self.response.update(cx, |resp, _cx| {
             let data = resp.data.as_mut()?;
             let content_category = data.content_category();
@@ -323,8 +651,11 @@ impl ResponseView {
                 _ if is_binary && !data.body_bytes().is_empty() => {
                     SaveContent::Bytes(data.body_bytes().clone())
                 }
-                ResponseTab::Body => SaveContent::Text(data.formatted_body().to_string()),
-                ResponseTab::Raw => SaveContent::Text(data.raw_body().to_string()),
+                ResponseTab::Body | ResponseTab::Raw => SaveContent::SharedText(
+                    prepared_text
+                        .clone()
+                        .expect("text response preparation was checked before saving"),
+                ),
             };
 
             let default_extension = match active_tab {
@@ -411,11 +742,23 @@ impl ResponseView {
             };
 
             let file_path = dir_path.join(&default_name);
-
-            let write_result = match &save_content {
-                SaveContent::Text(text) => std::fs::write(&file_path, text),
-                SaveContent::Bytes(bytes) => std::fs::write(&file_path, bytes),
-            };
+            let file_path_for_worker = file_path.clone();
+            let (write_tx, write_rx) = tokio::sync::oneshot::channel();
+            crate::utils::shared_tokio_runtime().spawn_blocking(move || {
+                let result = match save_content {
+                    SaveContent::Text(text) => std::fs::write(&file_path_for_worker, text),
+                    SaveContent::SharedText(text) => {
+                        std::fs::write(&file_path_for_worker, text.as_bytes())
+                    }
+                    SaveContent::Bytes(bytes) => std::fs::write(&file_path_for_worker, bytes),
+                };
+                let _ = write_tx.send(result);
+            });
+            let write_result = write_rx.await.unwrap_or_else(|_| {
+                Err(std::io::Error::other(
+                    "response file writer stopped unexpectedly",
+                ))
+            });
 
             if let Err(e) = write_result {
                 log::error!("Failed to save response: {}", e);
@@ -440,6 +783,83 @@ impl ResponseView {
             });
         })
         .detach();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        LARGE_RESPONSE_MAX_EDITOR_LINES, LARGE_RESPONSE_THRESHOLD_BYTES,
+        VIRTUAL_TEXT_ROW_MAX_BYTES, should_virtualize_response_text, virtual_text_rows,
+    };
+
+    fn rendered_rows(content: &str) -> Vec<&str> {
+        virtual_text_rows(content)
+            .into_iter()
+            .map(|row| &content[row.byte_range.clone()])
+            .collect()
+    }
+
+    #[test]
+    fn virtual_rows_preserve_lines_and_mark_continuations() {
+        let long_line = "x".repeat(VIRTUAL_TEXT_ROW_MAX_BYTES + 12);
+        let content = format!("first\n{long_line}\n\nlast");
+        let rows = virtual_text_rows(&content);
+
+        assert_eq!(rows[0].line_number, 1);
+        assert!(!rows[0].continuation);
+        assert_eq!(rows[1].line_number, 2);
+        assert!(!rows[1].continuation);
+        assert_eq!(rows[2].line_number, 2);
+        assert!(rows[2].continuation);
+        assert_eq!(rows[3].line_number, 3);
+        assert_eq!(rows[3].byte_range.start, rows[3].byte_range.end);
+        assert_eq!(rows[4].line_number, 4);
+
+        assert_eq!(
+            rendered_rows(&content),
+            vec![
+                "first",
+                &long_line[..VIRTUAL_TEXT_ROW_MAX_BYTES],
+                "xxxxxxxxxxxx",
+                "",
+                "last"
+            ]
+        );
+    }
+
+    #[test]
+    fn virtual_rows_split_only_at_utf8_boundaries() {
+        let content = "💝".repeat(VIRTUAL_TEXT_ROW_MAX_BYTES);
+        let rows = virtual_text_rows(&content);
+
+        assert!(rows.len() > 1);
+        assert!(rows.iter().all(|row| {
+            content.is_char_boundary(row.byte_range.start)
+                && content.is_char_boundary(row.byte_range.end)
+                && row.byte_range.len() <= VIRTUAL_TEXT_ROW_MAX_BYTES
+        }));
+    }
+
+    #[test]
+    fn virtual_rows_keep_a_trailing_empty_line() {
+        let content = "first\n";
+        let rows = virtual_text_rows(content);
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1].line_number, 2);
+        assert_eq!(rows[1].byte_range, content.len()..content.len());
+    }
+
+    #[test]
+    fn virtualizes_by_bytes_or_line_count() {
+        assert!(should_virtualize_response_text(
+            &"x".repeat(LARGE_RESPONSE_THRESHOLD_BYTES)
+        ));
+        assert!(should_virtualize_response_text(
+            &"\n".repeat(LARGE_RESPONSE_MAX_EDITOR_LINES)
+        ));
+        assert!(!should_virtualize_response_text("small\nresponse"));
     }
 }
 
@@ -695,7 +1115,8 @@ impl ResponseView {
         };
 
         let wrap_lines = self.wrap_lines;
-        let show_wrap_toggle = self.active_tab != ResponseTab::Headers;
+        let large_response_mode = self.active_text_is_virtual();
+        let show_editor_tools = self.active_tab != ResponseTab::Headers && !large_response_mode;
 
         div()
             .id("response-tab-content")
@@ -718,10 +1139,21 @@ impl ResponseView {
                     .border_color(theme.border)
                     .child(
                         div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
                             .text_color(theme.muted_foreground)
                             .text_size(px(11.0))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child(tab_label),
+                            .child(tab_label)
+                            .when(large_response_mode, |el| {
+                                el.child(
+                                    div()
+                                        .font_weight(gpui::FontWeight::NORMAL)
+                                        .text_size(px(10.0))
+                                        .child("Large response mode"),
+                                )
+                            }),
                     )
                     .child(
                         div()
@@ -729,7 +1161,7 @@ impl ResponseView {
                             .flex_row()
                             .items_center()
                             .gap(px(4.0))
-                            .when(show_wrap_toggle, |el| {
+                            .when(show_editor_tools, |el| {
                                 el.child(
                                     Button::new("toggle-wrap-lines")
                                         .icon(Icon::new(IconName::TextWrap).size(px(14.0)))
@@ -748,7 +1180,7 @@ impl ResponseView {
                                         }),
                                 )
                             })
-                            .when(show_wrap_toggle, |el| {
+                            .when(show_editor_tools, |el| {
                                 el.child(
                                     Button::new("find-in-response")
                                         .icon(Icon::new(IconName::Search).size(px(14.0)))
@@ -790,7 +1222,7 @@ impl ResponseView {
             )
             .child(match self.active_tab {
                 ResponseTab::Body => self.render_body_tab(theme, data, cx).into_any_element(),
-                ResponseTab::Raw => self.render_raw_tab(theme).into_any_element(),
+                ResponseTab::Raw => self.render_raw_tab(theme, data, cx).into_any_element(),
                 ResponseTab::Headers => self.render_headers_tab(theme, data, cx).into_any_element(),
             })
             .into_any_element()
@@ -800,7 +1232,7 @@ impl ResponseView {
         &self,
         theme: &gpui_component::theme::ThemeColor,
         data: &ResponseData,
-        _cx: &Context<Self>,
+        cx: &Context<Self>,
     ) -> impl IntoElement {
         let content_type = data.content_category();
 
@@ -910,38 +1342,172 @@ impl ResponseView {
                 .into_any_element();
         }
 
-        // For text/JSON/HTML/XML, show the pretty-formatted editor
-        div()
-            .id("body-scroll-container")
-            .flex()
-            .flex_col()
-            .flex_1()
-            .w_full()
-            .h_full()
-            .overflow_y_scroll()
-            .overflow_x_hidden()
-            .bg(theme.muted)
-            .when_some(self.body_display.as_ref(), |el, editor| {
-                el.child(Input::new(editor).appearance(false).size_full().p_0())
-            })
-            .into_any_element()
+        let key = ResponseTextKey {
+            body_hash: data.body_hash(),
+            category: content_type,
+        };
+        self.render_prepared_text(
+            "body",
+            self.body_display
+                .as_ref()
+                .filter(|display| display.key == key),
+            theme,
+            cx,
+        )
     }
 
-    fn render_raw_tab(&self, theme: &gpui_component::theme::ThemeColor) -> impl IntoElement {
-        // Raw response
-        div()
-            .id("raw-scroll-container")
-            .flex()
-            .flex_col()
-            .flex_1()
-            .w_full()
-            .h_full()
-            .overflow_y_scroll()
-            .overflow_x_hidden()
-            .bg(theme.muted)
-            .when_some(self.raw_display.as_ref(), |el, editor| {
-                el.child(Input::new(editor).appearance(false).size_full().p_0())
-            })
+    fn render_raw_tab(
+        &self,
+        theme: &gpui_component::theme::ThemeColor,
+        data: &ResponseData,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        let key = ResponseTextKey {
+            body_hash: data.body_hash(),
+            category: data.content_category(),
+        };
+        self.render_prepared_text(
+            "raw",
+            self.raw_display
+                .as_ref()
+                .filter(|display| display.key == key),
+            theme,
+            cx,
+        )
+    }
+
+    fn render_prepared_text(
+        &self,
+        id_prefix: &'static str,
+        prepared: Option<&PreparedTextDisplay>,
+        theme: &gpui_component::theme::ThemeColor,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let Some(prepared) = prepared else {
+            return div()
+                .id(SharedString::from(format!(
+                    "{id_prefix}-response-preparing"
+                )))
+                .flex()
+                .flex_col()
+                .flex_1()
+                .w_full()
+                .h_full()
+                .items_center()
+                .justify_center()
+                .gap(px(8.0))
+                .bg(theme.muted)
+                .text_color(theme.muted_foreground)
+                .text_size(px(11.0))
+                .child(Spinner::new().small())
+                .child("Preparing response...")
+                .into_any_element();
+        };
+
+        match &prepared.display {
+            TextDisplay::Editor(editor) => div()
+                .id(SharedString::from(format!("{id_prefix}-scroll-container")))
+                .flex()
+                .flex_col()
+                .flex_1()
+                .w_full()
+                .h_full()
+                .overflow_y_scroll()
+                .overflow_x_hidden()
+                .bg(theme.muted)
+                .child(Input::new(editor).appearance(false).size_full().p_0())
+                .into_any_element(),
+            TextDisplay::Virtual(display) => {
+                let content = display.content.clone();
+                let rows = display.rows.clone();
+                let scroll_handle = display.scroll_handle.clone();
+                let line_number_color = theme.muted_foreground;
+                let text_color = theme.foreground;
+                let border_color = theme.border.opacity(0.25);
+                let mono_font = cx.theme().mono_font_family.clone();
+
+                div()
+                    .id(SharedString::from(format!("{id_prefix}-virtual-container")))
+                    .relative()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .w_full()
+                    .h_full()
+                    .overflow_hidden()
+                    .bg(theme.muted)
+                    .child(
+                        uniform_list(
+                            SharedString::from(format!("{id_prefix}-virtual-list")),
+                            rows.len(),
+                            move |visible_range, _window, _cx| {
+                                visible_range
+                                    .map(|index| {
+                                        let row = &rows[index];
+                                        let text = content[row.byte_range.clone()].to_string();
+                                        let line_number = if row.continuation {
+                                            "·".to_string()
+                                        } else {
+                                            row.line_number.to_string()
+                                        };
+
+                                        div()
+                                            .id(ElementId::from(SharedString::from(format!(
+                                                "{id_prefix}-virtual-row-{index}"
+                                            ))))
+                                            .flex()
+                                            .items_center()
+                                            .w(VIRTUAL_TEXT_ROW_WIDTH)
+                                            .min_w(VIRTUAL_TEXT_ROW_WIDTH)
+                                            .h(VIRTUAL_TEXT_ROW_HEIGHT)
+                                            .border_b_1()
+                                            .border_color(border_color)
+                                            .font_family(mono_font.clone())
+                                            .text_size(px(12.0))
+                                            .whitespace_nowrap()
+                                            .child(
+                                                div()
+                                                    .w(px(56.0))
+                                                    .min_w(px(56.0))
+                                                    .pr(px(10.0))
+                                                    .text_align(gpui::TextAlign::Right)
+                                                    .text_color(line_number_color)
+                                                    .child(line_number),
+                                            )
+                                            .child(
+                                                div().flex_1().text_color(text_color).child(text),
+                                            )
+                                    })
+                                    .collect()
+                            },
+                        )
+                        .flex_1()
+                        .with_horizontal_sizing_behavior(
+                            ListHorizontalSizingBehavior::Unconstrained,
+                        )
+                        .track_scroll(&scroll_handle),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .right_0()
+                            .bottom(px(8.0))
+                            .w(px(8.0))
+                            .child(Scrollbar::vertical(&scroll_handle)),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right(px(8.0))
+                            .bottom_0()
+                            .h(px(8.0))
+                            .child(Scrollbar::horizontal(&scroll_handle)),
+                    )
+                    .into_any_element()
+            }
+        }
     }
 
     fn render_headers_tab(

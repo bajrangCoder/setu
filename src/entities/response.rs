@@ -131,6 +131,57 @@ pub struct ResponseData {
     pub content_type: Option<String>,
 }
 
+/// Cheaply cloned response text source for background display preparation.
+///
+/// The payload uses reference-counted storage, so taking this snapshot on the
+/// GPUI thread never copies a large response body.
+#[derive(Debug, Clone)]
+pub struct ResponseTextSnapshot {
+    body: Arc<str>,
+    body_bytes: Bytes,
+    cached_raw_body: Option<Arc<str>>,
+    cached_formatted_body: Option<Arc<str>>,
+    is_json: bool,
+}
+
+impl ResponseTextSnapshot {
+    pub fn source_len(&self) -> usize {
+        if self.body.is_empty() {
+            self.body_bytes.len()
+        } else {
+            self.body.len()
+        }
+    }
+
+    pub fn raw_body(&self) -> Arc<str> {
+        if !self.body.is_empty() || self.body_bytes.is_empty() {
+            return self.body.clone();
+        }
+        if let Some(raw) = &self.cached_raw_body {
+            return raw.clone();
+        }
+
+        Arc::from(String::from_utf8_lossy(&self.body_bytes).into_owned())
+    }
+
+    pub fn formatted_body(&self) -> Arc<str> {
+        if let Some(formatted) = &self.cached_formatted_body {
+            return formatted.clone();
+        }
+
+        let body = self.raw_body();
+        if !self.is_json {
+            return body;
+        }
+
+        serde_json::from_str::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|value| serde_json::to_string_pretty(&value).ok())
+            .map(Arc::<str>::from)
+            .unwrap_or(body)
+    }
+}
+
 impl Default for ResponsePayload {
     fn default() -> Self {
         Self {
@@ -258,11 +309,6 @@ impl ResponseData {
             content_type,
         };
         response.compact_storage();
-        // HTTP responses are constructed on the Tokio worker, so eagerly populate the
-        // expensive JSON display cache before handing the payload to GPUI.
-        if response.is_json() {
-            let _ = response.formatted_body();
-        }
         response
     }
 
@@ -370,6 +416,36 @@ impl ResponseData {
 
     pub fn body_bytes(&self) -> &Bytes {
         &self.payload.body_bytes
+    }
+
+    /// Capture the response body for CPU-heavy preparation on a worker.
+    pub fn text_snapshot(&self) -> ResponseTextSnapshot {
+        ResponseTextSnapshot {
+            body: self.payload.body.clone(),
+            body_bytes: self.payload.body_bytes.clone(),
+            cached_raw_body: self.payload.cached_raw_body.clone(),
+            cached_formatted_body: self.payload.cached_formatted_body.clone(),
+            is_json: self.is_json(),
+        }
+    }
+
+    /// Store worker-prepared text if this is still the same response body.
+    pub fn cache_prepared_body(
+        &mut self,
+        body_hash: u64,
+        formatted: bool,
+        content: Arc<str>,
+    ) -> bool {
+        if self.payload.body_hash != body_hash {
+            return false;
+        }
+
+        if formatted {
+            self.payload.cached_formatted_body = Some(content);
+        } else if self.payload.body.is_empty() && !self.payload.body_bytes.is_empty() {
+            self.payload.cached_raw_body = Some(content);
+        }
+        true
     }
 
     /// Drop redundant raw bytes for text-like responses and recompute cached metadata.
