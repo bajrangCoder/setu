@@ -369,21 +369,21 @@ impl RequestView {
 
         // Add Content-Type header based on body type
         // Skip for FormData (multipart) - reqwest sets this automatically with boundary
-        if self.body_type != BodyType::FormData {
-            if let Some(content_type) = self.body_type.content_type() {
-                if let Some(header) = headers
-                    .iter_mut()
-                    .find(|header| header.key.eq_ignore_ascii_case("Content-Type"))
-                {
-                    // Don't clobber a user-supplied custom MIME type
-                    // (e.g. application/vnd.api+json, text/csv).
-                    if BodyType::is_default_content_type(&header.value) {
-                        header.value = content_type.to_string();
-                    }
-                    header.enabled = true;
-                } else {
-                    headers.push(Header::new("Content-Type", content_type));
+        if self.body_type != BodyType::FormData
+            && let Some(content_type) = self.body_type.content_type()
+        {
+            if let Some(header) = headers
+                .iter_mut()
+                .find(|header| header.key.eq_ignore_ascii_case("Content-Type"))
+            {
+                // Don't clobber a user-supplied custom MIME type
+                // (e.g. application/vnd.api+json, text/csv).
+                if BodyType::is_default_content_type(&header.value) {
+                    header.value = content_type.to_string();
                 }
+                header.enabled = true;
+            } else {
+                headers.push(Header::new("Content-Type", content_type));
             }
         }
 
@@ -484,16 +484,15 @@ impl RequestView {
             };
 
             // Validate file extension if we have a filter
-            if let Some(ref extensions) = file_extensions {
-                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                    if !extensions.iter().any(|e| e.eq_ignore_ascii_case(ext)) {
-                        log::warn!(
-                            "File extension '{}' doesn't match expected type for {:?}",
-                            ext,
-                            body_type
-                        );
-                    }
-                }
+            if let Some(ref extensions) = file_extensions
+                && let Some(ext) = path.extension().and_then(|e| e.to_str())
+                && !extensions.iter().any(|e| e.eq_ignore_ascii_case(ext))
+            {
+                log::warn!(
+                    "File extension '{}' doesn't match expected type for {:?}",
+                    ext,
+                    body_type
+                );
             }
 
             // Read file content

@@ -81,10 +81,10 @@ where
                     return;
                 };
 
-                if let Some(parent) = path.parent() {
-                    if let Err(err) = tokio::fs::create_dir_all(parent).await {
-                        log::error!("Failed to create {} storage directory: {}", label, err);
-                    }
+                if let Some(parent) = path.parent()
+                    && let Err(err) = tokio::fs::create_dir_all(parent).await
+                {
+                    log::error!("Failed to create {} storage directory: {}", label, err);
                 }
 
                 match serde_json::to_string(&snapshot) {

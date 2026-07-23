@@ -27,11 +27,11 @@ impl MethodDropdownState {
 
     pub fn toggle(&mut self, cx: &mut Context<Self>) {
         // If we just closed (within 100ms), don't reopen
-        if let Some(close_time) = self.close_time {
-            if close_time.elapsed() < std::time::Duration::from_millis(100) {
-                self.close_time = None;
-                return;
-            }
+        if let Some(close_time) = self.close_time
+            && close_time.elapsed() < std::time::Duration::from_millis(100)
+        {
+            self.close_time = None;
+            return;
         }
         self.is_open = !self.is_open;
         self.close_time = None;

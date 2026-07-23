@@ -632,19 +632,17 @@ impl CollectionsPanel {
                 }
             });
 
-        if open {
-            if let Some(menu) = menu {
-                wrapper = wrapper.child(
-                    deferred(
-                        anchored()
-                            .position(position)
-                            .snap_to_window_with_margin(px(8.))
-                            .anchor(Corner::TopLeft)
-                            .child(menu),
-                    )
-                    .with_priority(1),
-                );
-            }
+        if open && let Some(menu) = menu {
+            wrapper = wrapper.child(
+                deferred(
+                    anchored()
+                        .position(position)
+                        .snap_to_window_with_margin(px(8.))
+                        .anchor(Corner::TopLeft)
+                        .child(menu),
+                )
+                .with_priority(1),
+            );
         }
 
         wrapper.into_any_element()

@@ -155,19 +155,19 @@ impl AudioPlayer {
 
         let start_position = self.current_position;
 
-        if let Some(ref backend) = self.backend {
-            if let Ok(backend) = backend.lock() {
-                backend.player.append(source);
+        if let Some(ref backend) = self.backend
+            && let Ok(backend) = backend.lock()
+        {
+            backend.player.append(source);
 
-                if start_position > Duration::ZERO {
-                    if let Err(error) = backend.player.try_seek(start_position) {
-                        log::warn!("Failed to seek audio on play: {error:?}");
-                        self.error_message =
-                            Some("Seeking is not supported for this audio".to_string());
-                        self.current_position = Duration::ZERO;
-                    } else {
-                        self.current_position = self.clamp_to_duration(backend.player.get_pos());
-                    }
+            if start_position > Duration::ZERO {
+                if let Err(error) = backend.player.try_seek(start_position) {
+                    log::warn!("Failed to seek audio on play: {error:?}");
+                    self.error_message =
+                        Some("Seeking is not supported for this audio".to_string());
+                    self.current_position = Duration::ZERO;
+                } else {
+                    self.current_position = self.clamp_to_duration(backend.player.get_pos());
                 }
             }
         }
@@ -177,11 +177,11 @@ impl AudioPlayer {
     }
 
     fn pause(&mut self, cx: &mut Context<Self>) {
-        if let Some(ref backend) = self.backend {
-            if let Ok(backend) = backend.lock() {
-                backend.player.pause();
-                self.current_position = self.clamp_to_duration(backend.player.get_pos());
-            }
+        if let Some(ref backend) = self.backend
+            && let Ok(backend) = backend.lock()
+        {
+            backend.player.pause();
+            self.current_position = self.clamp_to_duration(backend.player.get_pos());
         }
 
         self.playback_state = PlaybackState::Paused;
@@ -189,11 +189,11 @@ impl AudioPlayer {
     }
 
     fn resume(&mut self, cx: &mut Context<Self>) {
-        if let Some(ref backend) = self.backend {
-            if let Ok(backend) = backend.lock() {
-                backend.player.play();
-                self.current_position = self.clamp_to_duration(backend.player.get_pos());
-            }
+        if let Some(ref backend) = self.backend
+            && let Ok(backend) = backend.lock()
+        {
+            backend.player.play();
+            self.current_position = self.clamp_to_duration(backend.player.get_pos());
         }
 
         self.playback_state = PlaybackState::Playing;
@@ -201,10 +201,10 @@ impl AudioPlayer {
     }
 
     pub fn stop(&mut self, cx: &mut Context<Self>) {
-        if let Some(ref backend) = self.backend {
-            if let Ok(backend) = backend.lock() {
-                backend.player.stop();
-            }
+        if let Some(ref backend) = self.backend
+            && let Ok(backend) = backend.lock()
+        {
+            backend.player.stop();
         }
 
         self.backend = None;
@@ -235,10 +235,10 @@ impl AudioPlayer {
     }
 
     fn apply_volume(&self) {
-        if let Some(ref backend) = self.backend {
-            if let Ok(backend) = backend.lock() {
-                backend.player.set_volume(self.effective_volume());
-            }
+        if let Some(ref backend) = self.backend
+            && let Ok(backend) = backend.lock()
+        {
+            backend.player.set_volume(self.effective_volume());
         }
     }
 
@@ -260,21 +260,20 @@ impl AudioPlayer {
 
         let clamped = target.min(total_duration);
 
-        if let Some(ref backend) = self.backend {
-            if let Ok(backend) = backend.lock() {
-                if let Err(error) = backend.player.try_seek(clamped) {
-                    log::warn!("Failed to seek audio: {error:?}");
-                    self.error_message =
-                        Some("Seeking is not supported for this audio".to_string());
-                    cx.notify();
-                    return;
-                }
-
-                self.current_position = self.clamp_to_duration(backend.player.get_pos());
-                self.error_message = None;
+        if let Some(ref backend) = self.backend
+            && let Ok(backend) = backend.lock()
+        {
+            if let Err(error) = backend.player.try_seek(clamped) {
+                log::warn!("Failed to seek audio: {error:?}");
+                self.error_message = Some("Seeking is not supported for this audio".to_string());
                 cx.notify();
                 return;
             }
+
+            self.current_position = self.clamp_to_duration(backend.player.get_pos());
+            self.error_message = None;
+            cx.notify();
+            return;
         }
 
         self.current_position = clamped;

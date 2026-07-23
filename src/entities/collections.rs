@@ -789,10 +789,10 @@ fn find_node(nodes: &[CollectionNode], node_id: Uuid) -> Option<&CollectionNode>
             return Some(node);
         }
 
-        if let Some(folder) = node.folder() {
-            if let Some(found) = find_node(&folder.children, node_id) {
-                return Some(found);
-            }
+        if let Some(folder) = node.folder()
+            && let Some(found) = find_node(&folder.children, node_id)
+        {
+            return Some(found);
         }
     }
 
@@ -805,10 +805,10 @@ fn find_node_mut(nodes: &mut [CollectionNode], node_id: Uuid) -> Option<&mut Col
             return Some(node);
         }
 
-        if let Some(folder) = node.folder_mut() {
-            if let Some(found) = find_node_mut(&mut folder.children, node_id) {
-                return Some(found);
-            }
+        if let Some(folder) = node.folder_mut()
+            && let Some(found) = find_node_mut(&mut folder.children, node_id)
+        {
+            return Some(found);
         }
     }
 
@@ -858,10 +858,10 @@ fn remove_node(nodes: &mut Vec<CollectionNode>, node_id: Uuid) -> Option<Collect
     }
 
     for node in nodes {
-        if let Some(folder) = node.folder_mut() {
-            if let Some(removed) = remove_node(&mut folder.children, node_id) {
-                return Some(removed);
-            }
+        if let Some(folder) = node.folder_mut()
+            && let Some(removed) = remove_node(&mut folder.children, node_id)
+        {
+            return Some(removed);
         }
     }
 
@@ -902,10 +902,10 @@ fn move_node_between_collections(
                 return Err(MoveNodeError::CannotMoveIntoSelf);
             }
 
-            if let Some(folder_id) = target_parent_folder_id {
-                if source_node.contains_node(folder_id) {
-                    return Err(MoveNodeError::CannotMoveIntoDescendant);
-                }
+            if let Some(folder_id) = target_parent_folder_id
+                && source_node.contains_node(folder_id)
+            {
+                return Err(MoveNodeError::CannotMoveIntoDescendant);
             }
         }
     }

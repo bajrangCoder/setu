@@ -214,14 +214,14 @@ impl ResponseView {
             });
             self.raw_display = Some(raw_display);
             self.last_raw_hash = current_hash;
-        } else if current_hash != self.last_raw_hash {
-            if let Some(ref raw_display) = self.raw_display {
-                let content = raw_body.unwrap_or_default();
-                raw_display.update(cx, |state, cx| {
-                    state.set_value(content, window, cx);
-                });
-                self.last_raw_hash = current_hash;
-            }
+        } else if current_hash != self.last_raw_hash
+            && let Some(ref raw_display) = self.raw_display
+        {
+            let content = raw_body.unwrap_or_default();
+            raw_display.update(cx, |state, cx| {
+                state.set_value(content, window, cx);
+            });
+            self.last_raw_hash = current_hash;
         }
     }
 
@@ -873,18 +873,18 @@ impl ResponseView {
         }
 
         if content_type == ContentCategory::Audio {
-            if !data.body_bytes().is_empty() {
-                if let Some(ref player) = self.audio_player {
-                    return div()
-                        .id("body-audio-container")
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .w_full()
-                        .overflow_hidden()
-                        .child(player.clone())
-                        .into_any_element();
-                }
+            if !data.body_bytes().is_empty()
+                && let Some(ref player) = self.audio_player
+            {
+                return div()
+                    .id("body-audio-container")
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .w_full()
+                    .overflow_hidden()
+                    .child(player.clone())
+                    .into_any_element();
             }
 
             return div()

@@ -260,14 +260,14 @@ impl MainView {
 
     /// Ensure URL input is initialized for a tab
     fn ensure_url_input(&mut self, tab_index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(tab) = self.tabs.get_mut(tab_index) {
-            if tab.url_input.is_none() {
-                let url_input =
-                    cx.new(|cx| InputState::new(window, cx).placeholder("Enter request URL..."));
-                let tab_id = tab.id;
-                Self::subscribe_url_input(&url_input, tab_id, window, cx);
-                tab.url_input = Some(url_input);
-            }
+        if let Some(tab) = self.tabs.get_mut(tab_index)
+            && tab.url_input.is_none()
+        {
+            let url_input =
+                cx.new(|cx| InputState::new(window, cx).placeholder("Enter request URL..."));
+            let tab_id = tab.id;
+            Self::subscribe_url_input(&url_input, tab_id, window, cx);
+            tab.url_input = Some(url_input);
         }
     }
 
@@ -807,15 +807,15 @@ impl MainView {
     }
 
     fn cancel_in_flight_for_tab(&mut self, index: usize, cx: &mut Context<Self>) {
-        if let Some(tab) = self.tabs.get_mut(index) {
-            if let Some(mut in_flight) = tab.in_flight_request.take() {
-                let _ = in_flight.cancel();
-                tab.request_generation.advance();
-                tab.request
-                    .update(cx, |request, cx| request.set_sending(false, cx));
-                tab.response
-                    .update(cx, |response, cx| response.set_cancelled(cx));
-            }
+        if let Some(tab) = self.tabs.get_mut(index)
+            && let Some(mut in_flight) = tab.in_flight_request.take()
+        {
+            let _ = in_flight.cancel();
+            tab.request_generation.advance();
+            tab.request
+                .update(cx, |request, cx| request.set_sending(false, cx));
+            tab.response
+                .update(cx, |response, cx| response.set_cancelled(cx));
         }
     }
 
@@ -2078,12 +2078,12 @@ impl MainView {
     }
 
     pub fn focus_url_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(tab) = self.tabs.get(self.active_tab_index) {
-            if let Some(url_input) = &tab.url_input {
-                url_input.update(cx, |state, cx| {
-                    state.focus(window, cx);
-                });
-            }
+        if let Some(tab) = self.tabs.get(self.active_tab_index)
+            && let Some(url_input) = &tab.url_input
+        {
+            url_input.update(cx, |state, cx| {
+                state.focus(window, cx);
+            });
         }
     }
 }
