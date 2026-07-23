@@ -3,9 +3,10 @@ use gpui::{AnyElement, App, Entity, IntoElement, Styled, Window, div, px};
 use gpui_component::input::InputState;
 use gpui_component::{ActiveTheme, Icon};
 use std::rc::Rc;
+use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::entities::{CollectionsEntity, HistoryEntity};
+use crate::entities::{CollectionsEntity, HistoryEntity, HistoryRow};
 use crate::icons::IconName;
 
 use super::collections_panel::CollectionsPanel;
@@ -25,6 +26,8 @@ pub struct AppSidebar {
     collections: Entity<CollectionsEntity>,
     history_search: Entity<InputState>,
     collections_search: Entity<InputState>,
+    history_rows: Arc<Vec<HistoryRow>>,
+    history_rows_initialized: bool,
     history_filter: HistoryFilter,
     history_group_by: HistoryGroupBy,
     on_tab_change: Option<Rc<dyn Fn(SidebarTab, &mut Window, &mut App) + 'static>>,
@@ -55,6 +58,8 @@ impl AppSidebar {
         collections: Entity<CollectionsEntity>,
         history_search: Entity<InputState>,
         collections_search: Entity<InputState>,
+        history_rows: Arc<Vec<HistoryRow>>,
+        history_rows_initialized: bool,
     ) -> Self {
         Self {
             active_tab: SidebarTab::History,
@@ -62,6 +67,8 @@ impl AppSidebar {
             collections,
             history_search,
             collections_search,
+            history_rows,
+            history_rows_initialized,
             history_filter: HistoryFilter::All,
             history_group_by: HistoryGroupBy::Time,
             on_tab_change: None,
@@ -233,9 +240,14 @@ impl AppSidebar {
     }
 
     fn build_history_panel(&self) -> HistoryPanel {
-        let mut panel = HistoryPanel::new(self.history.clone(), self.history_search.clone())
-            .filter(self.history_filter)
-            .group_by(self.history_group_by);
+        let mut panel = HistoryPanel::new(
+            self.history.clone(),
+            self.history_search.clone(),
+            self.history_rows.clone(),
+            self.history_rows_initialized,
+        )
+        .filter(self.history_filter)
+        .group_by(self.history_group_by);
 
         if let Some(ref f) = self.on_load_history_request {
             let f = Rc::clone(f);

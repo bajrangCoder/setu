@@ -3,12 +3,13 @@ use gpui::{Context, EventEmitter};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 
 use crate::utils::{DebouncedJsonWriter, shared_tokio_runtime};
 
-use super::{RequestData, ResponseData, SidebarLoadState};
+use super::{HttpMethod, RequestData, ResponseData, SidebarLoadState};
 
 const SAVE_DEBOUNCE: Duration = Duration::from_secs(1);
 
@@ -89,13 +90,152 @@ pub enum HistoryRow {
         count: usize,
         collapsed: bool,
     },
-    Entry(HistoryEntry),
+    Entry(HistoryRowEntry),
+}
+
+/// Lightweight render data produced away from the GPUI thread.
+///
+/// Keeping response bodies and request headers out of this type avoids cloning
+/// complete history entries merely to display a single sidebar row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryRowEntry {
+    pub id: Uuid,
+    pub method: HttpMethod,
+    pub url_display: String,
+    pub full_timestamp: String,
+    pub starred: bool,
+}
+
+impl HistoryRowEntry {
+    fn from_entry(entry: &HistoryEntry) -> Self {
+        Self {
+            id: entry.id,
+            method: entry.request.method,
+            url_display: if entry.request.url.is_empty() {
+                "No URL".to_string()
+            } else {
+                entry.request.url.clone()
+            },
+            full_timestamp: entry.timestamp.format("%b %d, %Y at %H:%M:%S").to_string(),
+            starred: entry.starred,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HistoryGrouping {
     Time,
     Url,
+}
+
+/// Immutable, cheaply cloned input for background history filtering/grouping.
+#[derive(Clone)]
+pub struct HistoryRowsSnapshot {
+    entries: Arc<Vec<Arc<HistoryEntry>>>,
+    collapsed_groups: Arc<HashSet<TimeGroup>>,
+    collapsed_url_groups: Arc<HashSet<String>>,
+}
+
+impl HistoryRowsSnapshot {
+    pub fn flattened_rows(
+        &self,
+        query: &str,
+        starred_only: bool,
+        grouping: HistoryGrouping,
+    ) -> Vec<HistoryRow> {
+        let query = query.trim().to_ascii_lowercase();
+        let matches = |entry: &HistoryEntry| {
+            (!starred_only || entry.starred)
+                && (query.is_empty()
+                    || entry.request.url.to_ascii_lowercase().contains(&query)
+                    || entry.request.name.to_ascii_lowercase().contains(&query)
+                    || entry
+                        .request
+                        .method
+                        .as_str()
+                        .to_ascii_lowercase()
+                        .contains(&query))
+        };
+
+        match grouping {
+            HistoryGrouping::Time => {
+                let mut groups: [Vec<&HistoryEntry>; 5] = std::array::from_fn(|_| Vec::new());
+                for entry in self.entries.iter().map(Arc::as_ref) {
+                    if !matches(entry) {
+                        continue;
+                    }
+                    let index = match entry.time_group() {
+                        TimeGroup::Today => 0,
+                        TimeGroup::ThisWeek => 1,
+                        TimeGroup::LastWeek => 2,
+                        TimeGroup::ThisMonth => 3,
+                        TimeGroup::Older => 4,
+                    };
+                    groups[index].push(entry);
+                }
+
+                let labels = [
+                    TimeGroup::Today,
+                    TimeGroup::ThisWeek,
+                    TimeGroup::LastWeek,
+                    TimeGroup::ThisMonth,
+                    TimeGroup::Older,
+                ];
+                let mut rows = Vec::new();
+                for (group, entries) in labels.into_iter().zip(groups) {
+                    if entries.is_empty() {
+                        continue;
+                    }
+                    let collapsed = self.collapsed_groups.contains(&group);
+                    rows.push(HistoryRow::Group {
+                        key: HistoryGroupKey::Time(group),
+                        count: entries.len(),
+                        collapsed,
+                    });
+                    if !collapsed {
+                        rows.extend(
+                            entries
+                                .into_iter()
+                                .map(HistoryRowEntry::from_entry)
+                                .map(HistoryRow::Entry),
+                        );
+                    }
+                }
+                rows
+            }
+            HistoryGrouping::Url => {
+                let mut groups: BTreeMap<String, Vec<&HistoryEntry>> = BTreeMap::new();
+                for entry in self.entries.iter().map(Arc::as_ref) {
+                    if !matches(entry) {
+                        continue;
+                    }
+                    groups
+                        .entry(HistoryEntity::extract_domain(&entry.request.url))
+                        .or_default()
+                        .push(entry);
+                }
+
+                let mut rows = Vec::new();
+                for (domain, entries) in groups {
+                    let collapsed = self.collapsed_url_groups.contains(&domain);
+                    rows.push(HistoryRow::Group {
+                        key: HistoryGroupKey::Url(domain),
+                        count: entries.len(),
+                        collapsed,
+                    });
+                    if !collapsed {
+                        rows.extend(
+                            entries
+                                .into_iter()
+                                .map(HistoryRowEntry::from_entry)
+                                .map(HistoryRow::Entry),
+                        );
+                    }
+                }
+                rows
+            }
+        }
+    }
 }
 
 impl TimeGroup {
@@ -117,29 +257,31 @@ pub enum HistoryEvent {
     EntryRemoved(Uuid),
     EntryUpdated(Uuid),
     Cleared,
+    Reloaded,
+    GroupingChanged,
 }
 
 pub struct HistoryEntity {
-    pub entries: Vec<HistoryEntry>,
+    pub entries: Arc<Vec<Arc<HistoryEntry>>>,
     pub load_state: SidebarLoadState,
     pub max_entries: usize,
-    persistor: Option<DebouncedJsonWriter<Vec<HistoryEntry>>>,
-    collapsed_groups: HashSet<TimeGroup>,
-    collapsed_url_groups: HashSet<String>,
+    persistor: Option<DebouncedJsonWriter<Arc<Vec<Arc<HistoryEntry>>>>>,
+    collapsed_groups: Arc<HashSet<TimeGroup>>,
+    collapsed_url_groups: Arc<HashSet<String>>,
 }
 
 impl HistoryEntity {
     pub fn new() -> Self {
         let storage_path = Self::get_storage_path();
         let entity = Self {
-            entries: Vec::new(),
+            entries: Arc::new(Vec::new()),
             load_state: SidebarLoadState::Loading,
             max_entries: 5_000,
             persistor: storage_path
                 .clone()
                 .map(|path| DebouncedJsonWriter::new("history", path, SAVE_DEBOUNCE)),
-            collapsed_groups: HashSet::new(),
-            collapsed_url_groups: HashSet::new(),
+            collapsed_groups: Arc::new(HashSet::new()),
+            collapsed_url_groups: Arc::new(HashSet::new()),
         };
 
         entity
@@ -193,11 +335,12 @@ impl HistoryEntity {
     ) {
         match result {
             Ok((entries, compacted)) => {
-                self.entries = entries;
+                self.entries = Arc::new(entries.into_iter().map(Arc::new).collect());
                 self.load_state = SidebarLoadState::Ready;
                 if compacted {
                     self.save_to_file();
                 }
+                cx.emit(HistoryEvent::Reloaded);
             }
             Err(error) => self.load_state = SidebarLoadState::Error(error.into()),
         }
@@ -219,10 +362,11 @@ impl HistoryEntity {
         let entry = HistoryEntry::new(request, response);
         let id = entry.id;
 
-        self.entries.insert(0, entry);
+        let entries = Arc::make_mut(&mut self.entries);
+        entries.insert(0, Arc::new(entry));
 
-        if self.entries.len() > self.max_entries {
-            self.entries.pop();
+        if entries.len() > self.max_entries {
+            entries.pop();
         }
 
         self.save_to_file();
@@ -231,8 +375,9 @@ impl HistoryEntity {
     }
 
     pub fn remove_entry(&mut self, id: Uuid, cx: &mut Context<Self>) {
-        if let Some(pos) = self.entries.iter().position(|e| e.id == id) {
-            self.entries.remove(pos);
+        let entries = Arc::make_mut(&mut self.entries);
+        if let Some(pos) = entries.iter().position(|e| e.id == id) {
+            entries.remove(pos);
             self.save_to_file();
             cx.emit(HistoryEvent::EntryRemoved(id));
             cx.notify();
@@ -240,7 +385,9 @@ impl HistoryEntity {
     }
 
     pub fn toggle_star(&mut self, id: Uuid, cx: &mut Context<Self>) {
-        if let Some(entry) = self.entries.iter_mut().find(|e| e.id == id) {
+        let entries = Arc::make_mut(&mut self.entries);
+        if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
+            let entry = Arc::make_mut(entry);
             entry.starred = !entry.starred;
             self.save_to_file();
             cx.emit(HistoryEvent::EntryUpdated(id));
@@ -249,21 +396,21 @@ impl HistoryEntity {
     }
 
     pub fn clear(&mut self, cx: &mut Context<Self>) {
-        self.entries.clear();
+        Arc::make_mut(&mut self.entries).clear();
         self.save_to_file();
         cx.emit(HistoryEvent::Cleared);
         cx.notify();
     }
 
     pub fn clear_unstarred(&mut self, cx: &mut Context<Self>) {
-        self.entries.retain(|e| e.starred);
+        Arc::make_mut(&mut self.entries).retain(|e| e.starred);
         self.save_to_file();
         cx.emit(HistoryEvent::Cleared);
         cx.notify();
     }
 
     pub fn get_entry(&self, id: Uuid) -> Option<&HistoryEntry> {
-        self.entries.iter().find(|e| e.id == id)
+        self.entries.iter().find(|e| e.id == id).map(Arc::as_ref)
     }
 
     #[cfg(test)]
@@ -271,6 +418,7 @@ impl HistoryEntity {
         let query = query.to_lowercase();
         self.entries
             .iter()
+            .map(Arc::as_ref)
             .filter(|e| {
                 e.request.url.to_lowercase().contains(&query)
                     || e.request.name.to_lowercase().contains(&query)
@@ -285,9 +433,9 @@ impl HistoryEntity {
 
         let mut groups: HashMap<String, Vec<&HistoryEntry>> = HashMap::new();
 
-        for entry in &self.entries {
+        for entry in self.entries.iter() {
             let domain = Self::extract_domain(&entry.request.url);
-            groups.entry(domain).or_default().push(entry);
+            groups.entry(domain).or_default().push(entry.as_ref());
         }
 
         let mut sorted_groups: Vec<_> = groups.into_iter().collect();
@@ -314,106 +462,41 @@ impl HistoryEntity {
     }
 
     pub fn toggle_group_collapsed(&mut self, group: TimeGroup, cx: &mut Context<Self>) {
-        if self.collapsed_groups.contains(&group) {
-            self.collapsed_groups.remove(&group);
+        let collapsed_groups = Arc::make_mut(&mut self.collapsed_groups);
+        if collapsed_groups.contains(&group) {
+            collapsed_groups.remove(&group);
         } else {
-            self.collapsed_groups.insert(group);
+            collapsed_groups.insert(group);
         }
+        cx.emit(HistoryEvent::GroupingChanged);
         cx.notify();
-    }
-
-    pub fn is_group_collapsed(&self, group: &TimeGroup) -> bool {
-        self.collapsed_groups.contains(group)
     }
 
     pub fn toggle_url_group_collapsed(&mut self, domain: &str, cx: &mut Context<Self>) {
-        if !self.collapsed_url_groups.remove(domain) {
-            self.collapsed_url_groups.insert(domain.to_string());
+        let collapsed_url_groups = Arc::make_mut(&mut self.collapsed_url_groups);
+        if !collapsed_url_groups.remove(domain) {
+            collapsed_url_groups.insert(domain.to_string());
         }
+        cx.emit(HistoryEvent::GroupingChanged);
         cx.notify();
     }
 
-    pub fn flattened_rows(
+    #[cfg(test)]
+    fn flattened_rows(
         &self,
         query: &str,
         starred_only: bool,
         grouping: HistoryGrouping,
     ) -> Vec<HistoryRow> {
-        let query = query.trim().to_ascii_lowercase();
-        let matches = |entry: &&HistoryEntry| {
-            (!starred_only || entry.starred)
-                && (query.is_empty()
-                    || entry.request.url.to_ascii_lowercase().contains(&query)
-                    || entry.request.name.to_ascii_lowercase().contains(&query)
-                    || entry
-                        .request
-                        .method
-                        .as_str()
-                        .to_ascii_lowercase()
-                        .contains(&query))
-        };
+        self.rows_snapshot()
+            .flattened_rows(query, starred_only, grouping)
+    }
 
-        match grouping {
-            HistoryGrouping::Time => {
-                let mut groups: [Vec<&HistoryEntry>; 5] = std::array::from_fn(|_| Vec::new());
-                for entry in self.entries.iter().filter(matches) {
-                    let index = match entry.time_group() {
-                        TimeGroup::Today => 0,
-                        TimeGroup::ThisWeek => 1,
-                        TimeGroup::LastWeek => 2,
-                        TimeGroup::ThisMonth => 3,
-                        TimeGroup::Older => 4,
-                    };
-                    groups[index].push(entry);
-                }
-
-                let labels = [
-                    TimeGroup::Today,
-                    TimeGroup::ThisWeek,
-                    TimeGroup::LastWeek,
-                    TimeGroup::ThisMonth,
-                    TimeGroup::Older,
-                ];
-                let mut rows = Vec::new();
-                for (group, entries) in labels.into_iter().zip(groups) {
-                    if entries.is_empty() {
-                        continue;
-                    }
-                    let collapsed = self.is_group_collapsed(&group);
-                    rows.push(HistoryRow::Group {
-                        key: HistoryGroupKey::Time(group),
-                        count: entries.len(),
-                        collapsed,
-                    });
-                    if !collapsed {
-                        rows.extend(entries.into_iter().cloned().map(HistoryRow::Entry));
-                    }
-                }
-                rows
-            }
-            HistoryGrouping::Url => {
-                let mut groups: BTreeMap<String, Vec<&HistoryEntry>> = BTreeMap::new();
-                for entry in self.entries.iter().filter(matches) {
-                    groups
-                        .entry(Self::extract_domain(&entry.request.url))
-                        .or_default()
-                        .push(entry);
-                }
-
-                let mut rows = Vec::new();
-                for (domain, entries) in groups {
-                    let collapsed = self.collapsed_url_groups.contains(&domain);
-                    rows.push(HistoryRow::Group {
-                        key: HistoryGroupKey::Url(domain),
-                        count: entries.len(),
-                        collapsed,
-                    });
-                    if !collapsed {
-                        rows.extend(entries.into_iter().cloned().map(HistoryRow::Entry));
-                    }
-                }
-                rows
-            }
+    pub fn rows_snapshot(&self) -> HistoryRowsSnapshot {
+        HistoryRowsSnapshot {
+            entries: self.entries.clone(),
+            collapsed_groups: self.collapsed_groups.clone(),
+            collapsed_url_groups: self.collapsed_url_groups.clone(),
         }
     }
 }
@@ -475,23 +558,23 @@ mod tests {
     #[test]
     fn search_matches_name_url_and_method_case_insensitively() {
         let history = HistoryEntity {
-            entries: vec![
-                sample_entry(
+            entries: Arc::new(vec![
+                Arc::new(sample_entry(
                     "List Users",
                     "https://api.example.com/users",
                     HttpMethod::Get,
-                ),
-                sample_entry(
+                )),
+                Arc::new(sample_entry(
                     "Create Team",
                     "https://admin.example.com/teams",
                     HttpMethod::Post,
-                ),
-            ],
+                )),
+            ]),
             max_entries: 500,
             load_state: SidebarLoadState::Ready,
             persistor: None,
-            collapsed_groups: HashSet::new(),
-            collapsed_url_groups: HashSet::new(),
+            collapsed_groups: Arc::new(HashSet::new()),
+            collapsed_url_groups: Arc::new(HashSet::new()),
         };
 
         assert_eq!(history.search("users").len(), 1);
@@ -502,20 +585,28 @@ mod tests {
     #[test]
     fn grouped_by_url_uses_domain_and_returns_sorted_groups() {
         let history = HistoryEntity {
-            entries: vec![
-                sample_entry(
+            entries: Arc::new(vec![
+                Arc::new(sample_entry(
                     "Second",
                     "https://beta.example.com/projects",
                     HttpMethod::Get,
-                ),
-                sample_entry("First", "https://alpha.example.com/users", HttpMethod::Get),
-                sample_entry("Third", "https://alpha.example.com/teams", HttpMethod::Post),
-            ],
+                )),
+                Arc::new(sample_entry(
+                    "First",
+                    "https://alpha.example.com/users",
+                    HttpMethod::Get,
+                )),
+                Arc::new(sample_entry(
+                    "Third",
+                    "https://alpha.example.com/teams",
+                    HttpMethod::Post,
+                )),
+            ]),
             max_entries: 500,
             load_state: SidebarLoadState::Ready,
             persistor: None,
-            collapsed_groups: HashSet::new(),
-            collapsed_url_groups: HashSet::new(),
+            collapsed_groups: Arc::new(HashSet::new()),
+            collapsed_url_groups: Arc::new(HashSet::new()),
         };
 
         let grouped = history.grouped_by_url();
@@ -530,23 +621,23 @@ mod tests {
     #[test]
     fn flattened_rows_filter_and_keep_group_headers() {
         let history = HistoryEntity {
-            entries: vec![
-                sample_entry(
+            entries: Arc::new(vec![
+                Arc::new(sample_entry(
                     "List Users",
                     "https://api.example.com/users",
                     HttpMethod::Get,
-                ),
-                sample_entry(
+                )),
+                Arc::new(sample_entry(
                     "Create Team",
                     "https://admin.example.com/teams",
                     HttpMethod::Post,
-                ),
-            ],
+                )),
+            ]),
             load_state: SidebarLoadState::Ready,
             max_entries: 5_000,
             persistor: None,
-            collapsed_groups: HashSet::new(),
-            collapsed_url_groups: HashSet::new(),
+            collapsed_groups: Arc::new(HashSet::new()),
+            collapsed_url_groups: Arc::new(HashSet::new()),
         };
         let rows = history.flattened_rows("users", false, HistoryGrouping::Url);
         assert_eq!(rows.len(), 2);
@@ -557,16 +648,16 @@ mod tests {
     #[test]
     fn url_group_collapse_hides_descendants() {
         let history = HistoryEntity {
-            entries: vec![sample_entry(
+            entries: Arc::new(vec![Arc::new(sample_entry(
                 "List Users",
                 "https://api.example.com/users",
                 HttpMethod::Get,
-            )],
+            ))]),
             load_state: SidebarLoadState::Ready,
             max_entries: 5_000,
             persistor: None,
-            collapsed_groups: HashSet::new(),
-            collapsed_url_groups: HashSet::from(["api.example.com".to_string()]),
+            collapsed_groups: Arc::new(HashSet::new()),
+            collapsed_url_groups: Arc::new(HashSet::from(["api.example.com".to_string()])),
         };
         let rows = history.flattened_rows("", false, HistoryGrouping::Url);
         assert_eq!(rows.len(), 1);
@@ -577,6 +668,24 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn shared_entries_keep_the_existing_json_storage_shape() {
+        let entry = sample_entry(
+            "List Users",
+            "https://api.example.com/users",
+            HttpMethod::Get,
+        );
+        let entry_id = entry.id;
+        let entries = Arc::new(vec![Arc::new(entry)]);
+
+        let encoded = serde_json::to_string(&entries).expect("serialize shared history");
+        let decoded =
+            serde_json::from_str::<Vec<HistoryEntry>>(&encoded).expect("decode stored history");
+
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].id, entry_id);
     }
 
     #[test]

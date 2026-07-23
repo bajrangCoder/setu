@@ -7,11 +7,11 @@ use gpui_component::spinner::Spinner;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme, Icon, Selectable, Sizable};
 use std::rc::Rc;
+use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::entities::{
-    HistoryEntity, HistoryEntry, HistoryGroupKey, HistoryGrouping, HistoryRow, SidebarLoadState,
-    TimeGroup,
+    HistoryEntity, HistoryGroupKey, HistoryRow, HistoryRowEntry, SidebarLoadState, TimeGroup,
 };
 use crate::icons::IconName;
 use crate::theme::method_color;
@@ -34,6 +34,8 @@ pub enum HistoryGroupBy {
 pub struct HistoryPanel {
     history: Entity<HistoryEntity>,
     search_input: Entity<InputState>,
+    rows: Arc<Vec<HistoryRow>>,
+    rows_initialized: bool,
     filter: HistoryFilter,
     group_by: HistoryGroupBy,
     on_load_request: Option<Rc<dyn Fn(Uuid, &mut Window, &mut App) + 'static>>,
@@ -45,10 +47,17 @@ pub struct HistoryPanel {
 }
 
 impl HistoryPanel {
-    pub fn new(history: Entity<HistoryEntity>, search_input: Entity<InputState>) -> Self {
+    pub fn new(
+        history: Entity<HistoryEntity>,
+        search_input: Entity<InputState>,
+        rows: Arc<Vec<HistoryRow>>,
+        rows_initialized: bool,
+    ) -> Self {
         Self {
             history,
             search_input,
+            rows,
+            rows_initialized,
             filter: HistoryFilter::All,
             group_by: HistoryGroupBy::Time,
             on_load_request: None,
@@ -255,21 +264,17 @@ impl HistoryPanel {
 
     fn render_history_item(
         entry_key: usize,
-        entry: &HistoryEntry,
+        entry: &HistoryRowEntry,
         theme: &gpui_component::theme::ThemeColor,
         m_color: Hsla,
         on_load: Option<Rc<dyn Fn(Uuid, &mut Window, &mut App) + 'static>>,
         on_delete: Option<Rc<dyn Fn(Uuid, &mut Window, &mut App) + 'static>>,
         on_star: Option<Rc<dyn Fn(Uuid, &mut Window, &mut App) + 'static>>,
     ) -> AnyElement {
-        let method_str = entry.request.method.as_str().to_string();
+        let method_str = entry.method.as_str().to_string();
         let is_starred = entry.starred;
-        let full_timestamp = entry.timestamp.format("%b %d, %Y at %H:%M:%S").to_string();
-        let url_display: String = if entry.request.url.is_empty() {
-            "No URL".to_string()
-        } else {
-            entry.request.url.clone()
-        };
+        let full_timestamp = entry.full_timestamp.clone();
+        let url_display = entry.url_display.clone();
         let entry_id = entry.id;
 
         let star_icon = if is_starred {
@@ -400,15 +405,9 @@ impl RenderOnce for HistoryPanel {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let history = self.history.read(cx);
         let search_query = self.search_input.read(cx).text().to_string();
-        let rows = history.flattened_rows(
-            &search_query,
-            self.filter == HistoryFilter::Starred,
-            match self.group_by {
-                HistoryGroupBy::Time => HistoryGrouping::Time,
-                HistoryGroupBy::Url => HistoryGrouping::Url,
-            },
-        );
+        let rows = self.rows;
         let is_empty = rows.is_empty();
+        let rows_initialized = self.rows_initialized;
         let load_state = history.load_state.clone();
         let has_query = !search_query.is_empty();
         let theme = cx.theme();
@@ -440,9 +439,18 @@ impl RenderOnce for HistoryPanel {
                 .child(div().text_size(px(11.0)).child("Could not load history"))
                 .child(div().text_size(px(10.0)).child(error.to_string()))
                 .into_any_element(),
+            // Only the first snapshot gets a loader. Later background
+            // refreshes retain either the previous rows or empty state so
+            // collapse, expand, and no-result searches never flash.
+            SidebarLoadState::Ready if !rows_initialized => div()
+                .flex()
+                .h_full()
+                .items_center()
+                .justify_center()
+                .child(Spinner::new().small())
+                .into_any_element(),
             SidebarLoadState::Ready if is_empty => Self::render_empty_state(&theme, has_query),
             SidebarLoadState::Ready => {
-                let rows = std::sync::Arc::new(rows);
                 let row_count = rows.len();
                 let list_theme = theme.clone();
                 let history = self.history.clone();
@@ -477,7 +485,7 @@ impl RenderOnce for HistoryPanel {
                                 row_index,
                                 entry,
                                 &list_theme,
-                                method_color(&entry.request.method, cx),
+                                method_color(&entry.method, cx),
                                 on_load.clone(),
                                 on_delete.clone(),
                                 on_star.clone(),

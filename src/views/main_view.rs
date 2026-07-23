@@ -16,6 +16,9 @@ use gpui_component::scroll::ScrollableElement;
 use gpui_component::select::{Select, SelectItem, SelectState};
 use gpui_component::v_flex;
 use gpui_component::{ActiveTheme, Icon};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 use uuid::Uuid;
 
 use crate::actions::*;
@@ -25,8 +28,9 @@ use crate::components::{
 };
 use crate::entities::{
     CollectionDestination, CollectionDestinationEntry, CollectionsEntity, Header, HistoryEntity,
-    HttpMethod, PreferredLayout, RequestBody, RequestData, RequestEntity, RequestEvent,
-    ResponseData, ResponseEntity, UiPreferences, UiPreferencesStore,
+    HistoryGrouping, HistoryRow, HttpMethod, PreferredLayout, RequestBody, RequestData,
+    RequestEntity, RequestEvent, ResponseData, ResponseEntity, SidebarLoadState, UiPreferences,
+    UiPreferencesStore,
 };
 use crate::http::{HttpClient, InFlightRequest};
 use crate::icons::IconName;
@@ -134,6 +138,9 @@ pub struct MainView {
     collections_search: Option<Entity<InputState>>,
     history_filter: HistoryFilter,
     history_group_by: HistoryGroupBy,
+    history_rows: Arc<Vec<HistoryRow>>,
+    history_rows_initialized: bool,
+    history_rows_generation: Arc<AtomicU64>,
     request_response_layout: RequestResponseLayout,
     focus_handle: FocusHandle,
     pending_window_command: Option<CommandId>,
@@ -206,8 +213,11 @@ impl MainView {
         })
         .detach();
         Self::subscribe_request_changes(&request, cx);
-        cx.subscribe(&history, |_this, _, _event, cx| cx.notify())
-            .detach();
+        cx.subscribe(&history, |this, _, _event, cx| {
+            this.schedule_history_rows(cx);
+            cx.notify();
+        })
+        .detach();
         cx.subscribe(&collections, |_this, _, _event, cx| cx.notify())
             .detach();
 
@@ -229,6 +239,9 @@ impl MainView {
             collections_search: None,
             history_filter: HistoryFilter::All,
             history_group_by: HistoryGroupBy::Time,
+            history_rows: Arc::new(Vec::new()),
+            history_rows_initialized: false,
+            history_rows_generation: Arc::new(AtomicU64::new(0)),
             request_response_layout: match ui_preferences.layout {
                 PreferredLayout::Stacked => RequestResponseLayout::Stacked,
                 PreferredLayout::SideBySide => RequestResponseLayout::SideBySide,
@@ -336,8 +349,9 @@ impl MainView {
     fn ensure_sidebar_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.history_search.is_none() {
             let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search history..."));
-            cx.subscribe_in(&input, window, |_, _, event, _, cx| {
+            cx.subscribe_in(&input, window, |this, _, event, _, cx| {
                 if matches!(event, gpui_component::input::InputEvent::Change) {
+                    this.schedule_history_rows(cx);
                     cx.notify();
                 }
             })
@@ -357,6 +371,84 @@ impl MainView {
         }
     }
 
+    /// Rebuild the history sidebar snapshot on the Tokio blocking pool.
+    ///
+    /// The source history is immutable and shared, so scheduling this work only
+    /// clones an `Arc` on the UI thread. Rapid search changes are debounced and
+    /// stale generations are discarded before and after the worker runs.
+    fn schedule_history_rows(&mut self, cx: &mut Context<Self>) {
+        let generation = self
+            .history_rows_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
+
+        let (load_state, snapshot) = {
+            let history = self.history.read(cx);
+            (history.load_state.clone(), history.rows_snapshot())
+        };
+
+        if !matches!(load_state, SidebarLoadState::Ready) {
+            self.history_rows = Arc::new(Vec::new());
+            self.history_rows_initialized = false;
+            return;
+        }
+
+        let query = self
+            .history_search
+            .as_ref()
+            .map(|input| input.read(cx).text().to_string())
+            .unwrap_or_default();
+        let starred_only = self.history_filter == HistoryFilter::Starred;
+        let grouping = match self.history_group_by {
+            HistoryGroupBy::Time => HistoryGrouping::Time,
+            HistoryGroupBy::Url => HistoryGrouping::Url,
+        };
+
+        let generation_clock = self.history_rows_generation.clone();
+        let worker_generation_clock = generation_clock.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+
+        crate::utils::shared_tokio_runtime().spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            if worker_generation_clock.load(Ordering::Acquire) != generation {
+                return;
+            }
+
+            let rows = tokio::task::spawn_blocking(move || {
+                snapshot.flattened_rows(&query, starred_only, grouping)
+            })
+            .await;
+
+            if worker_generation_clock.load(Ordering::Acquire) == generation
+                && let Ok(rows) = rows
+            {
+                let _ = tx.send(Arc::new(rows));
+            }
+        });
+
+        cx.spawn(async move |view, cx| {
+            let result = rx.await;
+            cx.update(|app| {
+                let _ = view.update(app, |main, cx| {
+                    if generation_clock.load(Ordering::Acquire) != generation {
+                        return;
+                    }
+
+                    match result {
+                        Ok(rows) => main.history_rows = rows,
+                        Err(error) => {
+                            log::error!("History row worker stopped unexpectedly: {error}");
+                            main.history_rows = Arc::new(Vec::new());
+                        }
+                    }
+                    main.history_rows_initialized = true;
+                    cx.notify();
+                });
+            })
+        })
+        .detach();
+    }
+
     /// Set sidebar tab
     pub fn set_sidebar_tab(&mut self, tab: SidebarTab, cx: &mut Context<Self>) {
         self.sidebar_tab = tab;
@@ -365,11 +457,13 @@ impl MainView {
 
     pub fn set_history_filter(&mut self, filter: HistoryFilter, cx: &mut Context<Self>) {
         self.history_filter = filter;
+        self.schedule_history_rows(cx);
         cx.notify();
     }
 
     pub fn set_history_group_by(&mut self, group_by: HistoryGroupBy, cx: &mut Context<Self>) {
         self.history_group_by = group_by;
+        self.schedule_history_rows(cx);
         cx.notify();
     }
 
@@ -2392,6 +2486,8 @@ impl Render for MainView {
                                 collections,
                                 history_search,
                                 collections_search,
+                                self.history_rows.clone(),
+                                self.history_rows_initialized,
                             )
                             .active_tab(sidebar_tab)
                             .history_filter(history_filter)
