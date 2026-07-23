@@ -521,7 +521,7 @@ impl EnvironmentPanel {
                     .text_size(px(9.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme.muted_foreground)
-                    .child("ACTIVE VARIABLE STACK"),
+                    .child("VARIABLE PRECEDENCE"),
             )
             .when_some(workspace.as_ref(), |element, environment| {
                 element.child(layer(environment, "workspace"))
@@ -540,6 +540,15 @@ impl EnvironmentPanel {
                 )
             })
             .into_any_element()
+    }
+
+    fn has_layered_precedence(&self, cx: &App) -> bool {
+        let environments = self.environments.read(cx);
+        environments.active_workspace_environment_id().is_some()
+            && self
+                .collection_id
+                .and_then(|id| environments.active_project_environment_id(id))
+                .is_some()
     }
 
     fn render_empty_state(&self, theme: &gpui_component::theme::ThemeColor) -> AnyElement {
@@ -615,6 +624,7 @@ impl Render for EnvironmentPanel {
         let on_new = self.on_new_environment.clone();
         let on_import = self.on_import_environment.clone();
         let collection_id = self.collection_id;
+        let has_layered_precedence = self.has_layered_precedence(cx);
 
         let mut project_groups: HashMap<Uuid, Vec<Environment>> = HashMap::new();
         let mut workspace_environments = Vec::new();
@@ -1075,7 +1085,7 @@ impl Render for EnvironmentPanel {
                                     .icon(IconName::FileUp)
                                     .ghost()
                                     .xsmall()
-                                    .tooltip("Import a Postman environment")
+                                    .tooltip("Import Postman data")
                                     .on_click(move |_, window, cx| {
                                         if let Some(ref callback) = on_import {
                                             callback(window, cx);
@@ -1097,20 +1107,25 @@ impl Render for EnvironmentPanel {
                     ),
             )
             .when(!environments.is_empty(), |element| {
-                element.child(self.render_active_stack(cx)).child(
-                    div()
-                        // The scrollbar wrapper only inherits concrete sizes from its
-                        // child, so this must be an explicit height rather than max_h.
-                        .h(px(190.0))
-                        .flex_shrink_0()
-                        .overflow_y_scrollbar()
-                        .px(px(7.0))
-                        .pb(px(8.0))
-                        .flex()
-                        .flex_col()
-                        .gap(px(3.0))
-                        .children(navigator_groups),
-                )
+                element
+                    .when(has_layered_precedence, |element| {
+                        element.child(self.render_active_stack(cx))
+                    })
+                    .child(
+                        div()
+                            // The scrollbar wrapper only inherits concrete sizes from its
+                            // child, so this must be an explicit height rather than max_h.
+                            .h(px(190.0))
+                            .flex_shrink_0()
+                            .overflow_y_scrollbar()
+                            .px(px(7.0))
+                            .pt(px(6.0))
+                            .pb(px(8.0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(3.0))
+                            .children(navigator_groups),
+                    )
             })
             .child(
                 div()

@@ -2058,6 +2058,12 @@ impl MainView {
                                 let request_count = collection.request_count();
                                 let variables = collection.variables.clone();
                                 let variable_count = variables.len();
+
+                                let workspace_id = view.workspaces.update(cx, |workspaces, cx| {
+                                    workspaces.create_workspace(name.clone(), cx)
+                                });
+                                view.switch_workspace(workspace_id, cx);
+
                                 let collection_id =
                                     view.collections.update(cx, |collections, cx| {
                                         collections.import_collection(collection, cx)
@@ -2083,7 +2089,7 @@ impl MainView {
                                 }
                                 ImportSummary {
                                     provider: result.provider,
-                                    item_kind: "Collection",
+                                    item_kind: "Workspace",
                                     item_name: name,
                                     folder_count: Some(folder_count),
                                     request_count: Some(request_count),

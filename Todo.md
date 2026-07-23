@@ -20,7 +20,7 @@
 - [x] Local secret values, enable/disable controls, nested variables, environment colors, and duplication.
 - [x] Grouped environment manager with separate edit and active states.
 - [x] Real persisted workspace containers and a top-bar switcher that isolate collections, history, and environments.
-- [x] Import Postman environment exports and collection variables into the current workspace.
+- [x] Import Postman collections as new workspaces, plus environment exports and collection variables in their appropriate workspace.
 - [ ] Scope UI preferences and restorable request-tab sessions per workspace.
 - [ ] Encrypt secret values with an OS-keychain-backed key instead of relying only on local file permissions.
 - [ ] Export environment files; exported secret values must be omitted.
