@@ -101,7 +101,7 @@ impl RenderOnce for TabBar {
                         let main_view_for_close = main_view.clone();
                         let main_view_for_context = main_view.clone();
 
-                        RequestTab::new(tab, main_view_for_context, cx)
+                        WorkspaceTab::new(tab, main_view_for_context, cx)
                             .on_click(move |_, _, cx| {
                                 main_view_for_click
                                     .update(cx, |view, cx| view.switch_tab(index, cx));
@@ -135,7 +135,7 @@ impl RenderOnce for TabBar {
 }
 
 #[derive(IntoElement)]
-struct RequestTab {
+struct WorkspaceTab {
     info: TabInfo,
     main_view: Entity<crate::views::MainView>,
     bg_active: Hsla,
@@ -146,7 +146,7 @@ struct RequestTab {
     on_close: Option<Box<dyn Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static>>,
 }
 
-impl RequestTab {
+impl WorkspaceTab {
     fn new(info: TabInfo, main_view: Entity<crate::views::MainView>, cx: &App) -> Self {
         let theme = cx.theme();
         Self {
@@ -178,7 +178,7 @@ impl RequestTab {
     }
 }
 
-impl RenderOnce for RequestTab {
+impl RenderOnce for WorkspaceTab {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.theme();
         let is_active = self.info.is_active;

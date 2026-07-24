@@ -7,14 +7,12 @@ use gpui_component::ActiveTheme;
 use gpui_component::Selectable;
 use gpui_component::Sizable;
 use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::color_picker::{ColorPickerEvent, ColorPickerState};
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::scroll::ScrollableElement;
 use std::collections::HashMap;
 use std::rc::Rc;
 use uuid::Uuid;
 
-use crate::completion::CompletionEngine;
 use crate::entities::{
     CollectionsEntity, Environment, EnvironmentColor, EnvironmentEvent, EnvironmentScope,
     EnvironmentsEntity,
@@ -32,10 +30,6 @@ pub struct EnvironmentPanel {
     collections: Entity<CollectionsEntity>,
     collection_id: Option<Uuid>,
     selected_environment_id: Option<Uuid>,
-    color_picker: Option<Entity<ColorPickerState>>,
-    color_picker_environment_id: Option<Uuid>,
-    color_picker_color: Option<EnvironmentColor>,
-    completion_engine: CompletionEngine,
     on_new_environment: Option<NewEnvironmentCallback>,
     on_import_environment: Option<ImportEnvironmentCallback>,
     on_delete_environment: Option<DeleteEnvironmentCallback>,
@@ -50,7 +44,6 @@ impl EnvironmentPanel {
         collections: Entity<CollectionsEntity>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let completion_engine = CompletionEngine::for_environments(environments.clone());
         cx.subscribe(
             &environments,
             |this, environments, event: &EnvironmentEvent, cx| {
@@ -71,10 +64,6 @@ impl EnvironmentPanel {
             collections,
             collection_id: None,
             selected_environment_id: None,
-            color_picker: None,
-            color_picker_environment_id: None,
-            color_picker_color: None,
-            completion_engine,
             on_new_environment: None,
             on_import_environment: None,
             on_delete_environment: None,
@@ -151,65 +140,6 @@ impl EnvironmentPanel {
                     .first()
                     .map(|environment| environment.id)
             });
-    }
-
-    fn sync_rows(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.ensure_selection(cx);
-        let selected_id = self.selected_environment_id;
-        self.sync_color_picker(selected_id, window, cx);
-    }
-
-    fn ensure_color_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.color_picker.is_some() {
-            return;
-        }
-        let picker = cx.new(|cx| {
-            ColorPickerState::new(window, cx).default_value(EnvironmentColor::default().accent())
-        });
-        cx.subscribe(&picker, |this, _, event: &ColorPickerEvent, cx| {
-            let ColorPickerEvent::Change(Some(color)) = event else {
-                return;
-            };
-            let Some(environment_id) = this.selected_environment_id else {
-                return;
-            };
-            this.environments.update(cx, |environments, cx| {
-                environments.set_environment_color(
-                    environment_id,
-                    EnvironmentColor::custom(*color),
-                    cx,
-                );
-            });
-        })
-        .detach();
-        self.color_picker = Some(picker);
-    }
-
-    fn sync_color_picker(
-        &mut self,
-        environment_id: Option<Uuid>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let selected_color = environment_id
-            .and_then(|id| self.environments.read(cx).get(id))
-            .map(|environment| environment.color.clone());
-        if self.color_picker_environment_id == environment_id
-            && self.color_picker_color == selected_color
-        {
-            return;
-        }
-        let Some(selected_color) = selected_color else {
-            self.color_picker_environment_id = environment_id;
-            self.color_picker_color = None;
-            return;
-        };
-        if let Some(picker) = &self.color_picker {
-            let color = selected_color.accent();
-            picker.update(cx, |picker, cx| picker.set_value(color, window, cx));
-        }
-        self.color_picker_environment_id = environment_id;
-        self.color_picker_color = Some(selected_color);
     }
 
     fn render_environment_menu(
@@ -539,22 +469,15 @@ impl Focusable for EnvironmentPanel {
 }
 
 impl Render for EnvironmentPanel {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.completion_engine.set_collection_id(self.collection_id);
-        self.ensure_color_picker(window, cx);
-        self.sync_rows(window, cx);
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.ensure_selection(cx);
         let theme = cx.theme();
         let this = cx.entity().clone();
         let environments = self.environments.read(cx).environments().to_vec();
-        let _selected = self
-            .selected_environment_id
-            .and_then(|id| environments.iter().find(|environment| environment.id == id))
-            .cloned();
         let on_new = self.on_new_environment.clone();
         let on_import = self.on_import_environment.clone();
         let collection_id = self.collection_id;
         let has_layered_precedence = self.has_layered_precedence(cx);
-        let _color_picker = self.color_picker.clone();
 
         let mut project_groups: HashMap<Uuid, Vec<Environment>> = HashMap::new();
         let mut global_environments = Vec::new();
