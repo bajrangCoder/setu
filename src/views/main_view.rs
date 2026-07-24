@@ -462,8 +462,17 @@ impl MainView {
             if !crate::utils::looks_like_curl(&text) {
                 return;
             }
-            if let Ok(parsed) = crate::utils::parse_curl(&text) {
-                this.apply_curl_to_tab(tab_id, &parsed, window, cx);
+            match crate::utils::parse_curl(&text) {
+                Ok(parsed) => {
+                    let url_value = parsed.url.clone();
+                    state.update(cx, |s, cx| {
+                        s.set_value(url_value, window, cx);
+                    });
+                    this.apply_curl_to_tab(tab_id, &parsed, window, cx);
+                }
+                Err(err) => {
+                    log::warn!("Failed to parse curl from URL bar: {}", err);
+                }
             }
         })
         .detach();
@@ -1097,10 +1106,22 @@ impl MainView {
             .map(|e| e.name.clone())
             .unwrap_or_else(|| "Environment".to_string());
 
+        let collection_id = self
+            .environments
+            .read(cx)
+            .get(environment_id)
+            .and_then(|env| match env.scope {
+                EnvironmentScope::Project(col_id) => Some(col_id),
+                _ => None,
+            });
+
         let environments = self.environments.clone();
         let collections = self.collections.clone();
-        let editor_view = cx
-            .new(|cx| EnvironmentView::new(environment_id, environments, collections, window, cx));
+        let editor_view = cx.new(|cx| {
+            let mut view = EnvironmentView::new(environment_id, environments, collections, window, cx);
+            view.set_collection_context(collection_id);
+            view
+        });
 
         let tab_id = TabId(self.next_tab_id);
         self.next_tab_id += 1;
@@ -1113,7 +1134,7 @@ impl MainView {
                 environment_id,
                 view: editor_view,
             },
-            collection_id: None,
+            collection_id,
         };
 
         self.tabs.push(new_tab);
@@ -3099,49 +3120,32 @@ impl Render for MainView {
             })
             .collect();
 
-        // Get current request state for URL bar
-        let (url_input, method_dropdown, request_entity, is_loading, request_view, response_view) =
-            if let Some(tab) = self.active_tab() {
-                if let TabContent::Request {
-                    request,
-                    url_input,
-                    method_dropdown,
-                    request_view,
-                    response_view,
-                    ..
-                } = &tab.content
-                {
-                    let req = request.read(cx);
-                    (
-                        url_input.clone(),
-                        method_dropdown.clone(),
-                        request.clone(),
-                        req.is_sending(),
-                        request_view.clone(),
-                        response_view.clone(),
-                    )
-                } else {
-                    let request = cx.new(|_| RequestEntity::new());
-                    let response = cx.new(|_| ResponseEntity::new());
-                    let method_dropdown = cx.new(|_| MethodDropdownState::new(HttpMethod::Get));
-                    let completion_engine = self.completion_engine.clone();
-                    let request_view = cx.new(|cx| {
-                        RequestView::new(request.clone(), BodyType::None, cx)
-                            .with_completion_engine(completion_engine)
-                    });
-                    let response_view = cx.new(|cx| ResponseView::new(response.clone(), cx));
-                    (
-                        None,
-                        method_dropdown,
-                        request,
-                        false,
-                        request_view,
-                        response_view,
-                    )
-                }
+        // Get current request state for URL bar (only if active tab is a Request tab)
+        let request_tab_state = if let Some(tab) = self.active_tab() {
+            if let TabContent::Request {
+                request,
+                url_input,
+                method_dropdown,
+                request_view,
+                response_view,
+                ..
+            } = &tab.content
+            {
+                let req = request.read(cx);
+                Some((
+                    url_input.clone(),
+                    method_dropdown.clone(),
+                    request.clone(),
+                    req.is_sending(),
+                    request_view.clone(),
+                    response_view.clone(),
+                ))
             } else {
-                return div().child("No active tab").into_any_element();
-            };
+                None
+            }
+        } else {
+            return div().child("No active tab").into_any_element();
+        };
 
         let this = cx.entity().clone();
         let this_for_send = this.clone();
@@ -3630,18 +3634,31 @@ impl Render for MainView {
                                 TabContent::Environment { view, .. } => {
                                     view.clone().into_any_element()
                                 }
-                                TabContent::Request { .. } => self
-                                    .render_request_response_split(
+                                TabContent::Request { .. } => {
+                                    if let Some((
                                         url_input,
                                         method_dropdown,
                                         request_entity,
                                         is_loading,
-                                        this_for_send,
                                         request_view,
                                         response_view,
-                                        effective_layout,
-                                    )
-                                    .into_any_element(),
+                                    )) = request_tab_state
+                                    {
+                                        self.render_request_response_split(
+                                            url_input,
+                                            method_dropdown,
+                                            request_entity,
+                                            is_loading,
+                                            this_for_send,
+                                            request_view,
+                                            response_view,
+                                            effective_layout,
+                                        )
+                                        .into_any_element()
+                                    } else {
+                                        div().into_any_element()
+                                    }
+                                }
                             }
                         } else {
                             div().into_any_element()
