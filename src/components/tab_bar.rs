@@ -7,24 +7,40 @@ use crate::entities::HttpMethod;
 use crate::icons::IconName;
 use crate::theme::method_color;
 
+#[derive(Clone, Debug)]
+pub enum TabIcon {
+    Method(HttpMethod),
+    Icon(IconName),
+}
+
 #[derive(Clone)]
 pub struct TabInfo {
     pub id: usize,
     pub index: usize,
     pub name: SharedString,
-    pub method: HttpMethod,
+    pub icon: TabIcon,
     pub is_active: bool,
 }
 
 impl TabInfo {
-    pub fn new(id: usize, index: usize, name: impl Into<SharedString>, method: HttpMethod) -> Self {
+    pub fn new(id: usize, index: usize, name: impl Into<SharedString>, icon: TabIcon) -> Self {
         Self {
             id,
             index,
             name: name.into(),
-            method,
+            icon,
             is_active: false,
         }
+    }
+
+    #[allow(dead_code)]
+    pub fn with_method(
+        id: usize,
+        index: usize,
+        name: impl Into<SharedString>,
+        method: HttpMethod,
+    ) -> Self {
+        Self::new(id, index, name, TabIcon::Method(method))
     }
 
     pub fn active(mut self) -> Self {
@@ -85,7 +101,7 @@ impl RenderOnce for TabBar {
                         let main_view_for_close = main_view.clone();
                         let main_view_for_context = main_view.clone();
 
-                        RequestTab::new(tab, main_view_for_context, cx)
+                        WorkspaceTab::new(tab, main_view_for_context, cx)
                             .on_click(move |_, _, cx| {
                                 main_view_for_click
                                     .update(cx, |view, cx| view.switch_tab(index, cx));
@@ -118,10 +134,10 @@ impl RenderOnce for TabBar {
     }
 }
 
-struct RequestTab {
+#[derive(IntoElement)]
+struct WorkspaceTab {
     info: TabInfo,
     main_view: Entity<crate::views::MainView>,
-    method_color: Hsla,
     bg_active: Hsla,
     bg_hover: Hsla,
     text_active: Hsla,
@@ -130,11 +146,10 @@ struct RequestTab {
     on_close: Option<Box<dyn Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static>>,
 }
 
-impl RequestTab {
+impl WorkspaceTab {
     fn new(info: TabInfo, main_view: Entity<crate::views::MainView>, cx: &App) -> Self {
         let theme = cx.theme();
         Self {
-            method_color: method_color(&info.method, cx),
             info,
             main_view,
             bg_active: theme.muted,
@@ -163,10 +178,9 @@ impl RequestTab {
     }
 }
 
-impl IntoElement for RequestTab {
-    type Element = gpui::AnyElement;
-
-    fn into_element(self) -> Self::Element {
+impl RenderOnce for WorkspaceTab {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = cx.theme();
         let is_active = self.info.is_active;
         let tab_id = self.info.id;
         let tab_index = self.info.index;
@@ -174,6 +188,29 @@ impl IntoElement for RequestTab {
         let main_view_for_rename = self.main_view.clone();
         let main_view_for_close = self.main_view.clone();
         let main_view_for_close_others = self.main_view;
+
+        let icon_badge = match &self.info.icon {
+            TabIcon::Method(method) => {
+                let m_color = method_color(method, cx);
+                div()
+                    .text_color(m_color)
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .text_size(px(9.0))
+                    .child(method.as_str())
+                    .into_any_element()
+            }
+            TabIcon::Icon(icon) => div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    gpui_component::Icon::new(*icon)
+                        .size(px(12.0))
+                        .text_color(theme.primary),
+                )
+                .into_any_element(),
+        };
+
         let text_color = if is_active {
             self.text_active
         } else {
@@ -198,13 +235,7 @@ impl IntoElement for RequestTab {
             .when_some(self.on_click, |element, callback| {
                 element.on_click(move |event, window, cx| callback(event, window, cx))
             })
-            .child(
-                div()
-                    .text_color(self.method_color)
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .text_size(px(9.0))
-                    .child(self.info.method.as_str()),
-            )
+            .child(icon_badge)
             .child(
                 div()
                     .max_w(px(180.0))
@@ -270,6 +301,5 @@ impl IntoElement for RequestTab {
                         }),
                 )
             })
-            .into_any_element()
     }
 }
