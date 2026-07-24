@@ -26,7 +26,7 @@ use crate::actions::*;
 use crate::completion::{CompletionContext, CompletionEngine, configure_completion};
 use crate::components::{
     AppSidebar, BodyType, EnvironmentPanel, HistoryFilter, HistoryGroupBy, MethodDropdownState,
-    ProtocolSelector, ProtocolType, SidebarTab, TabBar, TabInfo, UrlBar,
+    ProtocolSelector, ProtocolType, SidebarTab, TabBar, TabIcon, TabInfo, UrlBar,
 };
 use crate::entities::{
     CollectionDestination, CollectionDestinationEntry, CollectionsEntity, EnvironmentColor,
@@ -39,6 +39,7 @@ use crate::http::{HttpClient, InFlightRequest};
 use crate::icons::IconName;
 use crate::importers::{ImportRegistry, ImportWarning, ImportedPayload};
 use crate::utils::{close_dialog, open_dialog};
+use crate::views::environment_view::EnvironmentView;
 use crate::views::request_view::RequestView;
 use crate::views::response_view::ResponseView;
 use crate::views::{CommandId, CommandPaletteEvent, CommandPaletteView};
@@ -65,19 +66,101 @@ impl RequestGeneration {
     }
 }
 
+pub enum TabContent {
+    Request {
+        request: Entity<RequestEntity>,
+        response: Entity<ResponseEntity>,
+        url_input: Option<Entity<InputState>>,
+        method_dropdown: Entity<MethodDropdownState>,
+        request_view: Entity<RequestView>,
+        response_view: Entity<ResponseView>,
+        in_flight_request: Option<InFlightRequest>,
+        request_generation: RequestGeneration,
+    },
+    Environment {
+        environment_id: Uuid,
+        view: Entity<EnvironmentView>,
+    },
+}
+
 pub struct TabState {
     pub id: TabId,
     pub name: String,
     pub is_custom_name: bool,
-    pub request: Entity<RequestEntity>,
-    pub response: Entity<ResponseEntity>,
-    pub url_input: Option<Entity<InputState>>,
-    pub method_dropdown: Entity<MethodDropdownState>,
-    pub request_view: Entity<RequestView>,
-    pub response_view: Entity<ResponseView>,
-    pub in_flight_request: Option<InFlightRequest>,
-    pub request_generation: RequestGeneration,
+    pub content: TabContent,
     pub collection_id: Option<Uuid>,
+}
+
+impl TabState {
+    pub fn is_environment(&self, id: Uuid) -> bool {
+        matches!(&self.content, TabContent::Environment { environment_id, .. } if *environment_id == id)
+    }
+
+    #[allow(dead_code)]
+    pub fn environment_id(&self) -> Option<Uuid> {
+        match &self.content {
+            TabContent::Environment { environment_id, .. } => Some(*environment_id),
+            _ => None,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn environment_view(&self) -> Option<&Entity<EnvironmentView>> {
+        match &self.content {
+            TabContent::Environment { view, .. } => Some(view),
+            _ => None,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn request(&self) -> Option<&Entity<RequestEntity>> {
+        match &self.content {
+            TabContent::Request { request, .. } => Some(request),
+            _ => None,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn response(&self) -> Option<&Entity<ResponseEntity>> {
+        match &self.content {
+            TabContent::Request { response, .. } => Some(response),
+            _ => None,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn url_input(&self) -> Option<&Entity<InputState>> {
+        match &self.content {
+            TabContent::Request { url_input, .. } => url_input.as_ref(),
+            _ => None,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn method_dropdown(&self) -> Option<&Entity<MethodDropdownState>> {
+        match &self.content {
+            TabContent::Request {
+                method_dropdown, ..
+            } => Some(method_dropdown),
+            _ => None,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn request_view(&self) -> Option<&Entity<RequestView>> {
+        match &self.content {
+            TabContent::Request { request_view, .. } => Some(request_view),
+            _ => None,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn response_view(&self) -> Option<&Entity<ResponseView>> {
+        match &self.content {
+            TabContent::Request { response_view, .. } => Some(response_view),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -204,14 +287,16 @@ impl MainView {
             id: TabId(0),
             name: "New Request".to_string(),
             is_custom_name: false,
-            request: request.clone(),
-            response: response.clone(),
-            url_input: None,
-            method_dropdown,
-            request_view,
-            response_view,
-            in_flight_request: None,
-            request_generation: RequestGeneration::default(),
+            content: TabContent::Request {
+                request: request.clone(),
+                response: response.clone(),
+                url_input: None,
+                method_dropdown,
+                request_view,
+                response_view,
+                in_flight_request: None,
+                request_generation: RequestGeneration::default(),
+            },
             collection_id: None,
         };
         let environment_panel =
@@ -337,9 +422,10 @@ impl MainView {
     fn ensure_url_input(&mut self, tab_index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let completion_engine = self.completion_engine.clone();
         if let Some(tab) = self.tabs.get_mut(tab_index)
-            && tab.url_input.is_none()
+            && let TabContent::Request { url_input, .. } = &mut tab.content
+            && url_input.is_none()
         {
-            let url_input = cx.new(|cx| {
+            let input = cx.new(|cx| {
                 configure_completion(
                     InputState::new(window, cx).placeholder("Enter request URL..."),
                     Some(&completion_engine),
@@ -347,8 +433,8 @@ impl MainView {
                 )
             });
             let tab_id = tab.id;
-            Self::subscribe_url_input(&url_input, tab_id, window, cx);
-            tab.url_input = Some(url_input);
+            Self::subscribe_url_input(&input, tab_id, window, cx);
+            *url_input = Some(input);
         }
     }
 
@@ -365,8 +451,10 @@ impl MainView {
                 return;
             }
             let text = state.read(cx).text().to_string();
-            if let Some(tab) = this.tabs.iter().find(|tab| tab.id == tab_id) {
-                tab.request.update(cx, |request, cx| {
+            if let Some(tab) = this.tabs.iter().find(|tab| tab.id == tab_id)
+                && let TabContent::Request { request, .. } = &tab.content
+            {
+                request.update(cx, |request, cx| {
                     request.set_url(text.clone(), cx);
                 });
             }
@@ -374,24 +462,15 @@ impl MainView {
             if !crate::utils::looks_like_curl(&text) {
                 return;
             }
-            match crate::utils::parse_curl(&text) {
-                Ok(parsed) => {
-                    let url_value = parsed.url.clone();
-                    state.update(cx, |s, cx| {
-                        s.set_value(url_value, window, cx);
-                    });
-                    this.apply_parsed_curl_to_tab(tab_id, &parsed, window, cx);
-                }
-                Err(err) => {
-                    log::warn!("Failed to parse curl from URL bar: {}", err);
-                }
+            if let Ok(parsed) = crate::utils::parse_curl(&text) {
+                this.apply_curl_to_tab(tab_id, &parsed, window, cx);
             }
         })
         .detach();
     }
 
     /// Apply a parsed curl to the currently-active tab.
-    fn apply_parsed_curl_to_tab(
+    fn apply_curl_to_tab(
         &mut self,
         tab_id: TabId,
         parsed: &crate::utils::ParsedCurl,
@@ -401,16 +480,23 @@ impl MainView {
         let Some(tab) = self.tabs.iter().find(|tab| tab.id == tab_id) else {
             return;
         };
-        let method_dropdown = tab.method_dropdown.clone();
-        let request_view = tab.request_view.clone();
+        if let TabContent::Request {
+            method_dropdown,
+            request_view,
+            ..
+        } = &tab.content
+        {
+            let method_dropdown = method_dropdown.clone();
+            let request_view = request_view.clone();
 
-        method_dropdown.update(cx, |state, cx| {
-            state.set_method(parsed.method, cx);
-        });
-        request_view.update(cx, |view, cx| {
-            view.apply_parsed_curl(parsed, window, cx);
-        });
-        cx.notify();
+            method_dropdown.update(cx, |state, cx| {
+                state.set_method(parsed.method, cx);
+            });
+            request_view.update(cx, |view, cx| {
+                view.apply_parsed_curl(parsed, window, cx);
+            });
+            cx.notify();
+        }
     }
 
     /// Ensure sidebar search inputs are initialized
@@ -632,14 +718,16 @@ impl MainView {
             id: tab_id,
             name: tab_name,
             is_custom_name: true,
-            request: request.clone(),
-            response: response.clone(),
-            url_input: Some(url_input),
-            method_dropdown,
-            request_view,
-            response_view,
-            in_flight_request: None,
-            request_generation: RequestGeneration::default(),
+            content: TabContent::Request {
+                request: request.clone(),
+                response: response.clone(),
+                url_input: Some(url_input),
+                method_dropdown,
+                request_view,
+                response_view,
+                in_flight_request: None,
+                request_generation: RequestGeneration::default(),
+            },
             collection_id: None,
         };
 
@@ -770,14 +858,16 @@ impl MainView {
             id: tab_id,
             name: tab_name,
             is_custom_name: true,
-            request: request.clone(),
-            response: response.clone(),
-            url_input: Some(url_input),
-            method_dropdown,
-            request_view,
-            response_view,
-            in_flight_request: None,
-            request_generation: RequestGeneration::default(),
+            content: TabContent::Request {
+                request: request.clone(),
+                response: response.clone(),
+                url_input: Some(url_input),
+                method_dropdown,
+                request_view,
+                response_view,
+                in_flight_request: None,
+                request_generation: RequestGeneration::default(),
+            },
             collection_id: Some(collection_id),
         };
 
@@ -982,6 +1072,54 @@ impl MainView {
                         ),
                 )
         });
+    }
+
+    pub fn open_environment_tab(
+        &mut self,
+        environment_id: Uuid,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(index) = self
+            .tabs
+            .iter()
+            .position(|tab| tab.is_environment(environment_id))
+        {
+            self.active_tab_index = index;
+            cx.notify();
+            return;
+        }
+
+        let env_name = self
+            .environments
+            .read(cx)
+            .get(environment_id)
+            .map(|e| e.name.clone())
+            .unwrap_or_else(|| "Environment".to_string());
+
+        let environments = self.environments.clone();
+        let collections = self.collections.clone();
+        let editor_view = cx
+            .new(|cx| EnvironmentView::new(environment_id, environments, collections, window, cx));
+
+        let tab_id = TabId(self.next_tab_id);
+        self.next_tab_id += 1;
+
+        let new_tab = TabState {
+            id: tab_id,
+            name: env_name,
+            is_custom_name: true,
+            content: TabContent::Environment {
+                environment_id,
+                view: editor_view,
+            },
+            collection_id: None,
+        };
+
+        self.tabs.push(new_tab);
+        self.active_tab_index = self.tabs.len() - 1;
+        self.tab_scroll_handle.scroll_to_item(self.active_tab_index);
+        cx.notify();
     }
 
     pub fn show_new_environment_dialog(
@@ -1291,13 +1429,23 @@ impl MainView {
     ) -> Option<RequestData> {
         let (tab_name, is_custom_name, request_entity, request_view, url_input) = {
             let tab = self.tabs.get(tab_index)?;
-            (
-                tab.name.clone(),
-                tab.is_custom_name,
-                tab.request.clone(),
-                tab.request_view.clone(),
-                tab.url_input.clone(),
-            )
+            if let TabContent::Request {
+                request,
+                request_view,
+                url_input,
+                ..
+            } = &tab.content
+            {
+                (
+                    tab.name.clone(),
+                    tab.is_custom_name,
+                    request.clone(),
+                    request_view.clone(),
+                    url_input.clone(),
+                )
+            } else {
+                return None;
+            }
         };
 
         request_view.update(cx, |view, cx| {
@@ -1404,14 +1552,19 @@ impl MainView {
 
     fn cancel_in_flight_for_tab(&mut self, index: usize, cx: &mut Context<Self>) {
         if let Some(tab) = self.tabs.get_mut(index)
-            && let Some(mut in_flight) = tab.in_flight_request.take()
+            && let TabContent::Request {
+                request,
+                response,
+                in_flight_request,
+                request_generation,
+                ..
+            } = &mut tab.content
+            && let Some(mut in_flight) = in_flight_request.take()
         {
             let _ = in_flight.cancel();
-            tab.request_generation.advance();
-            tab.request
-                .update(cx, |request, cx| request.set_sending(false, cx));
-            tab.response
-                .update(cx, |response, cx| response.set_cancelled(cx));
+            request_generation.advance();
+            request.update(cx, |req, cx| req.set_sending(false, cx));
+            response.update(cx, |resp, cx| resp.set_cancelled(cx));
         }
     }
 
@@ -1440,14 +1593,16 @@ impl MainView {
             id: tab_id,
             name: "New Request".to_string(),
             is_custom_name: false,
-            request: request.clone(),
-            response: response.clone(),
-            url_input: None,
-            method_dropdown,
-            request_view,
-            response_view,
-            in_flight_request: None,
-            request_generation: RequestGeneration::default(),
+            content: TabContent::Request {
+                request: request.clone(),
+                response: response.clone(),
+                url_input: None,
+                method_dropdown,
+                request_view,
+                response_view,
+                in_flight_request: None,
+                request_generation: RequestGeneration::default(),
+            },
             collection_id: None,
         };
 
@@ -1466,9 +1621,15 @@ impl MainView {
             self.active_tab_index = index;
 
             // Notify the views to re-render with their current data
-            if let Some(tab) = self.tabs.get(index) {
-                tab.request_view.update(cx, |_, cx| cx.notify());
-                tab.response_view.update(cx, |_, cx| cx.notify());
+            if let Some(tab) = self.tabs.get(index)
+                && let TabContent::Request {
+                    request_view,
+                    response_view,
+                    ..
+                } = &tab.content
+            {
+                request_view.update(cx, |_, cx| cx.notify());
+                response_view.update(cx, |_, cx| cx.notify());
             }
 
             // Scroll to the selected tab to ensure it's visible
@@ -2289,10 +2450,21 @@ impl MainView {
             return;
         };
 
+        let TabContent::Request {
+            request: request_entity,
+            response: response_entity,
+            url_input,
+            request_view,
+            ..
+        } = &tab.content
+        else {
+            return;
+        };
+
         let tab_id = tab.id;
-        let request_entity = tab.request.clone();
-        let response_entity = tab.response.clone();
-        let request_view = tab.request_view.clone();
+        let request_entity = request_entity.clone();
+        let response_entity = response_entity.clone();
+        let request_view = request_view.clone();
         let tab_name = tab.name.clone();
         let collection_id = tab.collection_id;
 
@@ -2303,7 +2475,7 @@ impl MainView {
         }
 
         // Get URL from input state.
-        let base_url = if let Some(ref url_input) = tab.url_input {
+        let base_url = if let Some(url_input) = url_input {
             url_input.read(cx).text().to_string()
         } else {
             String::new()
@@ -2393,9 +2565,18 @@ impl MainView {
             self.http_client
                 .spawn_request(method, resolved_url, resolved_headers, resolved_body);
         let generation = if let Some(tab) = self.tabs.get_mut(tab_index) {
-            let generation = tab.request_generation.advance();
-            tab.in_flight_request = Some(in_flight_request);
-            generation
+            if let TabContent::Request {
+                in_flight_request: tab_in_flight,
+                request_generation,
+                ..
+            } = &mut tab.content
+            {
+                let generation_count = request_generation.advance();
+                *tab_in_flight = Some(in_flight_request);
+                generation_count
+            } else {
+                return;
+            }
         } else {
             return;
         };
@@ -2410,12 +2591,19 @@ impl MainView {
                     let Some(tab) = main.tabs.iter_mut().find(|tab| tab.id == tab_id) else {
                         return;
                     };
-                    if tab.request_generation != generation {
-                        log::debug!("Discarded stale result for tab {}", tab_id.0);
-                        return;
-                    }
+                    if let TabContent::Request {
+                        request_generation,
+                        in_flight_request,
+                        ..
+                    } = &mut tab.content
+                    {
+                        if *request_generation != generation {
+                            log::debug!("Discarded stale result for tab {}", tab_id.0);
+                            return;
+                        }
 
-                    tab.in_flight_request = None;
+                        *in_flight_request = None;
+                    }
                     request_entity.update(cx, |req, cx| req.set_sending(false, cx));
 
                     match result {
@@ -2467,20 +2655,27 @@ impl MainView {
             return;
         };
 
-        let is_sending = tab.request.read(cx).is_sending();
-        if !is_sending {
-            return;
-        }
+        if let TabContent::Request {
+            request,
+            response,
+            in_flight_request,
+            request_generation,
+            ..
+        } = &mut tab.content
+        {
+            let is_sending = request.read(cx).is_sending();
+            if !is_sending {
+                return;
+            }
 
-        if let Some(mut in_flight) = tab.in_flight_request.take() {
-            let _ = in_flight.cancel();
+            if let Some(mut in_flight) = in_flight_request.take() {
+                let _ = in_flight.cancel();
+            }
+            request_generation.advance();
+            request.update(cx, |r, cx| r.set_sending(false, cx));
+            response.update(cx, |r, cx| r.set_cancelled(cx));
+            cx.notify();
         }
-        tab.request_generation.advance();
-        tab.request
-            .update(cx, |request, cx| request.set_sending(false, cx));
-        tab.response
-            .update(cx, |response, cx| response.set_cancelled(cx));
-        cx.notify();
     }
 
     pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
@@ -2654,10 +2849,19 @@ impl MainView {
 
     pub fn duplicate_request(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(current_tab) = self.active_tab() {
-            let old_request = current_tab.request.clone();
-            let old_url_input = current_tab.url_input.clone();
+            let TabContent::Request {
+                request: old_request,
+                url_input: old_url_input,
+                request_view: old_request_view,
+                ..
+            } = &current_tab.content
+            else {
+                return;
+            };
+            let old_request = old_request.clone();
+            let old_url_input = old_url_input.clone();
             let old_name = current_tab.name.clone();
-            let old_request_view = current_tab.request_view.clone();
+            let old_request_view = old_request_view.clone();
             let old_collection_id = current_tab.collection_id;
 
             let old_body_type = old_request_view.read(cx).get_body_type();
@@ -2741,14 +2945,16 @@ impl MainView {
                 id: tab_id,
                 name: format!("{} (copy)", old_name),
                 is_custom_name: true,
-                request: new_request.clone(),
-                response: new_response.clone(),
-                url_input: new_url_input,
-                method_dropdown: new_method_dropdown,
-                request_view: new_request_view,
-                response_view: new_response_view,
-                in_flight_request: None,
-                request_generation: RequestGeneration::default(),
+                content: TabContent::Request {
+                    request: new_request.clone(),
+                    response: new_response.clone(),
+                    url_input: new_url_input,
+                    method_dropdown: new_method_dropdown,
+                    request_view: new_request_view,
+                    response_view: new_response_view,
+                    in_flight_request: None,
+                    request_generation: RequestGeneration::default(),
+                },
                 collection_id: old_collection_id,
             };
 
@@ -2760,11 +2966,17 @@ impl MainView {
     }
 
     pub fn set_method(&mut self, method: HttpMethod, cx: &mut Context<Self>) {
-        if let Some(tab) = self.tabs.get(self.active_tab_index) {
-            tab.method_dropdown.update(cx, |state, cx| {
+        if let Some(tab) = self.tabs.get(self.active_tab_index)
+            && let TabContent::Request {
+                method_dropdown,
+                request,
+                ..
+            } = &tab.content
+        {
+            method_dropdown.update(cx, |state, cx| {
                 state.set_method(method, cx);
             });
-            tab.request.update(cx, |req, cx| {
+            request.update(cx, |req, cx| {
                 req.set_method(method, cx);
             });
         }
@@ -2775,8 +2987,10 @@ impl MainView {
         tab: crate::views::request_view::RequestTab,
         cx: &mut Context<Self>,
     ) {
-        if let Some(active_tab) = self.tabs.get(self.active_tab_index) {
-            active_tab.request_view.update(cx, |view, cx| {
+        if let Some(active_tab) = self.tabs.get(self.active_tab_index)
+            && let TabContent::Request { request_view, .. } = &active_tab.content
+        {
+            request_view.update(cx, |view, cx| {
                 view.set_tab(tab, cx);
             });
         }
@@ -2787,8 +3001,10 @@ impl MainView {
         tab: crate::views::response_view::ResponseTab,
         cx: &mut Context<Self>,
     ) {
-        if let Some(active_tab) = self.tabs.get(self.active_tab_index) {
-            active_tab.response_view.update(cx, |view, cx| {
+        if let Some(active_tab) = self.tabs.get(self.active_tab_index)
+            && let TabContent::Request { response_view, .. } = &active_tab.content
+        {
+            response_view.update(cx, |view, cx| {
                 view.set_tab(tab, cx);
             });
         }
@@ -2796,7 +3012,10 @@ impl MainView {
 
     pub fn focus_url_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(tab) = self.tabs.get(self.active_tab_index)
-            && let Some(url_input) = &tab.url_input
+            && let TabContent::Request {
+                url_input: Some(url_input),
+                ..
+            } = &tab.content
         {
             url_input.update(cx, |state, cx| {
                 state.focus(window, cx);
@@ -2846,18 +3065,33 @@ impl Render for MainView {
             .iter()
             .enumerate()
             .map(|(i, tab)| {
-                let method = tab.request.read(cx).method();
-                let display_name = if tab.is_custom_name {
-                    tab.name.clone()
-                } else {
-                    let url = tab
-                        .url_input
-                        .as_ref()
-                        .map(|input| input.read(cx).text().to_string())
-                        .unwrap_or_default();
-                    Self::derive_tab_name(&url)
+                let (display_name, icon) = match &tab.content {
+                    TabContent::Request {
+                        request, url_input, ..
+                    } => {
+                        let method = request.read(cx).method();
+                        let name = if tab.is_custom_name {
+                            tab.name.clone()
+                        } else {
+                            let url = url_input
+                                .as_ref()
+                                .map(|input| input.read(cx).text().to_string())
+                                .unwrap_or_default();
+                            Self::derive_tab_name(&url)
+                        };
+                        (name, TabIcon::Method(method))
+                    }
+                    TabContent::Environment { environment_id, .. } => {
+                        let name = self
+                            .environments
+                            .read(cx)
+                            .get(*environment_id)
+                            .map(|e| e.name.clone())
+                            .unwrap_or_else(|| tab.name.clone());
+                        (name, TabIcon::Icon(IconName::Package))
+                    }
                 };
-                let mut info = TabInfo::new(tab.id.0 as usize, i, display_name, method);
+                let mut info = TabInfo::new(tab.id.0 as usize, i, display_name, icon);
                 if i == self.active_tab_index {
                     info = info.active();
                 }
@@ -2868,15 +3102,43 @@ impl Render for MainView {
         // Get current request state for URL bar
         let (url_input, method_dropdown, request_entity, is_loading, request_view, response_view) =
             if let Some(tab) = self.active_tab() {
-                let req = tab.request.read(cx);
-                (
-                    tab.url_input.clone(),
-                    tab.method_dropdown.clone(),
-                    tab.request.clone(),
-                    req.is_sending(),
-                    tab.request_view.clone(),
-                    tab.response_view.clone(),
-                )
+                if let TabContent::Request {
+                    request,
+                    url_input,
+                    method_dropdown,
+                    request_view,
+                    response_view,
+                    ..
+                } = &tab.content
+                {
+                    let req = request.read(cx);
+                    (
+                        url_input.clone(),
+                        method_dropdown.clone(),
+                        request.clone(),
+                        req.is_sending(),
+                        request_view.clone(),
+                        response_view.clone(),
+                    )
+                } else {
+                    let request = cx.new(|_| RequestEntity::new());
+                    let response = cx.new(|_| ResponseEntity::new());
+                    let method_dropdown = cx.new(|_| MethodDropdownState::new(HttpMethod::Get));
+                    let completion_engine = self.completion_engine.clone();
+                    let request_view = cx.new(|cx| {
+                        RequestView::new(request.clone(), BodyType::None, cx)
+                            .with_completion_engine(completion_engine)
+                    });
+                    let response_view = cx.new(|cx| ResponseView::new(response.clone(), cx));
+                    (
+                        None,
+                        method_dropdown,
+                        request,
+                        false,
+                        request_view,
+                        response_view,
+                    )
+                }
             } else {
                 return div().child("No active tab").into_any_element();
             };
@@ -2888,6 +3150,7 @@ impl Render for MainView {
         let this_for_import_environment = this.clone();
         let this_for_delete_environment = this.clone();
         let this_for_rename_environment = this.clone();
+        let this_for_open_environment = this.clone();
         self.environment_panel.update(cx, |panel, cx| {
             panel.set_collection_context(active_collection_id, cx);
             panel.on_new_environment(move |project_id, window, cx| {
@@ -2908,6 +3171,11 @@ impl Render for MainView {
             panel.on_rename_environment(move |environment_id, name, window, cx| {
                 this_for_rename_environment.update(cx, |view, cx| {
                     view.show_rename_environment_dialog(environment_id, name, window, cx);
+                });
+            });
+            panel.on_open_environment(move |environment_id, window, cx| {
+                this_for_open_environment.update(cx, |view, cx| {
+                    view.open_environment_tab(environment_id, window, cx);
                 });
             });
         });
@@ -3355,18 +3623,29 @@ impl Render for MainView {
                         this.clone(),
                         self.tab_scroll_handle.clone(),
                     ))
-                    // Content - vertical resizable split between request and response panels
+                    // Content - vertical resizable split between request and response panels or environment view
                     .child(div().flex_1().flex().flex_col().overflow_hidden().child(
-                        self.render_request_response_split(
-                            url_input,
-                            method_dropdown,
-                            request_entity,
-                            is_loading,
-                            this_for_send,
-                            request_view,
-                            response_view,
-                            effective_layout,
-                        ),
+                        if let Some(active_tab) = self.active_tab() {
+                            match &active_tab.content {
+                                TabContent::Environment { view, .. } => {
+                                    view.clone().into_any_element()
+                                }
+                                TabContent::Request { .. } => self
+                                    .render_request_response_split(
+                                        url_input,
+                                        method_dropdown,
+                                        request_entity,
+                                        is_loading,
+                                        this_for_send,
+                                        request_view,
+                                        response_view,
+                                        effective_layout,
+                                    )
+                                    .into_any_element(),
+                            }
+                        } else {
+                            div().into_any_element()
+                        },
                     )),
             )
             // Dialog layer - renders dialogs on top of everything

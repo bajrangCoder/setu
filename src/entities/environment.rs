@@ -713,6 +713,7 @@ impl EnvironmentsEntity {
         self.changed(EnvironmentEvent::Changed, cx);
     }
 
+    #[allow(dead_code)]
     pub fn duplicate_variable(
         &mut self,
         environment_id: Uuid,
@@ -757,6 +758,14 @@ impl EnvironmentsEntity {
         environment
             .variables
             .retain(|variable| variable.id != variable_id);
+        self.changed(EnvironmentEvent::Changed, cx);
+    }
+
+    pub fn clear_variables(&mut self, environment_id: Uuid, cx: &mut Context<Self>) {
+        let Some(environment) = self.get_mut(environment_id) else {
+            return;
+        };
+        environment.variables.clear();
         self.changed(EnvironmentEvent::Changed, cx);
     }
 
