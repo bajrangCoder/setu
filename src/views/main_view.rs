@@ -1106,19 +1106,20 @@ impl MainView {
             .map(|e| e.name.clone())
             .unwrap_or_else(|| "Environment".to_string());
 
-        let collection_id = self
-            .environments
-            .read(cx)
-            .get(environment_id)
-            .and_then(|env| match env.scope {
-                EnvironmentScope::Project(col_id) => Some(col_id),
-                _ => None,
-            });
+        let collection_id =
+            self.environments
+                .read(cx)
+                .get(environment_id)
+                .and_then(|env| match env.scope {
+                    EnvironmentScope::Project(col_id) => Some(col_id),
+                    _ => None,
+                });
 
         let environments = self.environments.clone();
         let collections = self.collections.clone();
         let editor_view = cx.new(|cx| {
-            let mut view = EnvironmentView::new(environment_id, environments, collections, window, cx);
+            let mut view =
+                EnvironmentView::new(environment_id, environments, collections, window, cx);
             view.set_collection_context(collection_id);
             view
         });
